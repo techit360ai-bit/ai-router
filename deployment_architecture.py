@@ -1,5 +1,5 @@
 """
-TECHIT AI ROUTER — DEPLOYMENT ARCHITECTURE
+TECHIT AI ROUTER -- DEPLOYMENT ARCHITECTURE
 ===========================================
 Production-grade infrastructure for the TechIT AI Incubation Platform.
 
@@ -83,7 +83,7 @@ ARCHITECTURE_DIAGRAM = """
 """
 
 # ============================================================================
-# DOCKER COMPOSE — LOCAL DEVELOPMENT
+# DOCKER COMPOSE -- LOCAL DEVELOPMENT
 # ============================================================================
 
 DOCKER_COMPOSE = """
@@ -206,7 +206,7 @@ volumes:
 """
 
 # ============================================================================
-# DOCKERFILE — API SERVICE
+# DOCKERFILE -- API SERVICE
 # ============================================================================
 
 DOCKERFILE_API = """
@@ -443,7 +443,7 @@ async def investor_evi(project_id: str, startup_data: dict,
 @app.get("/api/v1/credits/summary")
 async def credits_summary(user: UserContext = Depends(get_user_context)):
     # Production: fetch UserBillingState from DB
-    return {"message": "Credit summary — requires UserBillingState from billing_system.py"}
+    return {"message": "Credit summary -- requires UserBillingState from billing_system.py"}
 
 
 # ── Stripe Webhook ─────────────────────────────────────────────────────────
@@ -742,7 +742,7 @@ def problem_discovery_daily():
 def discussion_moderation_hourly():
     # Moderate active problem discussion threads. Runs every hour.
     # Fetch discussion_threads updated in last 2 hours
-    # Run DiscussionModeratorAgent — update ai_summary, clusters, readiness
+    # Run DiscussionModeratorAgent -- update ai_summary, clusters, readiness
     pass
 
 
@@ -937,7 +937,7 @@ STRIPE_WEBHOOK_SECRET=whsec_YOUR_KEY_HERE
 # Voice (optional)
 ELEVENLABS_API_KEY=YOUR_KEY_HERE
 
-# AWS (optional — for S3 audio/document storage)
+# AWS (optional -- for S3 audio/document storage)
 AWS_ACCESS_KEY_ID=YOUR_KEY_HERE
 AWS_SECRET_ACCESS_KEY=YOUR_KEY_HERE
 AWS_REGION=us-east-1
@@ -1111,7 +1111,7 @@ Cost Optimisation Levers
 # ============================================================================
 
 DEPLOYMENT_CHECKLIST = """
-TECHIT — PRODUCTION DEPLOYMENT CHECKLIST
+TECHIT -- PRODUCTION DEPLOYMENT CHECKLIST
 ==========================================
 
 □ INFRASTRUCTURE
@@ -1122,13 +1122,13 @@ TECHIT — PRODUCTION DEPLOYMENT CHECKLIST
   □ Auto-scaling: API 3–20 pods, Workers 2–8 pods
 
 □ DATABASE
-  □ alembic upgrade head — all 26 tables created
+  □ alembic upgrade head -- all 26 tables created
   □ All pgvector indexes created (user_skill, idea_embeddings)
   □ Stored functions deployed (top_startups, find_similar_ideas, find_skill_matches)
   □ Views created (project_scores_live, monthly_credit_burn, stagnating_projects)
   □ ai_prompts seeded with all 20+ versioned prompt templates
 
-□ API KEYS (AWS Secrets Manager — never in .env files in production)
+□ API KEYS (AWS Secrets Manager -- never in .env files in production)
   □ OpenAI (GPT-4 + GPT-4o-mini)
   □ Anthropic (Claude Sonnet 4.6 + Haiku)
   □ Cohere (embeddings)
@@ -1195,7 +1195,7 @@ TECHIT — PRODUCTION DEPLOYMENT CHECKLIST
 if __name__ == "__main__":
     print("""
 ╔═══════════════════════════════════════════════════════════════╗
-║       TECHIT AI ROUTER v2.0 — DEPLOYMENT ARCHITECTURE        ║
+║       TECHIT AI ROUTER v2.0 -- DEPLOYMENT ARCHITECTURE        ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Quick Start:                                                 ║
 ║    1. cp .env.example .env  →  fill in API keys               ║

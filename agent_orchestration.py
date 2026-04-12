@@ -1,7 +1,7 @@
 """
 TECHIT AGENT ORCHESTRATION SYSTEM
 ==================================
-Multi-agent coordination layer — the CEO of all AI inside TechIT.
+Multi-agent coordination layer -- the CEO of all AI inside TechIT.
 
 Every agent is a specialist. The AgentOrchestrator routes events,
 assembles context, manages concurrency, and aggregates results.
@@ -9,29 +9,29 @@ assembles context, manages concurrency, and aggregates results.
 REGISTERED AGENTS (21 total)
 ─────────────────────────────
 Incubation Hub:
-  1. VentureIntakeAgent          — structures raw founder input
-  2. UnicornEvaluatorAgent       — 10-driver unicorn probability model
-  3. MarketIntelligenceAgent     — TAM/SAM/SOM, trends, competition
-  4. ProductFeasibilityAgent     — technical complexity, build risk
-  5. StartupStrategyAgent        — GTM, pricing, growth, PMF path
-  6. FinanceStrategyAgent        — capital efficiency, unit economics
-  7. InvestorIntelligenceAgent   — EVI-I + deal flow signals
-  8. BusinessPlanGeneratorAgent  — executive summary + full plan
-  9. TechArchitectAgent          — full tech stack design
- 10. PivotIntelligenceAgent      — pivot analysis + redevelopment
+  1. VentureIntakeAgent          -- structures raw founder input
+  2. UnicornEvaluatorAgent       -- 10-driver unicorn probability model
+  3. MarketIntelligenceAgent     -- TAM/SAM/SOM, trends, competition
+  4. ProductFeasibilityAgent     -- technical complexity, build risk
+  5. StartupStrategyAgent        -- GTM, pricing, growth, PMF path
+  6. FinanceStrategyAgent        -- capital efficiency, unit economics
+  7. InvestorIntelligenceAgent   -- EVI-I + deal flow signals
+  8. BusinessPlanGeneratorAgent  -- executive summary + full plan
+  9. TechArchitectAgent          -- full tech stack design
+ 10. PivotIntelligenceAgent      -- pivot analysis + redevelopment
 
 Platform:
- 11. TourGuideAgent              — daily planning + momentum enforcement
- 12. AdaptiveTrainingAgent       — time-to-MVP curriculum (not fixed weeks)
- 13. MatchingAgent               — team / investor / accelerator compatibility
- 14. RiskEvaluatorAgent          — idea + execution risk assessment
- 15. WorkspaceAssistantAgent     — task suggestions + sprint planning
- 16. FeedIntelligenceAgent       — curated community feed
- 17. DashboardIntelligenceAgent  — GSIS surface + real-time scores
- 18. AIProfileAgent              — profile scoring + improvement
- 19. OrgSphereAgent              — organization structure intelligence
- 20. AdminMonitorAgent           — abuse detection + anomaly alerts
- 21. GSISComputeAgent            — Global Startup Intelligence Score
+ 11. TourGuideAgent              -- daily planning + momentum enforcement
+ 12. AdaptiveTrainingAgent       -- time-to-MVP curriculum (not fixed weeks)
+ 13. MatchingAgent               -- team / investor / accelerator compatibility
+ 14. RiskEvaluatorAgent          -- idea + execution risk assessment
+ 15. WorkspaceAssistantAgent     -- task suggestions + sprint planning
+ 16. FeedIntelligenceAgent       -- curated community feed
+ 17. DashboardIntelligenceAgent  -- GSIS surface + real-time scores
+ 18. AIProfileAgent              -- profile scoring + improvement
+ 19. OrgSphereAgent              -- organization structure intelligence
+ 20. AdminMonitorAgent           -- abuse detection + anomaly alerts
+ 21. GSISComputeAgent            -- Global Startup Intelligence Score
 
 EVENT → AGENT ROUTING
 ──────────────────────
@@ -458,7 +458,7 @@ class PivotIntelligenceAgent(BaseAgent):
             return AgentResult(
                 AgentType.PIVOT_INTELLIGENCE, True,
                 {"pivot_needed": False, "score": score},
-                ["Pivot evaluation — not required"],
+                ["Pivot evaluation -- not required"],
                 ["Continue current direction"],
                 ["Proceed to Business Plan"],
                 ms,
@@ -750,7 +750,7 @@ class DashboardIntelligenceAgent(BaseAgent):
                            "message": f"Decay active: {round((1-decay)*100)}% score penalty"})
         if gsis_result["alert_triggered"]:
             alerts.append({"type": "gsis_alert", "severity": "warning",
-                           "message": f"Alert score: {gsis_result['alert_score']} — AI intervention recommended"})
+                           "message": f"Alert score: {gsis_result['alert_score']} -- AI intervention recommended"})
         if uc.credits_remaining <= 2:
             alerts.append({"type": "credits_low", "severity": "info",
                            "message": "Credits running low. Purchase a credit pack."})
@@ -806,7 +806,7 @@ class GSISComputeAgent(BaseAgent):
         return AgentResult(
             AgentType.GSIS_COMPUTE, True,
             {"gsis": gsis, "narrative": ai.output},
-            [f"GSIS: {gsis['gsis']} — {gsis['classification']}"],
+            [f"GSIS: {gsis['gsis']} -- {gsis['classification']}"],
             [],
             ["Share GSIS with investors if > 70"],
             ms, ai.credits_consumed,
@@ -1182,11 +1182,11 @@ class DocumentExportAgent(BaseAgent):
 
 class AppScaffoldAgent(BaseAgent):
     """
-    TechIT's defining edge agent — Prompt → Live App in Minutes.
+    TechIT's defining edge agent -- Prompt → Live App in Minutes.
 
     This agent sits at the end of the Venture Pipeline, after TechArchitectAgent.
     Where TechArchitectAgent produces architecture *descriptions*, this agent
-    produces architecture *code* — actual downloadable files ready to deploy.
+    produces architecture *code* -- actual downloadable files ready to deploy.
 
     What it generates:
       - Next.js 14 App Router page structure (routes, components, auth)
@@ -1210,7 +1210,7 @@ class AppScaffoldAgent(BaseAgent):
       - ON_DEMAND:    user explicitly requests scaffold from dashboard
 
     Output: structured scaffold dict + deploy config + live URL (post-deploy).
-    IP protected: True — scaffold embeds the venture's proprietary logic.
+    IP protected: True -- scaffold embeds the venture's proprietary logic.
     """
 
     SUPPORTED_STACKS = {
@@ -1245,7 +1245,7 @@ class AppScaffoldAgent(BaseAgent):
             },
             context.user_context,
             ip_protected=True,   # Scaffold embeds proprietary business logic
-            max_tokens=8000,     # Scaffold is large — full schema + routes + pages
+            max_tokens=8000,     # Scaffold is large -- full schema + routes + pages
         )
 
         # Step 2: Parse scaffold JSON
@@ -1332,7 +1332,7 @@ class AppScaffoldAgent(BaseAgent):
     def _parse_scaffold(self, raw_output: str) -> dict:
         """
         Parse the AI scaffold JSON response.
-        Returns a safe default if parsing fails — never blocks the pipeline.
+        Returns a safe default if parsing fails -- never blocks the pipeline.
         """
         import json, re
         try:
@@ -1347,7 +1347,7 @@ class AppScaffoldAgent(BaseAgent):
                     {"route": "/dashboard", "component_name": "DashboardPage", "description": "Main dashboard", "auth_required": True},
                     {"route": "/login", "component_name": "LoginPage", "description": "Authentication", "auth_required": False},
                 ],
-                "schema_sql": "-- Schema generation pending — re-run scaffold",
+                "schema_sql": "-- Schema generation pending -- re-run scaffold",
                 "api_routes": [
                     {"method": "GET", "path": "/api/health", "description": "Health check", "auth_required": False},
                 ],
@@ -1507,7 +1507,7 @@ class AgentOrchestrator:
             # profile and org events
             "profile_updated":             [AgentType.AI_PROFILE],
             "org_created":                 [AgentType.ORG_SPHERE],
-            # post-MVP lifecycle — investor agent uses elevated system context
+            # post-MVP lifecycle -- investor agent uses elevated system context
             "mvp_shipped":                 [AgentType.ADAPTIVE_TRAINING,
                                             AgentType.DASHBOARD_INTELLIGENCE],
             "revenue_went_live":           [AgentType.ADAPTIVE_TRAINING,

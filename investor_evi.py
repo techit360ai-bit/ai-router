@@ -1,8 +1,8 @@
 """
-TECHIT — EXECUTION VELOCITY INDEX FOR INVESTOR INTELLIGENCE (EVI-I)
+TECHIT -- EXECUTION VELOCITY INDEX FOR INVESTOR INTELLIGENCE (EVI-I)
 ====================================================================
 Module: investor_evi.py
-Layer:  Investor Intelligence Engine — Signal Computation Layer
+Layer:  Investor Intelligence Engine -- Signal Computation Layer
 
 Purpose
 ───────
@@ -17,9 +17,9 @@ The EVI-I translates a startup's raw execution behaviour into a
 structured, decay-adjusted, investor-grade signal.
 
 EVI-I integrates into:
-  - Global Startup Intelligence Score (GSIS)  — 15% weight via EVI component
-  - Investor Interest Score (IIS)             — amplified by EVI-I signal
-  - WCRS marketplace ranking                  — adjusted score input
+  - Global Startup Intelligence Score (GSIS)  -- 15% weight via EVI component
+  - Investor Interest Score (IIS)             -- amplified by EVI-I signal
+  - WCRS marketplace ranking                  -- adjusted score input
   - Investor deal flow dashboards
   - Watchlist threshold alerts
   - AI-generated due-diligence summaries
@@ -35,12 +35,12 @@ Formula
 
 Dimension Weights
 ─────────────────
-  MDR  25%  Milestone Delivery Rate        — are they shipping what they promised?
-  IS   20%  Iteration Speed                — how fast do they learn from feedback?
-  TRV  15%  Team Response Velocity         — do they respond quickly to the market?
-  RTA  20%  Revenue Traction Acceleration  — is revenue compounding?
-  UGM  10%  User Growth Momentum           — is the user base growing faster?
-  CEV  10%  Capital Efficiency Velocity    — more output per dollar over time?
+  MDR  25%  Milestone Delivery Rate        -- are they shipping what they promised?
+  IS   20%  Iteration Speed                -- how fast do they learn from feedback?
+  TRV  15%  Team Response Velocity         -- do they respond quickly to the market?
+  RTA  20%  Revenue Traction Acceleration  -- is revenue compounding?
+  UGM  10%  User Growth Momentum           -- is the user base growing faster?
+  CEV  10%  Capital Efficiency Velocity    -- more output per dollar over time?
 
 Signal Classifications
 ──────────────────────
@@ -232,9 +232,9 @@ class EVIInvestorEngine:
         self, d: MilestoneDeliveryData
     ) -> Tuple[float, List[str], List[str]]:
         """
-        Delivery rate    50% — milestones_delivered / milestones_committed
-        On-time rate     30% — (delivered - late) / delivered
-        Quality          20% — AI-assessed quality score (0–10 → 0–1)
+        Delivery rate    50% -- milestones_delivered / milestones_committed
+        On-time rate     30% -- (delivered - late) / delivered
+        Quality          20% -- AI-assessed quality score (0–10 → 0–1)
         """
         strengths: List[str] = []
         flags:     List[str] = []
@@ -256,7 +256,7 @@ class EVIInvestorEngine:
         elif dr < 0.60:
             flags.append(f"Low delivery rate: {dr*100:.0f}% of commitments met")
         if otr < 0.70:
-            flags.append(f"{d.late_deliveries_count} late deliveries — execution discipline concern")
+            flags.append(f"{d.late_deliveries_count} late deliveries -- execution discipline concern")
         if d.milestone_quality_score >= 8.0:
             strengths.append(f"High milestone quality: {d.milestone_quality_score}/10")
         return round(max(0.0, min(100.0, score)), 2), strengths, flags
@@ -267,9 +267,9 @@ class EVIInvestorEngine:
         self, d: IterationSpeedData
     ) -> Tuple[float, List[str], List[str]]:
         """
-        Versions shipped  40% — benchmark: 4+/month = full
-        Feedback loop     35% — benchmark: ≤3 days = full; >14 = 0
-        Feature cycle     25% — benchmark: ≤7 days = full; >30 = 0
+        Versions shipped  40% -- benchmark: 4+/month = full
+        Feedback loop     35% -- benchmark: ≤3 days = full; >14 = 0
+        Feature cycle     25% -- benchmark: ≤7 days = full; >30 = 0
         Pivot penalty     −15% if 3+ pivots in 90d
         """
         strengths: List[str] = []
@@ -281,9 +281,9 @@ class EVIInvestorEngine:
         pen = 0.15 if d.pivots_executed_90d >= 3 else 0.0
 
         if d.pivots_executed_90d >= 3:
-            flags.append(f"{d.pivots_executed_90d} pivots in 90 days — possible lack of conviction")
+            flags.append(f"{d.pivots_executed_90d} pivots in 90 days -- possible lack of conviction")
         elif d.pivots_executed_90d == 1:
-            strengths.append("One decisive pivot — shows market responsiveness")
+            strengths.append("One decisive pivot -- shows market responsiveness")
 
         score = (0.40*vs + 0.35*fb + 0.25*fc) * 100 * (1.0 - pen)
 
@@ -301,10 +301,10 @@ class EVIInvestorEngine:
         self, d: TeamResponseData
     ) -> Tuple[float, List[str], List[str]]:
         """
-        Investor response  40% — ≤4h = full; >48h = 0
-        Collab response    25% — ≤8h = full; >72h = 0
-        Platform sessions  20% — ≥7/week = full
-        Check-in rate      15% — 0–100
+        Investor response  40% -- ≤4h = full; >48h = 0
+        Collab response    25% -- ≤8h = full; >72h = 0
+        Platform sessions  20% -- ≥7/week = full
+        Check-in rate      15% -- 0–100
         """
         strengths: List[str] = []
         flags:     List[str] = []
@@ -319,7 +319,7 @@ class EVIInvestorEngine:
         if d.avg_investor_response_hours <= 4:
             strengths.append(f"Fast investor response: {d.avg_investor_response_hours:.1f}h avg")
         if d.avg_investor_response_hours > 24:
-            flags.append(f"Slow investor response: {d.avg_investor_response_hours:.0f}h — DD risk")
+            flags.append(f"Slow investor response: {d.avg_investor_response_hours:.0f}h -- DD risk")
         if d.checkin_consistency_pct >= 90:
             strengths.append(f"High check-in consistency: {d.checkin_consistency_pct:.0f}%")
         if d.checkin_consistency_pct < 50:
@@ -332,10 +332,10 @@ class EVIInvestorEngine:
         self, d: RevenueTractionData
     ) -> Tuple[float, List[str], List[str]]:
         """
-        MRR growth 30d   40% — benchmark: 20% MoM = full
-        MRR growth 90d   20% — trend stability
-        Customer growth  25% — paying customer expansion rate
-        Churn penalty    15% — >5% churn applies penalty (capped −30%)
+        MRR growth 30d   40% -- benchmark: 20% MoM = full
+        MRR growth 90d   20% -- trend stability
+        Customer growth  25% -- paying customer expansion rate
+        Churn penalty    15% -- >5% churn applies penalty (capped −30%)
         """
         strengths: List[str] = []
         flags:     List[str] = []
@@ -359,11 +359,11 @@ class EVIInvestorEngine:
         if mrr30 >= 0.20:
             strengths.append(f"Strong MRR growth: +{mrr30*100:.1f}% MoM")
         if d.mrr_current == 0:
-            flags.append("Pre-revenue — weight this dimension accordingly")
+            flags.append("Pre-revenue -- weight this dimension accordingly")
         if d.churn_rate_pct > 10:
-            flags.append(f"High churn: {d.churn_rate_pct:.1f}% monthly — PMF concern")
+            flags.append(f"High churn: {d.churn_rate_pct:.1f}% monthly -- PMF concern")
         if d.churn_rate_pct <= 3 and d.mrr_current > 0:
-            strengths.append(f"Low churn: {d.churn_rate_pct:.1f}% — strong retention signal")
+            strengths.append(f"Low churn: {d.churn_rate_pct:.1f}% -- strong retention signal")
         if d.paying_customers_now > 0 and d.avg_revenue_per_user > 50:
             strengths.append(f"Healthy ARPU: ${d.avg_revenue_per_user:.0f}/customer")
         return round(max(0.0, min(100.0, score)), 2), strengths, flags
@@ -374,10 +374,10 @@ class EVIInvestorEngine:
         self, d: UserGrowthData
     ) -> Tuple[float, List[str], List[str]]:
         """
-        30-day growth    35% — benchmark: 20% MoM
+        30-day growth    35% -- benchmark: 20% MoM
         90-day trend     20%
-        Week-1 retention 25% — strongest PMF signal
-        Organic %        20% — word-of-mouth proxy
+        Week-1 retention 25% -- strongest PMF signal
+        Organic %        20% -- word-of-mouth proxy
         """
         strengths: List[str] = []
         flags:     List[str] = []
@@ -397,9 +397,9 @@ class EVIInvestorEngine:
         if d.week1_retention_pct >= 40:
             strengths.append(f"Strong week-1 retention: {d.week1_retention_pct:.0f}%")
         if d.week1_retention_pct < 20:
-            flags.append(f"Weak week-1 retention: {d.week1_retention_pct:.0f}% — onboarding gap")
+            flags.append(f"Weak week-1 retention: {d.week1_retention_pct:.0f}% -- onboarding gap")
         if d.organic_pct >= 60:
-            strengths.append(f"High organic acquisition: {d.organic_pct:.0f}% — word-of-mouth")
+            strengths.append(f"High organic acquisition: {d.organic_pct:.0f}% -- word-of-mouth")
         if g30 >= 0.30:
             strengths.append(f"Strong user growth: +{g30*100:.1f}% in 30 days")
         return round(max(0.0, min(100.0, score)), 2), strengths, flags
@@ -410,10 +410,10 @@ class EVIInvestorEngine:
         self, d: CapitalEfficiencyData
     ) -> Tuple[float, List[str], List[str]]:
         """
-        Revenue per $ raised  35% — benchmark: $0.30 ARR per $1 raised
-        Runway adequacy       30% — benchmark: 18+ months
-        Revenue per employee  20% — benchmark: $100K ARR/employee
-        Burn efficiency       15% — monthly revenue / monthly burn ratio
+        Revenue per $ raised  35% -- benchmark: $0.30 ARR per $1 raised
+        Runway adequacy       30% -- benchmark: 18+ months
+        Revenue per employee  20% -- benchmark: $100K ARR/employee
+        Burn efficiency       15% -- monthly revenue / monthly burn ratio
         """
         strengths: List[str] = []
         flags:     List[str] = []
@@ -430,7 +430,7 @@ class EVIInvestorEngine:
         if d.runway_months >= 18:
             strengths.append(f"Strong runway: {d.runway_months:.0f} months")
         if d.runway_months < 6:
-            flags.append(f"Critical runway: {d.runway_months:.1f} months — urgent")
+            flags.append(f"Critical runway: {d.runway_months:.1f} months -- urgent")
         if d.revenue_per_dollar_raised >= 0.20:
             strengths.append(f"Capital-efficient: ${d.revenue_per_dollar_raised:.2f} ARR per $1 raised")
         if monthly_arr > 0 and d.monthly_burn_usd > 0:
@@ -451,12 +451,12 @@ class EVIInvestorEngine:
 
         Parameters
         ──────────
-        data            — Complete EVIInvestorInput bundle
-        previous_evi_i  — EVI-I from 30 days ago (trend computation)
+        data            -- Complete EVIInvestorInput bundle
+        previous_evi_i  -- EVI-I from 30 days ago (trend computation)
 
         Returns
         ───────
-        EVIInvestorResult — full signal with narrative ready for investor UI
+        EVIInvestorResult -- full signal with narrative ready for investor UI
         """
         all_s: List[str] = []
         all_f: List[str] = []
@@ -479,7 +479,7 @@ class EVIInvestorEngine:
         if data.days_since_last_update > 14:
             all_f.append(
                 f"Stagnation: {data.days_since_last_update} days without update "
-                f"(decay {decay:.3f} — score -{round((1-decay)*100, 1)}%)"
+                f"(decay {decay:.3f} -- score -{round((1-decay)*100, 1)}%)"
             )
 
         sig, label, emoji = self._classify(adjusted)
@@ -532,7 +532,7 @@ class EVIInvestorEngine:
         ms:    MilestoneDeliveryData,
     ) -> str:
         if sig == EVIInvestorSignal.EXCEPTIONAL:
-            return (f"{name} executing at {score:.0f}/100 — top-quartile velocity. "
+            return (f"{name} executing at {score:.0f}/100 -- top-quartile velocity. "
                     f"{ms.milestones_delivered_30d} milestones/month, MRR ${rev.mrr_current:,.0f}.")
         if sig == EVIInvestorSignal.STRONG:
             return (f"{name} shows strong execution at {score:.0f}/100. "
@@ -550,11 +550,11 @@ class EVIInvestorEngine:
     ) -> List[str]:
         items = []
         if decay < 0.85:
-            items.append("Monitor update frequency — decay penalty active")
+            items.append("Monitor update frequency -- decay penalty active")
         if mdr < 60:
             items.append("Milestone delivery discipline needs improvement before Series A")
         if rta < 40:
-            items.append("Revenue acceleration not yet proven — pre-revenue signals only")
+            items.append("Revenue acceleration not yet proven -- pre-revenue signals only")
         if raw > adj + 5:
             items.append(f"Score adjusted -{round(raw - adj, 1)} pts due to inactivity decay")
         return items
@@ -569,11 +569,11 @@ class InvestorEVIService:
     Service layer for computing and surfacing EVI-I to investors.
 
     API Endpoints served:
-      GET  /api/v1/investor/evi/{project_id}           — latest EVI-I
-      GET  /api/v1/investor/evi/top-performers         — top 20 by EVI-I
-      GET  /api/v1/investor/evi/watchlist/{investor_id} — watchlisted EVI-I
-      GET  /api/v1/investor/evi/trend/{project_id}     — 90-day history
-      GET  /api/v1/investor/evi/signals/alerts         — velocity risk alerts
+      GET  /api/v1/investor/evi/{project_id}           -- latest EVI-I
+      GET  /api/v1/investor/evi/top-performers         -- top 20 by EVI-I
+      GET  /api/v1/investor/evi/watchlist/{investor_id} -- watchlisted EVI-I
+      GET  /api/v1/investor/evi/trend/{project_id}     -- 90-day history
+      GET  /api/v1/investor/evi/signals/alerts         -- velocity risk alerts
     """
 
     def __init__(self) -> None:
@@ -710,7 +710,7 @@ def example_evi_i() -> None:
     display = svc.format_for_dashboard(result)
 
     print("=" * 65)
-    print("TECHIT — EVI FOR INVESTOR INTELLIGENCE")
+    print("TECHIT -- EVI FOR INVESTOR INTELLIGENCE")
     print("=" * 65)
     print(f"\n{result.signal_emoji}  {result.project_name}")
     print(f"   EVI-I Score:   {result.adjusted_evi_i}  ({result.signal_label})")

@@ -15,10 +15,10 @@ This module is the single source of truth for:
 
 Scoring Models Implemented
 ──────────────────────────
-  1.  Global Startup Intelligence Score  (GSIS)  — master composite score
-  2.  Unicorn Potential Score            (UPS)   — 10-driver unicorn model
-  3.  Execution Velocity Index           (EVI)   — founder momentum
-  4.  EVI for Investor Intelligence      (EVI-I) — investor-grade execution signal
+  1.  Global Startup Intelligence Score  (GSIS)  -- master composite score
+  2.  Unicorn Potential Score            (UPS)   -- 10-driver unicorn model
+  3.  Execution Velocity Index           (EVI)   -- founder momentum
+  4.  EVI for Investor Intelligence      (EVI-I) -- investor-grade execution signal
   5.  Revenue Growth Signal              (RGS)
   6.  Beta Satisfaction Score            (BSS)
   7.  Compliance Score                   (CS)
@@ -29,17 +29,17 @@ Scoring Models Implemented
   12. Investor Interest Score            (IIS)
   13. Product Progress Score             (PPS)
   14. Team Strength Score                (TSS)
-  15. Weighted Composite Ranking Score   (WCRS)  — marketplace ranking
+  15. Weighted Composite Ranking Score   (WCRS)  -- marketplace ranking
   16. Investment Score                   (IS)
   17. Match Score                        (MS)
-  18. Decay Factor                       — anti-gaming inactivity penalty
-  19. Impact Score                       — Idea & Solution Hub problem severity
-  20. Problem Priority Score             — Global Problems Board ranking
+  18. Decay Factor                       -- anti-gaming inactivity penalty
+  19. Impact Score                       -- Idea & Solution Hub problem severity
+  20. Problem Priority Score             -- Global Problems Board ranking
 
 New Modules Integrated
 ──────────────────────
-  idea_solution_hub.py    — Problem-Driven pathway, discovery, deployment, impact
-  document_generation.py  — 8-type document factory, export system
+  idea_solution_hub.py    -- Problem-Driven pathway, discovery, deployment, impact
+  document_generation.py  -- 8-type document factory, export system
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ class TaskType(Enum):
     ORG_SPHERE               = "org_sphere"
     INVESTOR_EVI             = "investor_evi"
     GSIS_COMPUTE             = "gsis_compute"
-    # Idea & Solution Hub — Problem-Driven pathway
+    # Idea & Solution Hub -- Problem-Driven pathway
     PROBLEM_ANALYSIS         = "problem_analysis"
     SOLUTION_SYNTHESIS       = "solution_synthesis"
     IMPACT_PREDICTION        = "impact_prediction"
@@ -119,7 +119,7 @@ class TaskType(Enum):
     GRANT_MATCHING           = "grant_matching"
     DISCUSSION_MODERATION    = "discussion_moderation"
     FIELD_FEEDBACK_ANALYSIS  = "field_feedback_analysis"
-    # Document Generation Engine — 8 document types
+    # Document Generation Engine -- 8 document types
     DOCUMENT_EXECUTIVE_SUMMARY    = "document_executive_summary"
     DOCUMENT_BUSINESS_PLAN        = "document_business_plan"
     DOCUMENT_PITCH_DECK           = "document_pitch_deck"
@@ -277,7 +277,7 @@ class SubscriptionAccessControl:
         TaskType.DASHBOARD_INTELLIGENCE, TaskType.WORKSPACE_ASSISTANT,
         TaskType.FEED_INTELLIGENCE, TaskType.GSIS_COMPUTE,
         TaskType.TRAINING_GENERATION,   # adaptive curriculum for all users
-        # Idea & Solution Hub — problem submission and basic impact free
+        # Idea & Solution Hub -- problem submission and basic impact free
         TaskType.PROBLEM_ANALYSIS, TaskType.IMPACT_PREDICTION,
         TaskType.FIELD_FEEDBACK_ANALYSIS, TaskType.DISCUSSION_MODERATION,
     }
@@ -286,10 +286,10 @@ class SubscriptionAccessControl:
         TaskType.RECOMMENDATION_ENGINE, TaskType.MATCHING,
         TaskType.TRAINING_GENERATION, TaskType.PROFILE_ANALYSIS,
         TaskType.SUMMARY, TaskType.EMBEDDINGS,
-        # Idea & Solution Hub — discovery and matching available to Builders
+        # Idea & Solution Hub -- discovery and matching available to Builders
         TaskType.PROBLEM_DISCOVERY, TaskType.SOLUTION_MATCHING,
         TaskType.FEASIBILITY_ESTIMATE,
-        # Document Generation — quick docs available to Builders
+        # Document Generation -- quick docs available to Builders
         TaskType.DOCUMENT_EXECUTIVE_SUMMARY, TaskType.DOCUMENT_UNICORN_REPORT,
     }
     _FOUNDER_PRO = _BUILDER | {
@@ -298,21 +298,21 @@ class SubscriptionAccessControl:
         TaskType.EXECUTION_ROADMAP, TaskType.PIVOT_INTELLIGENCE,
         TaskType.CODE_REVIEW, TaskType.EXECUTIVE_SUMMARY,
         TaskType.ORG_SPHERE, TaskType.RISK_ANALYSIS,
-        # Idea & Solution Hub — full conversion, deployment, grants
+        # Idea & Solution Hub -- full conversion, deployment, grants
         TaskType.SOLUTION_SYNTHESIS, TaskType.DEPLOYMENT_PLANNING,
         TaskType.GRANT_MATCHING,
-        # Document Generation — full suite except investor-only types
+        # Document Generation -- full suite except investor-only types
         TaskType.DOCUMENT_BUSINESS_PLAN, TaskType.DOCUMENT_PITCH_DECK,
         TaskType.DOCUMENT_PRODUCT_ROADMAP, TaskType.DOCUMENT_FINANCIAL_PROJECTION,
         TaskType.DOCUMENT_MARKET_RESEARCH,
-        # Prompt → Live App — scaffold available from Founder Pro upward
+        # Prompt → Live App -- scaffold available from Founder Pro upward
         TaskType.APP_SCAFFOLD_GENERATION, TaskType.APP_DEPLOY_CONFIG,
     }
     _INVESTOR = _FOUNDER_PRO | {
         TaskType.INVESTOR_READINESS, TaskType.INVESTOR_SIGNAL,
         TaskType.BUSINESS_PLAN, TaskType.MARKET_SURVEY_SIMULATION,
         TaskType.INVESTOR_EVI, TaskType.ADMIN_MONITOR,
-        # Document Generation — investor-grade reports
+        # Document Generation -- investor-grade reports
         TaskType.DOCUMENT_INVESTOR_REPORT,
     }
     _ENTERPRISE = set(TaskType)
@@ -340,14 +340,14 @@ class SubscriptionAccessControl:
 
 
 # ============================================================================
-# UNIFIED SCORING ENGINE — ALL 18 MODELS
+# UNIFIED SCORING ENGINE -- ALL 18 MODELS
 # ============================================================================
 
 class ScoringEngine:
     """
     Implements every TechIT mathematical scoring model in one place.
 
-    All methods are @classmethod — no instance state.
+    All methods are @classmethod -- no instance state.
     All outputs are in [0, 100] range unless noted.
     All inputs are normalized internally.
     """
@@ -380,15 +380,15 @@ class ScoringEngine:
     @classmethod
     def compute_gsis(
         cls,
-        product_progress_score:  float,   # PPS   — from workspace data
-        execution_velocity_index: float,  # EVI   — founder momentum
-        market_readiness_score:  float,   # MRS   — launch readiness
-        beta_satisfaction_score: float,   # BSS   — user validation
-        revenue_growth_signal:   float,   # RGS   — monetisation health
-        founder_reputation_score: float,  # FRS   — profile + community
-        community_influence_score: float, # CIS   — hangout/feed signals
-        investor_interest_score:  float,  # IIS   — investor engagement
-        compliance_score:        float,   # CS    — governance
+        product_progress_score:  float,   # PPS   -- from workspace data
+        execution_velocity_index: float,  # EVI   -- founder momentum
+        market_readiness_score:  float,   # MRS   -- launch readiness
+        beta_satisfaction_score: float,   # BSS   -- user validation
+        revenue_growth_signal:   float,   # RGS   -- monetisation health
+        founder_reputation_score: float,  # FRS   -- profile + community
+        community_influence_score: float, # CIS   -- hangout/feed signals
+        investor_interest_score:  float,  # IIS   -- investor engagement
+        compliance_score:        float,   # CS    -- governance
     ) -> Dict:
         """
         GSIS = 0.15·PPS + 0.15·EVI + 0.20·MRS + 0.10·BSS + 0.10·RGS
@@ -435,11 +435,11 @@ class ScoringEngine:
 
     @classmethod
     def _classify_gsis(cls, score: float) -> str:
-        if score >= 85: return "Elite — investor-ready"
-        if score >= 70: return "Strong — market-ready"
-        if score >= 55: return "Developing — on track"
-        if score >= 40: return "Early — needs focus"
-        return "At risk — intervention needed"
+        if score >= 85: return "Elite -- investor-ready"
+        if score >= 70: return "Strong -- market-ready"
+        if score >= 55: return "Developing -- on track"
+        if score >= 40: return "Early -- needs focus"
+        return "At risk -- intervention needed"
 
     @classmethod
     def _compute_alert_score(
@@ -836,7 +836,7 @@ class ScoringEngine:
 
 @dataclass
 class UserContext:
-    """Complete user context — shared across every AI call and scoring computation."""
+    """Complete user context -- shared across every AI call and scoring computation."""
     user_id:              str
     role:                 UserRole
     subscription_tier:    SubscriptionTier
@@ -950,7 +950,7 @@ class ModelRouter:
         TaskType.FEED_INTELLIGENCE:        ModelProvider.OPENAI_GPT4_MINI,
         TaskType.RECOMMENDATION_ENGINE:    ModelProvider.OPENAI_GPT4_MINI,
         TaskType.GSIS_COMPUTE:             ModelProvider.OPENAI_GPT4_MINI,
-        # Idea & Solution Hub — GPT-4 for analysis; Claude for synthesis/grants
+        # Idea & Solution Hub -- GPT-4 for analysis; Claude for synthesis/grants
         TaskType.PROBLEM_ANALYSIS:         ModelProvider.OPENAI_GPT4,
         TaskType.SOLUTION_SYNTHESIS:       ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.IMPACT_PREDICTION:        ModelProvider.OPENAI_GPT4_MINI,
@@ -961,7 +961,7 @@ class ModelRouter:
         TaskType.GRANT_MATCHING:           ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.DISCUSSION_MODERATION:    ModelProvider.OPENAI_GPT4_MINI,
         TaskType.FIELD_FEEDBACK_ANALYSIS:  ModelProvider.OPENAI_GPT4_MINI,
-        # Document Generation — all long-form → Claude Sonnet
+        # Document Generation -- all long-form → Claude Sonnet
         TaskType.DOCUMENT_EXECUTIVE_SUMMARY:    ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.DOCUMENT_BUSINESS_PLAN:        ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.DOCUMENT_PITCH_DECK:           ModelProvider.ANTHROPIC_CLAUDE,
@@ -974,7 +974,7 @@ class ModelRouter:
         TaskType.MATCHING:                 ModelProvider.ANTHROPIC_HAIKU,
         TaskType.PROFILE_ANALYSIS:         ModelProvider.ANTHROPIC_HAIKU,
         TaskType.ADMIN_MONITOR:            ModelProvider.ANTHROPIC_HAIKU,
-        # Prompt → Live App — Claude Sonnet for structured code scaffolds
+        # Prompt → Live App -- Claude Sonnet for structured code scaffolds
         TaskType.APP_SCAFFOLD_GENERATION:  ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.APP_DEPLOY_CONFIG:        ModelProvider.OPENAI_GPT4_MINI,
         # Embeddings → Cohere
@@ -1062,7 +1062,7 @@ class PromptEngine:
             "GTM | Revenue Strategy | Team | Vision. Dense and investor-grade."
         ),
         TaskType.TOUR_GUIDE: (
-            "You are TechIT's AI Tour Guide — the momentum enforcer. Do NOT motivate. Assess. "
+            "You are TechIT's AI Tour Guide -- the momentum enforcer. Do NOT motivate. Assess. "
             "State momentum score, top 3 stagnation risks, prioritised daily action plan (max 5), "
             "and flag decay signals. Be direct and data-driven."
         ),
@@ -1140,7 +1140,7 @@ class PromptEngine:
         TaskType.PROBLEM_ANALYSIS: (
             "You are TechIT's Problem Analyzer. Your role is to expand and structure real-world "
             "problem statements. For the given problem: (1) Identify root causes and systemic factors. "
-            "(2) Map all affected stakeholders — primary, secondary, and indirect. "
+            "(2) Map all affected stakeholders -- primary, secondary, and indirect. "
             "(3) Quantify the scope and severity with available data. "
             "(4) Identify why existing solutions have failed. "
             "(5) Surface hidden dimensions of the problem the user may have missed. "
@@ -1167,11 +1167,11 @@ class PromptEngine:
         ),
         TaskType.FEASIBILITY_ESTIMATE: (
             "You are TechIT's Feasibility Engine. Assess the real-world feasibility of a solution: "
-            "(1) Technical feasibility — can it be built with available technology? "
-            "(2) Operational feasibility — can it be delivered at scale? "
-            "(3) Financial feasibility — are the numbers viable? Estimate cost range. "
-            "(4) Political/regulatory feasibility — are there blockers? "
-            "(5) Timeline estimate — phases and realistic durations. "
+            "(1) Technical feasibility -- can it be built with available technology? "
+            "(2) Operational feasibility -- can it be delivered at scale? "
+            "(3) Financial feasibility -- are the numbers viable? Estimate cost range. "
+            "(4) Political/regulatory feasibility -- are there blockers? "
+            "(5) Timeline estimate -- phases and realistic durations. "
             "Output: feasibility score per dimension (0–100), overall score, and critical blockers."
         ),
         TaskType.PROBLEM_DISCOVERY: (
@@ -1271,33 +1271,33 @@ class PromptEngine:
         ),
         # ── Prompt → Live App Engine ───────────────────────────────────────
         TaskType.APP_SCAFFOLD_GENERATION: (
-            "You are TechIT's App Scaffold Engine — the fastest path from idea to running code. "
+            "You are TechIT's App Scaffold Engine -- the fastest path from idea to running code. "
             "Given a startup's venture profile (problem, solution, market, tech stack), generate a "
             "complete, production-ready application scaffold. Output MUST be structured JSON with "
             "these exact keys:\n"
             "  scaffold_type: string (e.g. 'nextjs_supabase')\n"
             "  pages: array of {route, component_name, description, auth_required}\n"
-            "  schema_sql: string — complete Postgres/Supabase CREATE TABLE statements\n"
+            "  schema_sql: string -- complete Postgres/Supabase CREATE TABLE statements\n"
             "  api_routes: array of {method, path, description, auth_required, request_body, response}\n"
-            "  env_template: string — .env.example content with all required variables\n"
+            "  env_template: string -- .env.example content with all required variables\n"
             "  components: array of {name, purpose, props}\n"
-            "  setup_steps: array of strings — exact commands to run after download\n"
+            "  setup_steps: array of strings -- exact commands to run after download\n"
             "  estimated_build_hours: number\n"
             "Rules: Use Next.js 14 App Router + Supabase + Tailwind CSS by default. "
             "Match the stack to the venture profile. Keep schema normalised. "
             "Every table must have id (UUID), created_at, updated_at. "
-            "Auth uses Supabase Auth — never roll your own. "
-            "Output ONLY valid JSON — no markdown, no explanation, no code fences."
+            "Auth uses Supabase Auth -- never roll your own. "
+            "Output ONLY valid JSON -- no markdown, no explanation, no code fences."
         ),
         TaskType.APP_DEPLOY_CONFIG: (
             "You are TechIT's Deployment Configuration Engine. "
             "Given an app scaffold, generate the exact deployment configuration files. "
             "Output structured JSON with keys:\n"
-            "  vercel_json: string — vercel.json content\n"
-            "  supabase_seed_sql: string — seed data SQL\n"
-            "  github_actions_yml: string — CI/CD workflow YAML\n"
-            "  deploy_steps: array of strings — exact CLI commands for 1-click deploy\n"
-            "  deploy_url_pattern: string — expected Vercel URL format\n"
+            "  vercel_json: string -- vercel.json content\n"
+            "  supabase_seed_sql: string -- seed data SQL\n"
+            "  github_actions_yml: string -- CI/CD workflow YAML\n"
+            "  deploy_steps: array of strings -- exact CLI commands for 1-click deploy\n"
+            "  deploy_url_pattern: string -- expected Vercel URL format\n"
             "Output ONLY valid JSON."
         ),
     }
@@ -1403,13 +1403,13 @@ class SafetyEngine:
         For semantic similarity (cosine distance on embeddings), use the
         pgvector `idea_similarity_check` SQL query in REFERENCE_QUERIES
         (database_schema.py). That query runs as the techit_system role
-        (BYPASSRLS) and never returns idea_text — only project_id + score.
+        (BYPASSRLS) and never returns idea_text -- only project_id + score.
 
         Parameters
         ──────────
         query_fingerprint     SHA-256 of the new idea being checked
         stored_fingerprints   List of fingerprints from idea_embeddings table
-        threshold             Not used for exact match — reserved for fuzzy
+        threshold             Not used for exact match -- reserved for fuzzy
 
         Returns
         ───────
@@ -1575,7 +1575,7 @@ async def _demo() -> None:
         revenue_growth_signal=40, founder_reputation_score=72,
         community_influence_score=50, investor_interest_score=35, compliance_score=80,
     )
-    print(f"GSIS: {gsis['gsis']} — {gsis['classification']}")
+    print(f"GSIS: {gsis['gsis']} -- {gsis['classification']}")
     print(f"Alert Score: {gsis['alert_score']} | Alert: {gsis['alert_triggered']}")
 
     evi_i = ScoringEngine.compute_evi_investor(85, 87, 94, 85, 81, 80, days_since_last_update=3)

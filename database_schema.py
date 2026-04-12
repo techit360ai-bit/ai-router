@@ -5,13 +5,13 @@ Complete PostgreSQL + pgvector schema for the TechIT AI Incubation Platform.
 
 Design Principles
 ─────────────────
-1. Prompts are data — versioned, A/B-testable, never hardcoded
+1. Prompts are data -- versioned, A/B-testable, never hardcoded
 2. Three-tier memory: Redis (short-term) | PostgreSQL (structured) | Vector DB (semantic)
-3. Event-driven — every significant action is a logged event
-4. IP protection built-in — idea fingerprinting + leak detection
-5. Hybrid billing — subscription + PAYG credit ledger, immutable
-6. All scores snapshotted — trend analysis, investor reports, decay tracking
-7. Training is adaptive — no fixed week numbers, time-to-MVP driven
+3. Event-driven -- every significant action is a logged event
+4. IP protection built-in -- idea fingerprinting + leak detection
+5. Hybrid billing -- subscription + PAYG credit ledger, immutable
+6. All scores snapshotted -- trend analysis, investor reports, decay tracking
+7. Training is adaptive -- no fixed week numbers, time-to-MVP driven
 
 Table Groups
 ────────────
@@ -341,7 +341,7 @@ class CreditLedger(Base):
 
 
 class CreditPurchase(Base):
-    """PAYG credit pack purchases — for billing reconciliation."""
+    """PAYG credit pack purchases -- for billing reconciliation."""
     __tablename__ = "credit_purchases"
 
     id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -546,7 +546,7 @@ class WCRSHistory(Base):
 
 
 # ============================================================================
-# INVESTOR INTELLIGENCE — EVI-I SNAPSHOTS
+# INVESTOR INTELLIGENCE -- EVI-I SNAPSHOTS
 # ============================================================================
 
 class InvestorEVISnapshot(Base):
@@ -635,7 +635,7 @@ class InvestorAlert(Base):
 # ============================================================================
 
 class Evaluation(Base):
-    """Deep AI assessment of startup quality — multi-stage evaluation."""
+    """Deep AI assessment of startup quality -- multi-stage evaluation."""
     __tablename__ = "evaluations"
 
     id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -782,7 +782,7 @@ class LearnerProfile(Base):
 class PersonalisedCurriculum(Base):
     """
     Generated adaptive curriculum per user.
-    Linked to learner_profile. No fixed week count — duration is computed.
+    Linked to learner_profile. No fixed week count -- duration is computed.
     Post-MVP tracks stored as JSON, unlocked conditionally.
     """
     __tablename__ = "personalised_curricula"
@@ -1155,7 +1155,7 @@ class SolutionProject(Base):
     """
     A solution project converted from a problem discussion.
 
-    Supports ALL solution types — not just startups:
+    Supports ALL solution types -- not just startups:
     startup_for_profit, social_initiative, public_policy,
     community_project, research_project, infrastructure, service_based, hybrid.
     """
@@ -1252,7 +1252,7 @@ class SolutionDeployment(Base):
     """
     A real-world deployment of a validated solution.
 
-    TechIT deploys solutions — not just builds them.
+    TechIT deploys solutions -- not just builds them.
     Deployment modes: pilot, NGO rollout, government, startup launch, CSR, community.
     Full checklist tracking with partner onboarding and field feedback linkage.
     """
@@ -1486,11 +1486,11 @@ class AppScaffold(Base):
     canonical one.
 
     Scaffold types supported:
-      nextjs_supabase   — Next.js 14 + Supabase + Tailwind (default 80%)
-      nextjs_prisma     — Next.js 14 + PostgreSQL + Prisma
-      react_firebase    — React 18 + Firebase
-      expo_supabase     — Expo (React Native) + Supabase
-      fastapi_supabase  — FastAPI + Supabase (API-only)
+      nextjs_supabase   -- Next.js 14 + Supabase + Tailwind (default 80%)
+      nextjs_prisma     -- Next.js 14 + PostgreSQL + Prisma
+      react_firebase    -- React 18 + Firebase
+      expo_supabase     -- Expo (React Native) + Supabase
+      fastapi_supabase  -- FastAPI + Supabase (API-only)
 
     Deploy status lifecycle:
       pending → deploying → deployed → failed
@@ -1544,7 +1544,7 @@ class AppScaffold(Base):
 
 
 # ============================================================================
-# REFERENCE SQL — KEY QUERIES
+# REFERENCE SQL -- KEY QUERIES
 # ============================================================================
 
 REFERENCE_QUERIES = {
@@ -1668,7 +1668,7 @@ REFERENCE_QUERIES = {
     """,
 
     "top_priority_problems": """
-        -- Global Problems Board — ranked by priority score
+        -- Global Problems Board -- ranked by priority score
         SELECT pn.id, pn.title, pn.category, pn.urgency,
                pn.location, pn.impact_score, pn.priority_score,
                pn.engagement_count, pn.is_ai_discovered,
@@ -1809,7 +1809,7 @@ CREATE POLICY project_investor_visibility ON projects
 -- The leak detection query (idea_similarity_check) runs as techit_system role,
 -- which has BYPASSRLS privilege specifically for cross-project similarity checks.
 -- This is the ONLY cross-project read permitted, and only for IP protection.
--- It never returns idea_text — only project_id and similarity score.
+-- It never returns idea_text -- only project_id and similarity score.
 """
 
 
@@ -1834,7 +1834,7 @@ def apply_rls_policies(engine) -> None:
                 try:
                     conn.execute(stmt + ";")
                 except Exception as e:
-                    # Policy may already exist — safe to continue
+                    # Policy may already exist -- safe to continue
                     if "already exists" not in str(e).lower():
                         print(f"⚠️  RLS statement skipped: {e}")
         print("✅ Row-Level Security policies applied")
@@ -1856,7 +1856,7 @@ def setup_extensions(engine) -> None:
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════╗
-║            TECHIT DATABASE SCHEMA — PRODUCTION READY        ║
+║            TECHIT DATABASE SCHEMA -- PRODUCTION READY        ║
 ╠══════════════════════════════════════════════════════════════╣
 ║ Core:        users, projects                                 ║
 ║ AI:          ai_prompts, ai_outputs, ai_audio_outputs        ║

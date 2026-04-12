@@ -1,17 +1,17 @@
 """
-TECHIT — DOCUMENT GENERATION ENGINE
+TECHIT -- DOCUMENT GENERATION ENGINE
 ======================================
 Module: document_generation.py
-Layer:  Incubation Hub — Document Factory
+Layer:  Incubation Hub -- Document Factory
 
 Design Philosophy
 ─────────────────
 Founders spend weeks writing business plans and days creating pitch decks.
-TechIT eliminates this entirely — generating every document in minutes,
+TechIT eliminates this entirely -- generating every document in minutes,
 from the analysis already computed by the platform.
 
 The Document Generation Engine is:
-  "Notion + McKinsey Report + Pitch Deck — generated instantly."
+  "Notion + McKinsey Report + Pitch Deck -- generated instantly."
 
 It sits AFTER analysis and converts AI outputs into:
   → investor-ready
@@ -29,8 +29,8 @@ Position in Incubation Hub
   Idea Intake       (existing)
   AI Evaluation     (existing)
   Startup Builder   (existing)
-  Idea & Solution Hub (new — idea_solution_hub.py)
-  📄 Document Generation (NEW — this file)
+  Idea & Solution Hub (new -- idea_solution_hub.py)
+  📄 Document Generation (NEW -- this file)
   Cohorts           (existing)
   Training Ecosystem (existing)
 
@@ -38,14 +38,14 @@ Route: /incubator/documents
 
 8 Document Types
 ─────────────────
-  1. Executive Summary      — 1–2 pages, investor-facing
-  2. Full Business Plan     — 10–25 pages, comprehensive
-  3. Pitch Deck             — slide-by-slide structure
-  4. Investor Report        — deep analysis with EVI-I and signals
-  5. Unicorn Analysis Report — 10 drivers, benchmarking, insights
-  6. Product Roadmap        — MVP → Beta → Launch → Scale
-  7. Financial Projection   — revenue model, cost structure, forecast
-  8. Market Research Report — TAM/SAM/SOM, trends, competition
+  1. Executive Summary      -- 1–2 pages, investor-facing
+  2. Full Business Plan     -- 10–25 pages, comprehensive
+  3. Pitch Deck             -- slide-by-slide structure
+  4. Investor Report        -- deep analysis with EVI-I and signals
+  5. Unicorn Analysis Report -- 10 drivers, benchmarking, insights
+  6. Product Roadmap        -- MVP → Beta → Launch → Scale
+  7. Financial Projection   -- revenue model, cost structure, forecast
+  8. Market Research Report -- TAM/SAM/SOM, trends, competition
 
 New TaskTypes added to ai_router_core.py
 ─────────────────────────────────────────
@@ -89,7 +89,7 @@ class DocumentType(Enum):
 
 class DocumentStyle(Enum):
     CONCISE     = "concise"     # shortest, highest density
-    STANDARD    = "standard"    # balanced — default
+    STANDARD    = "standard"    # balanced -- default
     DETAILED    = "detailed"    # maximum depth
 
 
@@ -214,7 +214,7 @@ INPUTS AVAILABLE:
 GENERAL RULES:
   - Output must be clear, structured, and professional
   - Use headings and numbered sections
-  - Avoid fluff — focus on clarity and density
+  - Avoid fluff -- focus on clarity and density
   - Adapt tone to target audience
   - Use bullet points where they aid clarity
   - Ensure logical flow from problem → solution → market → execution
@@ -317,40 +317,40 @@ DOCUMENT TYPE: Pitch Deck (Slide Structure)
 Format the output as a structured slide-by-slide outline.
 Each slide should have: TITLE, KEY POINTS (3–5 bullets), VISUALS SUGGESTED.
 
-SLIDE 1 — COVER
+SLIDE 1 -- COVER
   Company name, tagline, presenter, date
 
-SLIDE 2 — PROBLEM
+SLIDE 2 -- PROBLEM
   Pain point, who suffers, scale, failed alternatives
 
-SLIDE 3 — SOLUTION
+SLIDE 3 -- SOLUTION
   Product/service, how it works, core value prop
 
-SLIDE 4 — MARKET OPPORTUNITY
+SLIDE 4 -- MARKET OPPORTUNITY
   TAM/SAM/SOM, why the timing is right
 
-SLIDE 5 — PRODUCT
+SLIDE 5 -- PRODUCT
   Key features, demo screenshot description, tech differentiator
 
-SLIDE 6 — TRACTION
+SLIDE 6 -- TRACTION
   Users, revenue, growth rate, key milestones, retention
 
-SLIDE 7 — BUSINESS MODEL
+SLIDE 7 -- BUSINESS MODEL
   Revenue streams, pricing, unit economics
 
-SLIDE 8 — GO-TO-MARKET
+SLIDE 8 -- GO-TO-MARKET
   Acquisition strategy, channels, early partnerships
 
-SLIDE 9 — COMPETITION
+SLIDE 9 -- COMPETITION
   Competitive matrix, our position, unfair advantage
 
-SLIDE 10 — TEAM
+SLIDE 10 -- TEAM
   Founders and key hires, relevant expertise, advisors
 
-SLIDE 11 — FINANCIAL PROJECTIONS
+SLIDE 11 -- FINANCIAL PROJECTIONS
   3-year revenue forecast, key assumptions, path to profitability
 
-SLIDE 12 — THE ASK
+SLIDE 12 -- THE ASK
   Funding amount, use of funds, milestones to next round, vision
 
 Output format:
@@ -396,7 +396,7 @@ Generate an institutional-grade investor analysis report:
    Bull case, bear case, key assumptions, deal breakers.
 
 9. INVESTMENT RECOMMENDATION
-   Proceed / Watch / Pass — with rationale.
+   Proceed / Watch / Pass -- with rationale.
    Suggested valuation range (if data permits).
    Key diligence questions.
 
@@ -414,9 +414,9 @@ Generate the full TechIT Unicorn Probability Report:
 
 2. THE 10 UNICORN DRIVER BREAKDOWN
    For each of the 10 drivers, provide:
-   — Driver name and weight
-   — Score (0–10) with explanation
-   — What would improve this score
+   -- Driver name and weight
+   -- Score (0–10) with explanation
+   -- What would improve this score
    Drivers:
    1. Market Size (15%)           6. Network Effects (10%)
    2. Problem Severity (12%)      7. Revenue Model Strength (10%)
@@ -426,10 +426,10 @@ Generate the full TechIT Unicorn Probability Report:
 
 3. DILEEP RAO BENCHMARK ANALYSIS
    4-dimension RAG assessment:
-   — Market scale (Red / Amber / Green)
-   — Founder skill (Red / Amber / Green)
-   — Financing (Red / Amber / Green)
-   — Venture stage (Red / Amber / Green)
+   -- Market scale (Red / Amber / Green)
+   -- Founder skill (Red / Amber / Green)
+   -- Financing (Red / Amber / Green)
+   -- Venture stage (Red / Amber / Green)
 
 4. COMPARATIVE BENCHMARKING
    How does this venture compare to typical companies at this stage?
@@ -456,21 +456,21 @@ Generate a structured product roadmap:
 2. CURRENT STATE
    What exists today. What users can do. Known limitations.
 
-3. PHASE 1 — MVP (Month 1–3)
+3. PHASE 1 -- MVP (Month 1–3)
    Core features to validate the hypothesis.
    Success criteria. Key milestones.
 
-4. PHASE 2 — BETA (Month 3–6)
+4. PHASE 2 -- BETA (Month 3–6)
    Feature extensions based on user feedback.
    Performance improvements. Onboarding optimisation.
    Success criteria.
 
-5. PHASE 3 — LAUNCH (Month 6–12)
+5. PHASE 3 -- LAUNCH (Month 6–12)
    Public launch features. Scale infrastructure.
    Monetisation activation. Key partnerships.
    Success criteria.
 
-6. PHASE 4 — SCALE (Month 12–24)
+6. PHASE 4 -- SCALE (Month 12–24)
    Expansion features. New markets. Enterprise tier.
    Platform / ecosystem plays.
    Success criteria.
@@ -533,9 +533,9 @@ Generate a comprehensive market research document:
    Key players and market dynamics.
 
 2. MARKET SIZE
-   TAM (Total Addressable Market) — global potential.
-   SAM (Serviceable Addressable Market) — realistic reach.
-   SOM (Serviceable Obtainable Market) — achievable in 3 years.
+   TAM (Total Addressable Market) -- global potential.
+   SAM (Serviceable Addressable Market) -- realistic reach.
+   SOM (Serviceable Obtainable Market) -- achievable in 3 years.
    Methodology and data sources.
 
 3. MARKET TRENDS
@@ -548,8 +548,8 @@ Generate a comprehensive market research document:
    Unmet needs per segment.
 
 5. COMPETITOR LANDSCAPE
-   Direct competitors — features, pricing, market share.
-   Indirect competitors — alternative solutions.
+   Direct competitors -- features, pricing, market share.
+   Indirect competitors -- alternative solutions.
    Competitive matrix (feature comparison).
    Our differentiation and positioning.
 
@@ -571,23 +571,23 @@ Format: Data-first, citation-conscious, visual-suggestion included.
     # ── STYLE MODIFIERS ────────────────────────────────────────────────────
 
     STYLE_MODIFIERS: Dict[DocumentStyle, str] = {
-        DocumentStyle.CONCISE:  "\nSTYLE: CONCISE — Be maximally dense. Cut every non-essential sentence. Prioritise data over narrative.",
-        DocumentStyle.STANDARD: "\nSTYLE: STANDARD — Balance depth with readability. Use clear structure. One key insight per section.",
-        DocumentStyle.DETAILED: "\nSTYLE: DETAILED — Maximum depth. Expand all analysis. Include sub-sections. Support every claim with reasoning.",
+        DocumentStyle.CONCISE:  "\nSTYLE: CONCISE -- Be maximally dense. Cut every non-essential sentence. Prioritise data over narrative.",
+        DocumentStyle.STANDARD: "\nSTYLE: STANDARD -- Balance depth with readability. Use clear structure. One key insight per section.",
+        DocumentStyle.DETAILED: "\nSTYLE: DETAILED -- Maximum depth. Expand all analysis. Include sub-sections. Support every claim with reasoning.",
     }
 
     # ── AUDIENCE MODIFIERS ─────────────────────────────────────────────────
 
     AUDIENCE_MODIFIERS: Dict[DocumentAudience, str] = {
-        DocumentAudience.FOUNDER_USE:   "\nAUDIENCE: FOUNDER — Internal operations focus. Be direct and actionable. Highlight risks honestly.",
-        DocumentAudience.INVESTORS:     "\nAUDIENCE: INVESTORS — Lead with market size and defensibility. Quantify everything. Anticipate due diligence questions.",
-        DocumentAudience.ACCELERATORS:  "\nAUDIENCE: ACCELERATORS — Emphasise founder capability, learning velocity, and traction quality.",
+        DocumentAudience.FOUNDER_USE:   "\nAUDIENCE: FOUNDER -- Internal operations focus. Be direct and actionable. Highlight risks honestly.",
+        DocumentAudience.INVESTORS:     "\nAUDIENCE: INVESTORS -- Lead with market size and defensibility. Quantify everything. Anticipate due diligence questions.",
+        DocumentAudience.ACCELERATORS:  "\nAUDIENCE: ACCELERATORS -- Emphasise founder capability, learning velocity, and traction quality.",
     }
 
     # ── INVESTOR MODE ADDITION ─────────────────────────────────────────────
 
     INVESTOR_MODE_ADDITION = """
-INVESTOR MODE ENABLED — Add these sections at the end:
+INVESTOR MODE ENABLED -- Add these sections at the end:
 
 INVESTOR SUMMARY PAGE:
   • Investment opportunity in one sentence
@@ -597,14 +597,14 @@ INVESTOR SUMMARY PAGE:
 
 RISK SCORING:
   Rate each risk area 1–5:
-  • Market risk:        [score] — [rationale]
-  • Execution risk:     [score] — [rationale]
-  • Technical risk:     [score] — [rationale]
-  • Competitive risk:   [score] — [rationale]
-  • Regulatory risk:    [score] — [rationale]
+  • Market risk:        [score] -- [rationale]
+  • Execution risk:     [score] -- [rationale]
+  • Technical risk:     [score] -- [rationale]
+  • Competitive risk:   [score] -- [rationale]
+  • Regulatory risk:    [score] -- [rationale]
 
 RECOMMENDATION:
-  Proceed / Watch / Pass — with one paragraph rationale.
+  Proceed / Watch / Pass -- with one paragraph rationale.
 """
 
     def build_prompt(
@@ -1022,7 +1022,7 @@ class DocumentGenerationService:
         task_type_str = self.TASK_TYPE_MAP.get(dt, "document_executive_summary")
         task_type     = TaskType[task_type_str.upper().replace("-", "_")] if hasattr(TaskType, task_type_str.upper().replace("-", "_")) else TaskType.EXECUTIVE_SUMMARY
 
-        # AI call — long-form generation uses Claude Sonnet
+        # AI call -- long-form generation uses Claude Sonnet
         max_tokens_map = {
             DocumentType.EXECUTIVE_SUMMARY:       2000,
             DocumentType.BUSINESS_PLAN:           8000,
@@ -1052,7 +1052,7 @@ class DocumentGenerationService:
         doc = GeneratedDocument(
             project_id=project_id, user_id=user_context.user_id,
             document_type=dt, style=sty, audience=aud,
-            title=f"{startup.get('startup_name', 'TechIT')} — {dt.value.replace('_', ' ').title()}",
+            title=f"{startup.get('startup_name', 'TechIT')} -- {dt.value.replace('_', ' ').title()}",
             content=ai_resp.output,
             structured_output=structured,
             word_count=word_count, page_estimate=pages,
@@ -1099,7 +1099,7 @@ class DocumentGenerationService:
         analysis_results: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/documents/batch — 8 credits, Investor+
+        POST /api/v1/documents/batch -- 8 credits, Investor+
 
         Generate multiple documents in one call.
         Useful for investor pack preparation (exec summary + pitch deck + financials).
@@ -1129,7 +1129,7 @@ class DocumentGenerationService:
         section: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/documents/{document_id}/edit — 2 credits, Builder+
+        POST /api/v1/documents/{document_id}/edit -- 2 credits, Builder+
 
         AI-powered in-document editing.
         User highlights a section and gives an instruction:
@@ -1160,7 +1160,7 @@ class DocumentGenerationService:
 
     def get_available_templates(self) -> List[Dict[str, Any]]:
         """
-        GET /api/v1/documents/templates — 0 credits, Free+
+        GET /api/v1/documents/templates -- 0 credits, Free+
 
         Return all available document types with metadata for the UI card grid.
         """
@@ -1199,7 +1199,7 @@ class DocumentGenerationService:
         expiry_days: Optional[int] = 30
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/documents/{document_id}/share — 0 credits, Free+
+        POST /api/v1/documents/{document_id}/share -- 0 credits, Free+
         """
         link = self.export_svc.generate_shareable_link(document_id, expiry_days)
         return {
@@ -1226,7 +1226,7 @@ def example_document_generation() -> None:
         "industry":        "Healthtech",
         "problem":         "Rural patients in Sub-Saharan Africa cannot access specialist doctors",
         "solution":        "AI-powered telemedicine with real-time triage and remote diagnostics",
-        "revenue_model":   "B2B SaaS — hospitals pay per consultation minute",
+        "revenue_model":   "B2B SaaS -- hospitals pay per consultation minute",
         "market_size":     "$4.5B African digital health market by 2027",
         "team":            "CEO (former WHO), CTO (ex-Google Health), COO (Safaricom)",
         "traction":        "47 paying hospitals, $12,500 MRR, 820 active users",
@@ -1241,7 +1241,7 @@ def example_document_generation() -> None:
     }
 
     print("=" * 65)
-    print("TECHIT — DOCUMENT GENERATION ENGINE DEMO")
+    print("TECHIT -- DOCUMENT GENERATION ENGINE DEMO")
     print("=" * 65)
 
     templates = DocumentGenerationService.__new__(DocumentGenerationService)

@@ -1,5 +1,5 @@
 # TECHIT AI INCUBATION PLATFORM v3.0
-## Complete Unified AI Orchestration Layer — Production Implementation
+## Complete Unified AI Orchestration Layer -- Production Implementation
 
 > **YOU ARE NOT BUILDING A GPT WRAPPER.**
 > **YOU ARE BUILDING THE EXECUTION INTELLIGENCE LAYER FOR THE GLOBAL STARTUP ECOSYSTEM.**
@@ -10,9 +10,9 @@
 
 TechIT solves the most critical failure in the global startup ecosystem:
 
-> *90% of startups fail — not because of bad technology, but because of strategy failure, execution failure, and lack of structured support. The top reasons: No market need (42%), Ran out of cash (29%), Wrong team (23%). These are all strategy and execution problems.*
+> *90% of startups fail -- not because of bad technology, but because of strategy failure, execution failure, and lack of structured support. The top reasons: No market need (42%), Ran out of cash (29%), Wrong team (23%). These are all strategy and execution problems.*
 
-TechIT introduces a new infrastructure category: **Startup Execution Infrastructure** — a unified AI-native platform where startups validate, build, measure, and prove readiness to investors.
+TechIT introduces a new infrastructure category: **Startup Execution Infrastructure** -- a unified AI-native platform where startups validate, build, measure, and prove readiness to investors.
 
 ---
 
@@ -23,7 +23,7 @@ techit-ai-router/
 ├── ai_router_core.py          # Brain: 20 scoring models, 49 TaskTypes, model routing
 ├── agent_orchestration.py     # 33 agents + venture pipeline + event routing
 ├── database_schema.py         # 41 PostgreSQL tables + pgvector + billing schema
-├── integration_guide.py       # 18 service classes — every TechIT feature
+├── integration_guide.py       # 18 service classes -- every TechIT feature
 ├── billing_system.py          # Hybrid subscription+PAYG billing, paywalls, referrals
 ├── investor_evi.py            # EVI-I: 6-dimensional investor execution signal
 ├── training_module.py         # Adaptive training: time-to-MVP engine, 35 modules
@@ -96,7 +96,7 @@ Every score is computed by `ScoringEngine` in `ai_router_core.py`.
 | 16 | **IS** | `0.30·MR + 0.25·Traction + 0.15·Team + 0.15·RiskInverse + 0.10·Growth + 0.05·Diff` | Investment attractiveness |
 | 17 | **MatchScore** | `(0.30·Skill + 0.20·Goal + 0.15·Exec + 0.15·Avail + 0.10·Trust + 0.10·Domain) × 100` | Team compatibility |
 | 18 | **Decay** | `e^(−0.02 × days_inactive)` | Anti-gaming inactivity penalty |
-| 19 | **Impact Score** | `0.30·PA + 0.25·SEV + 0.20·SCALE + 0.15·SUS + 0.10·MEAS` | Idea & Solution Hub — problem/solution severity |
+| 19 | **Impact Score** | `0.30·PA + 0.25·SEV + 0.20·SCALE + 0.15·SUS + 0.10·MEAS` | Idea & Solution Hub -- problem/solution severity |
 | 20 | **Problem Priority Score** | `0.25·IS + 0.25·URG + 0.20·FUND + 0.15·POL + 0.15·TIME` | Global Problems Board ranking |
 
 ---
@@ -159,13 +159,13 @@ Every score is computed by `ScoringEngine` in `ai_router_core.py`.
 Two tracks run **simultaneously**:
 
 ```
-TRACK A — Subscription (monthly plan)
+TRACK A -- Subscription (monthly plan)
   Includes monthly credit allocation.
   Unlocks feature tiers and paywalls.
   Subscription credits always deducted first.
 
-TRACK B — Pay-As-You-Go (PAYG)
-  Purchased credit packs — never expire.
+TRACK B -- Pay-As-You-Go (PAYG)
+  Purchased credit packs -- never expire.
   Activate when subscription credits exhaust.
   Higher per-credit rate than subscription.
 
@@ -194,14 +194,14 @@ HYBRID RESOLUTION:
 *"Let them taste value, then block progress."*
 
 ```
-Idea scored 82% →  block full roadmap    → "Unlock Builder — $29/month"
-3 matches found →  block contact         → "Start Building — $29/month"
-Investor viewing → block reply           → "Unlock Scale — $99/month"
+Idea scored 82% →  block full roadmap    → "Unlock Builder -- $29/month"
+3 matches found →  block contact         → "Start Building -- $29/month"
+Investor viewing → block reply           → "Unlock Scale -- $99/month"
 ```
 
 ---
 
-## EVI-I — Investor Execution Signal
+## EVI-I -- Investor Execution Signal
 
 The **EVI-I** (in `investor_evi.py`) answers: *"Is this team executing fast enough?"*
 
@@ -210,12 +210,12 @@ Six independent sub-dimensions, decay-adjusted:
 ```
 EVI-I = 0.25·MDR + 0.20·IS + 0.15·TRV + 0.20·RTA + 0.10·UGM + 0.10·CEV
 
-MDR  Milestone Delivery Rate        — are they shipping what they committed?
-IS   Iteration Speed                — how fast do they learn?
-TRV  Team Response Velocity         — how fast do they respond to investors?
-RTA  Revenue Traction Acceleration  — is revenue compounding?
-UGM  User Growth Momentum           — user base growing faster over time?
-CEV  Capital Efficiency Velocity    — more output per dollar?
+MDR  Milestone Delivery Rate        -- are they shipping what they committed?
+IS   Iteration Speed                -- how fast do they learn?
+TRV  Team Response Velocity         -- how fast do they respond to investors?
+RTA  Revenue Traction Acceleration  -- is revenue compounding?
+UGM  User Growth Momentum           -- user base growing faster over time?
+CEV  Capital Efficiency Velocity    -- more output per dollar?
 
 DecayFactor = e^(−0.02 × days_inactive)
 EVI-I_adj   = EVI-I_raw × DecayFactor
@@ -225,7 +225,7 @@ Signals: 85+ 🔥 Exceptional | 70–84 🚀 Strong | 55–69 📈 Moderate | 40
 
 ---
 
-## Adaptive Training — No Fixed Weeks
+## Adaptive Training -- No Fixed Weeks
 
 The training system (in `training_module.py`) **never says "Week 1"**.
 
@@ -246,8 +246,8 @@ base_weeks  (from project stage)
 
 **Two Curriculum Zones:**
 
-Zone 1 — Pre-MVP: Validation → Build → Launch (22 modules)
-Zone 2 — Post-MVP: Growth + Revenue + Fundraising + Scale + Operations (15 modules)
+Zone 1 -- Pre-MVP: Validation → Build → Launch (22 modules)
+Zone 2 -- Post-MVP: Growth + Revenue + Fundraising + Scale + Operations (15 modules)
 
 Post-MVP modules unlock conditionally:
 - Growth → requires `stage = beta`
@@ -295,7 +295,7 @@ pivot_detected             → Re-trigger validation modules
 
 ## Idea & Solution Hub
 
-The **Problem-Driven pathway** — TechIT's edge over every other startup platform.
+The **Problem-Driven pathway** -- TechIT's edge over every other startup platform.
 
 ```
 Most platforms start with: "I have a startup idea"
@@ -305,8 +305,8 @@ TechIT also serves:        "Here is a real-world problem that needs solving"
 ### Two Entry Pathways
 
 ```
-A. IDEA-DRIVEN  (existing)  — "I want to build X" → Startup Builder
-B. PROBLEM-DRIVEN (new)     — "Here is a problem" → Idea & Solution Hub
+A. IDEA-DRIVEN  (existing)  -- "I want to build X" → Startup Builder
+B. PROBLEM-DRIVEN (new)     -- "Here is a problem" → Idea & Solution Hub
 ```
 
 ### Hub Sections (Route: /incubator/solutions)
@@ -434,7 +434,7 @@ TechIT generates everything in minutes.
 ### Investor Pack (One-Click)
 
 ```python
-# POST /api/v1/documents/investor-pack  — 8 credits, Investor+
+# POST /api/v1/documents/investor-pack  -- 8 credits, Investor+
 # Generates all 4 in one call:
 {
   "documents": [
@@ -492,7 +492,7 @@ TechIT gives you a running product.
 
 ### The Insight
 
-Every competing platform — Bolt.new, v0.dev, Lovable, Replit Agent — generates code from a user prompt. They are fast. But they are **blind**. They know nothing about the market size, the unicorn potential score, the competitive landscape, the investor signals, or the decay factor. They generate code that runs but may build the wrong product.
+Every competing platform -- Bolt.new, v0.dev, Lovable, Replit Agent -- generates code from a user prompt. They are fast. But they are **blind**. They know nothing about the market size, the unicorn potential score, the competitive landscape, the investor signals, or the decay factor. They generate code that runs but may build the wrong product.
 
 TechIT generates code **from intelligence**. By the time the scaffold is generated, the platform has already:
 
@@ -569,7 +569,7 @@ Scaffold → Live product → Founder shares → New user signs up
 
 ## Competitive Positioning
 
-TechIT is not competing with any single platform. It is combining what they all do — and doing it in one place, with AI.
+TechIT is not competing with any single platform. It is combining what they all do -- and doing it in one place, with AI.
 
 | Platform | What They Do | What They Miss |
 |----------|-------------|----------------|
@@ -579,7 +579,7 @@ TechIT is not competing with any single platform. It is combining what they all 
 | AngelList / Carta | Investor matching + cap table | No product building, no execution tracking |
 | Canopy / Visible | Investor reporting | No idea validation, no product, no training |
 | Replit Agent | Code + deploy in browser | No market intelligence, no unicorn scoring, no deal flow |
-| **TechIT** | **All of the above, unified, AI-native** | — |
+| **TechIT** | **All of the above, unified, AI-native** | -- |
 
 ### Why Winners Win
 
@@ -587,7 +587,7 @@ Facebook was not the first social network. WhatsApp was not the first messaging 
 
 TechIT's answer to "what is the one thing?":
 
-> **From idea to investor-ready product — without leaving the platform.**
+> **From idea to investor-ready product -- without leaving the platform.**
 
 Not "we help startups." Not "we connect founders." Not "we generate business plans."
 
@@ -599,7 +599,7 @@ Not "we help startups." Not "we connect founders." Not "we generate business pla
 TechIT = (Bolt.new + YC Library + Notion + AngelList + Stripe Atlas) × AI
 ```
 
-No other platform has all five. TechIT does. And they are unified — data flows from idea evaluation into the scaffold, from the scaffold into investor signals, from investor signals into the EVI-I score.
+No other platform has all five. TechIT does. And they are unified -- data flows from idea evaluation into the scaffold, from the scaffold into investor signals, from investor signals into the EVI-I score.
 
 That data flywheel is the moat.
 
@@ -607,13 +607,13 @@ That data flywheel is the moat.
 
 ## Installation Guide
 
-### Table of Contents — Installation
+### Table of Contents -- Installation
 
 1. [System Requirements](#1-system-requirements)
 2. [Obtaining API Keys](#2-obtaining-api-keys)
 3. [Clone the Repository](#3-clone-the-repository)
 4. [Environment Configuration](#4-environment-configuration)
-5. [Docker — Local Development Setup](#5-docker--local-development-setup)
+5. [Docker -- Local Development Setup](#5-docker--local-development-setup)
 6. [Database Initialisation](#6-database-initialisation)
 7. [Verify All Services](#7-verify-all-services)
 8. [Running the API](#8-running-the-api)
@@ -623,9 +623,9 @@ That data flywheel is the moat.
 12. [Pinecone Vector Store Setup (Optional)](#12-pinecone-vector-store-setup-optional)
 13. [Voice / Audio Setup (Optional)](#13-voice--audio-setup-optional)
 14. [Running Tests](#14-running-tests)
-15. [Production Deployment — AWS](#15-production-deployment--aws)
-16. [Production Deployment — Kubernetes](#16-production-deployment--kubernetes)
-17. [CI/CD Pipeline — GitHub Actions](#17-cicd-pipeline--github-actions)
+15. [Production Deployment -- AWS](#15-production-deployment--aws)
+16. [Production Deployment -- Kubernetes](#16-production-deployment--kubernetes)
+17. [CI/CD Pipeline -- GitHub Actions](#17-cicd-pipeline--github-actions)
 18. [Monitoring Setup](#18-monitoring-setup)
 19. [Common Errors and Fixes](#19-common-errors-and-fixes)
 20. [Post-Installation Checklist](#20-post-installation-checklist)
@@ -647,7 +647,7 @@ That data flywheel is the moat.
 **Verify your environment before proceeding:**
 
 ```bash
-# Python version — must be 3.11 or higher
+# Python version -- must be 3.11 or higher
 python3 --version
 # Expected: Python 3.11.x or 3.12.x
 
@@ -679,7 +679,7 @@ TechIT requires API keys from external services. Collect these before proceeding
 1. Go to [platform.openai.com](https://platform.openai.com)
 2. Sign in → click your profile → **API keys**
 3. Click **+ Create new secret key** → name it `techit-dev`
-4. Copy immediately — it will not be shown again
+4. Copy immediately -- it will not be shown again
 5. Ensure your account has GPT-4 access (requires payment method on file)
 
 **Anthropic**
@@ -703,7 +703,7 @@ TechIT requires API keys from external services. Collect these before proceeding
 
 #### Optional
 
-**Pinecone** (vector search at scale — pgvector sufficient for < 100K users)
+**Pinecone** (vector search at scale -- pgvector sufficient for < 100K users)
 1. Go to [app.pinecone.io](https://app.pinecone.io) → sign in
 2. **API Keys** → copy your key
 3. Create an index named `techit-embeddings` with **1536 dimensions**, **cosine** metric
@@ -754,7 +754,7 @@ git commit -m "chore: add .gitignore"
 ### 4. Environment Configuration
 
 ```bash
-# Step 1 — Generate the .env file from the built-in template
+# Step 1 -- Generate the .env file from the built-in template
 python3 -c "
 from deployment_architecture import ENV_TEMPLATE
 with open('.env', 'w') as f:
@@ -762,7 +762,7 @@ with open('.env', 'w') as f:
 print('.env created successfully')
 "
 
-# Step 2 — Open and fill in your API keys
+# Step 2 -- Open and fill in your API keys
 nano .env
 # Or use your preferred editor: code .env / vim .env
 
@@ -773,19 +773,19 @@ nano .env
 #   STRIPE_WEBHOOK_SECRET=whsec_...
 #   SECRET_KEY=<generate below>
 
-# Step 3 — Generate a cryptographically secure SECRET_KEY
+# Step 3 -- Generate a cryptographically secure SECRET_KEY
 python3 -c "import secrets; print('SECRET_KEY=' + secrets.token_hex(32))"
 # Copy the output and paste it into your .env file
 
-# Step 4 — Verify no placeholder values remain
+# Step 4 -- Verify no placeholder values remain
 grep "YOUR_KEY_HERE" .env
 # Expected: no output (zero matches)
 
-# Step 5 — Confirm .env is not tracked by git
+# Step 5 -- Confirm .env is not tracked by git
 git status .env
 # Expected: .env should NOT appear (it is gitignored)
 
-# Step 6 — Quick sanity check on key format
+# Step 6 -- Quick sanity check on key format
 python3 -c "
 from dotenv import load_dotenv
 import os
@@ -800,10 +800,10 @@ print('✅ API key format validated')
 
 ---
 
-### 5. Docker — Local Development Setup
+### 5. Docker -- Local Development Setup
 
 ```bash
-# Step 1 — Generate all Docker and dependency files from deployment_architecture.py
+# Step 1 -- Generate all Docker and dependency files from deployment_architecture.py
 python3 -c "
 from deployment_architecture import DOCKER_COMPOSE, DOCKERFILE_API, REQUIREMENTS_TXT
 with open('docker-compose.yml', 'w') as f: f.write(DOCKER_COMPOSE)
@@ -816,27 +816,27 @@ print('✅ Dockerfile.worker')
 print('✅ requirements.txt')
 "
 
-# Step 2 — Pull base images (PostgreSQL with pgvector, Redis)
+# Step 2 -- Pull base images (PostgreSQL with pgvector, Redis)
 docker compose pull
 
-# Step 3 — Build the API and Worker images
+# Step 3 -- Build the API and Worker images
 docker compose build
-# This installs all Python dependencies — takes 3–5 minutes on first run
+# This installs all Python dependencies -- takes 3–5 minutes on first run
 
-# Step 4 — Start all services in detached mode
+# Step 4 -- Start all services in detached mode
 docker compose up -d
 # Services started: api · worker · scheduler · postgres · redis · flower
 
-# Step 5 — Confirm all containers are healthy
+# Step 5 -- Confirm all containers are healthy
 docker compose ps
 # All services should show Status: healthy or running
 
-# Step 6 — Tail logs until you see the brain initialise
+# Step 6 -- Tail logs until you see the brain initialise
 docker compose logs -f api
 # Wait for the line: techit_ai_brain_ready  agents=21  services=16
 # Press Ctrl+C to exit log tail
 
-# Step 7 — Quick smoke test
+# Step 7 -- Quick smoke test
 curl http://localhost:8000/health
 # Expected: {"status":"healthy","ai_brain":"operational","version":"2.0.0","agents":21}
 ```
@@ -856,11 +856,11 @@ curl http://localhost:8000/health
 ### 6. Database Initialisation
 
 ```bash
-# Step 1 — Wait for PostgreSQL to be fully ready
+# Step 1 -- Wait for PostgreSQL to be fully ready
 docker compose exec postgres pg_isready -U techit
 # Expected: /var/run/postgresql:5432 - accepting connections
 
-# Step 2 — Enable required PostgreSQL extensions
+# Step 2 -- Enable required PostgreSQL extensions
 docker compose exec postgres psql -U techit -d techit_db -c "
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
@@ -869,11 +869,11 @@ SELECT extname, extversion FROM pg_extension WHERE extname IN ('vector','uuid-os
 "
 # Expected: 3 rows showing each extension with its version
 
-# Step 3 — Initialise Alembic for migrations
+# Step 3 -- Initialise Alembic for migrations
 docker compose exec api alembic init migrations
 
-# Step 4 — Configure Alembic to recognise TechIT's schema
-# Edit migrations/env.py — replace the target_metadata line:
+# Step 4 -- Configure Alembic to recognise TechIT's schema
+# Edit migrations/env.py -- replace the target_metadata line:
 docker compose exec api python3 -c "
 content = open('migrations/env.py').read()
 content = content.replace(
@@ -884,17 +884,17 @@ open('migrations/env.py', 'w').write(content)
 print('✅ migrations/env.py configured')
 "
 
-# Step 5 — Generate the initial migration (detects all 30 tables)
+# Step 5 -- Generate the initial migration (detects all 30 tables)
 docker compose exec api alembic revision --autogenerate -m "initial_techit_schema_v2"
 
-# Step 6 — Apply migrations (creates all 30 tables)
+# Step 6 -- Apply migrations (creates all 30 tables)
 docker compose exec api alembic upgrade head
 
-# Step 7 — Verify tables were created
+# Step 7 -- Verify tables were created
 docker compose exec postgres psql -U techit -d techit_db -c "\dt" | grep -c "public"
 # Expected: 30 or higher
 
-# Step 8 — Deploy SQL functions and live views
+# Step 8 -- Deploy SQL functions and live views
 python3 -c "
 from deployment_architecture import INIT_SQL
 with open('init_functions.sql', 'w') as f:
@@ -904,7 +904,7 @@ print('init_functions.sql written')
 docker compose exec -T postgres psql -U techit -d techit_db < init_functions.sql
 # Expected output includes: CREATE FUNCTION × 3, CREATE VIEW × 3
 
-# Step 9 — Create pgvector indexes for semantic search performance
+# Step 9 -- Create pgvector indexes for semantic search performance
 docker compose exec postgres psql -U techit -d techit_db -c "
 CREATE INDEX IF NOT EXISTS idx_user_skill_vec
     ON user_skill_embeddings USING ivfflat (embedding vector_cosine_ops)
@@ -916,7 +916,7 @@ SELECT indexname FROM pg_indexes WHERE indexname LIKE 'idx_%_vec';
 "
 # Expected: 2 index names returned
 
-# Step 10 — Confirm schema is complete
+# Step 10 -- Confirm schema is complete
 docker compose exec postgres psql -U techit -d techit_db -c "
 SELECT table_name
 FROM information_schema.tables
@@ -956,8 +956,8 @@ ups  = ScoringEngine.compute_unicorn_potential_score({k:8.0 for k in ScoringEngi
 evi_i = ScoringEngine.compute_evi_investor(85,87,94,85,81,80,3)
 decay = ScoringEngine.compute_decay_factor(30)
 
-print(f'GSIS:  {gsis[\"gsis\"]}  — {gsis[\"classification\"]}')
-print(f'UPS:   {ups[\"unicorn_potential_score\"]}%  — {ups[\"classification\"]}')
+print(f'GSIS:  {gsis[\"gsis\"]}  -- {gsis[\"classification\"]}')
+print(f'UPS:   {ups[\"unicorn_potential_score\"]}%  -- {ups[\"classification\"]}')
 print(f'EVI-I: {evi_i[\"adjusted_evi_i\"]}  (decay: {evi_i[\"decay_factor\"]})')
 print(f'Decay(30d): {decay}  (expected: {round(math.exp(-0.02*30), 6)})')
 assert 0 < gsis['gsis'] < 100
@@ -1071,7 +1071,7 @@ plan = dep.create_deployment_plan(sol, DeploymentMode.NGO_ROLLOUT, 'West Africa'
 assert len(plan.deployment_checklist) > 0
 
 print(f'✅ Idea & Solution Hub verified:')
-print(f'   Impact Score:    {impact["impact_score"]} — {impact["classification"]}')
+print(f'   Impact Score:    {impact["impact_score"]} -- {impact["classification"]}')
 print(f'   Priority Score:  {prio["priority_score"]} {prio["colour"]}')
 print(f'   Discovery:       {len(found)} problems found')
 print(f'   Deployment plan: {len(plan.deployment_checklist)} checklist items')
@@ -1133,7 +1133,7 @@ print(f'Module library:       {len(mods)} canonical modules')
 print(f'Estimated weeks:      {ls[\"estimated_weeks_to_mvp\"]} weeks to MVP')
 print(f'Pre-MVP modules:      {result[\"pre_mvp\"][\"total_modules\"]}')
 print(f'First module:         {result[\"next_module\"][\"title\"]}')
-assert '12 weeks' not in str(result), 'Fixed week reference found — should be dynamic'
+assert '12 weeks' not in str(result), 'Fixed week reference found -- should be dynamic'
 print('✅ Adaptive training verified (no fixed week references)')
 "
 
@@ -1188,7 +1188,7 @@ docker compose logs -f api
 # Swagger UI:  http://localhost:8000/docs
 # ReDoc:       http://localhost:8000/redoc
 
-# Test a live endpoint — daily check-in
+# Test a live endpoint -- daily check-in
 curl -s -X POST http://localhost:8000/api/v1/tour-guide/daily-check-in \
   -H "Content-Type: application/json" \
   -d '{"user_id": "test_founder"}' | python3 -m json.tool
@@ -1255,12 +1255,12 @@ docker compose up -d --scale worker=4
 Use this if you cannot run Docker or want a lighter development setup.
 
 ```bash
-# Step 1 — Create and activate a virtual environment
+# Step 1 -- Create and activate a virtual environment
 python3.11 -m venv .venv
 source .venv/bin/activate           # Linux / macOS
 # .venv\Scripts\activate            # Windows
 
-# Step 2 — Install Python dependencies
+# Step 2 -- Install Python dependencies
 pip install --upgrade pip
 python3 -c "
 from deployment_architecture import REQUIREMENTS_TXT
@@ -1269,7 +1269,7 @@ with open('requirements.txt', 'w') as f:
 "
 pip install -r requirements.txt
 
-# Step 3 — Install and start PostgreSQL with pgvector
+# Step 3 -- Install and start PostgreSQL with pgvector
 # Ubuntu / Debian:
 sudo apt-get install postgresql-16
 sudo apt-get install postgresql-16-pgvector
@@ -1283,7 +1283,7 @@ brew install pgvector
 brew services start postgresql@16
 createdb techit_db
 
-# Step 4 — Install and start Redis
+# Step 4 -- Install and start Redis
 # Ubuntu:
 sudo apt-get install redis-server
 sudo systemctl start redis
@@ -1292,7 +1292,7 @@ sudo systemctl start redis
 brew install redis
 brew services start redis
 
-# Step 5 — Set environment variables directly
+# Step 5 -- Set environment variables directly
 export DATABASE_URL="postgresql://techit:password@localhost:5432/techit_db"
 export REDIS_URL="redis://localhost:6379"
 export OPENAI_API_KEY="sk-..."
@@ -1300,7 +1300,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 export ENVIRONMENT="development"
 
-# Step 6 — Run migrations
+# Step 6 -- Run migrations
 python3 -c "
 from deployment_architecture import INIT_SQL
 with open('init_functions.sql', 'w') as f:
@@ -1309,13 +1309,13 @@ with open('init_functions.sql', 'w') as f:
 alembic upgrade head
 psql -U techit -d techit_db < init_functions.sql
 
-# Step 7 — Start the API
+# Step 7 -- Start the API
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
-# Step 8 — Start Celery workers (separate terminal)
+# Step 8 -- Start Celery workers (separate terminal)
 celery -A workers.celery worker --loglevel=info -Q default,ai_heavy,ai_light,scheduled
 
-# Step 9 — Start Celery Beat scheduler (separate terminal)
+# Step 9 -- Start Celery Beat scheduler (separate terminal)
 celery -A workers.celery beat --loglevel=info
 ```
 
@@ -1323,10 +1323,10 @@ celery -A workers.celery beat --loglevel=info
 
 ### 11. Seeding the AI Prompt Registry
 
-All AI system prompts live in the `ai_prompts` database table — not in code. Seed them after running migrations.
+All AI system prompts live in the `ai_prompts` database table -- not in code. Seed them after running migrations.
 
 ```bash
-# Step 1 — Generate the SQL seed file from the PromptEngine registry
+# Step 1 -- Generate the SQL seed file from the PromptEngine registry
 docker compose exec api python3 -c "
 from ai_router_core import PromptEngine, TaskType
 
@@ -1359,10 +1359,10 @@ with open('/tmp/seed_prompts.sql', 'w') as f:
 print(f'Generated {len(inserts)} prompt inserts → /tmp/seed_prompts.sql')
 "
 
-# Step 2 — Execute the seed SQL
+# Step 2 -- Execute the seed SQL
 docker compose exec -T postgres psql -U techit -d techit_db < /tmp/seed_prompts.sql
 
-# Step 3 — Verify prompts were inserted
+# Step 3 -- Verify prompts were inserted
 docker compose exec postgres psql -U techit -d techit_db -c "
 SELECT name, prompt_type, credit_cost, is_active
 FROM ai_prompts
@@ -1370,7 +1370,7 @@ ORDER BY name;
 "
 # Expected: one row per TaskType that has a system prompt defined
 
-# Step 4 — Verify prompt count
+# Step 4 -- Verify prompt count
 docker compose exec postgres psql -U techit -d techit_db -c "
 SELECT COUNT(*) as total_prompts FROM ai_prompts WHERE is_active = true;
 "
@@ -1384,19 +1384,19 @@ SELECT COUNT(*) as total_prompts FROM ai_prompts WHERE is_active = true;
 By default TechIT uses **pgvector** for all embedding operations. Pinecone is optional and recommended only when your project count exceeds 50,000 (where pgvector IVFFlat indexes may degrade).
 
 ```bash
-# Step 1 — Create a Pinecone index
+# Step 1 -- Create a Pinecone index
 # Go to app.pinecone.io → Create Index:
 #   Name:       techit-embeddings
 #   Dimensions: 1536   (OpenAI text-embedding-3-small output size)
 #   Metric:     cosine
 #   Pod type:   p1.x1  (starter) or s1.x1  (serverless)
 
-# Step 2 — Add Pinecone credentials to .env
+# Step 2 -- Add Pinecone credentials to .env
 echo "PINECONE_API_KEY=your-key-here" >> .env
 echo "PINECONE_INDEX=techit-embeddings" >> .env
 echo "PINECONE_ENV=us-east-1-aws" >> .env
 
-# Step 3 — Verify Pinecone connection
+# Step 3 -- Verify Pinecone connection
 docker compose exec api python3 -c "
 import os
 from pinecone import Pinecone
@@ -1409,9 +1409,9 @@ print(f'   Dimensions: {stats.dimension}')
 print(f'   Vectors:    {stats.total_vector_count}')
 "
 
-# Step 4 — The MatchingAgent and idea similarity search will automatically
+# Step 4 -- The MatchingAgent and idea similarity search will automatically
 # use Pinecone when PINECONE_API_KEY is set in the environment.
-# No code changes required — the routing is handled by the embedding layer.
+# No code changes required -- the routing is handled by the embedding layer.
 ```
 
 ---
@@ -1421,22 +1421,22 @@ print(f'   Vectors:    {stats.total_vector_count}')
 ElevenLabs provides voice narration for Tour Guide daily briefings and training module audio.
 
 ```bash
-# Step 1 — Add ElevenLabs credentials to .env
+# Step 1 -- Add ElevenLabs credentials to .env
 echo "ELEVENLABS_API_KEY=your-key-here" >> .env
 
-# Step 2 — Verify connection and list available voices
+# Step 2 -- Verify connection and list available voices
 docker compose exec api python3 -c "
 import os, requests
 headers = {'xi-api-key': os.getenv('ELEVENLABS_API_KEY')}
 resp = requests.get('https://api.elevenlabs.io/v1/voices', headers=headers)
 resp.raise_for_status()
 voices = resp.json()['voices']
-print(f'✅ ElevenLabs connected — {len(voices)} voices available')
+print(f'✅ ElevenLabs connected -- {len(voices)} voices available')
 for v in voices[:5]:
     print(f'   {v[\"voice_id\"]}  {v[\"name\"]}')
 "
 
-# Step 3 — Test audio generation for Tour Guide
+# Step 3 -- Test audio generation for Tour Guide
 docker compose exec api python3 -c "
 import os, requests
 headers = {
@@ -1458,7 +1458,7 @@ with open('/tmp/test_briefing.mp3', 'wb') as f:
 print(f'✅ Audio generated: {len(audio_resp.content):,} bytes → /tmp/test_briefing.mp3')
 "
 
-# Step 4 — Add S3 bucket for audio storage (recommended for production)
+# Step 4 -- Add S3 bucket for audio storage (recommended for production)
 # Add to .env:
 #   AWS_ACCESS_KEY_ID=...
 #   AWS_SECRET_ACCESS_KEY=...
@@ -1492,9 +1492,9 @@ assert CreditCost.cost_for(TaskType.BUSINESS_PLAN) == 4
 assert CreditCost.cost_for(TaskType.TOUR_GUIDE) == 0
 assert SubscriptionAccessControl.is_allowed(SubscriptionTier.FREE, TaskType.TRAINING_GENERATION)
 assert not SubscriptionAccessControl.is_allowed(SubscriptionTier.FREE, TaskType.BUSINESS_PLAN)
-print('✅ [1/7] ai_router_core — 18 models, credit economy, access control')
+print('✅ [1/7] ai_router_core -- 18 models, credit economy, access control')
 
-# 2. Billing — hybrid resolution
+# 2. Billing -- hybrid resolution
 from billing_system import HybridCreditEngine, UserBillingState, BillingRole, FOUNDER_BUILDER, FOUNDER_FREE
 from billing_system import PaywallEnforcementService, ReferralEngine, RevenueProjectionModel, ALL_PLANS
 from datetime import datetime, timedelta
@@ -1506,14 +1506,14 @@ assert r.approved and r.from_subscription==1 and r.from_payg==1
 assert not engine.resolve(st('founder_free',FOUNDER_FREE,5,0),'business_plan').approved
 proj = RevenueProjectionModel().project_90_day()
 assert proj['total_paying'] == 178_500 and proj['mrr_usd'] == 15_712_500
-print('✅ [2/7] billing_system — hybrid resolution, paywall, revenue model')
+print('✅ [2/7] billing_system -- hybrid resolution, paywall, revenue model')
 
 # 3. EVI-I
 from investor_evi import InvestorEVIService, EVIInvestorSignal
 svc = InvestorEVIService()
 r_strong = svc.compute_from_startup({'project_id':'p1','project_name':'Test','industry':'H','stage':'beta','days_since_update':3,'milestones':{'committed_30d':8,'delivered_30d':7,'avg_days_complete':5.5,'late_count':1,'quality_score':8.2},'iteration':{'versions_30d':4,'feedback_fix_days':2.5,'feature_cycle_days':8.0,'pivots_90d':1},'response':{'investor_response_hrs':3.5,'collab_response_hrs':6.0,'sessions_per_week':9.0,'checkin_pct':95.0},'revenue':{'mrr_current':12500,'mrr_30d':9800,'mrr_90d':5200,'customers_now':47,'customers_30d':35,'arpu':265,'churn_pct':3.2},'users':{'users_now':820,'users_30d':610,'users_90d':310,'dau_wau':0.55,'week1_retention':52.0,'organic_pct':68.0},'capital':{'total_raised':250000,'monthly_burn':18000,'runway_months':14.0,'rev_per_dollar':0.60,'team_size':4,'rev_per_employee':37500}},previous_evi_i=65.0)
 assert r_strong.signal == EVIInvestorSignal.STRONG and r_strong.evi_trend == 'accelerating'
-print(f'✅ [3/7] investor_evi — EVI-I={r_strong.adjusted_evi_i} trend={r_strong.evi_trend}')
+print(f'✅ [3/7] investor_evi -- EVI-I={r_strong.adjusted_evi_i} trend={r_strong.evi_trend}')
 
 # 4. Adaptive training
 from training_module import ModuleLibrary, AdaptiveTrainingService
@@ -1522,13 +1522,13 @@ res = AdaptiveTrainingService().generate_curriculum('u1','founder','health','ide
 assert res['learning_summary']['estimated_weeks_to_mvp'] > 0
 assert '12 weeks' not in str(res)
 assert res['next_module']['module_id'] == 'fv_001'
-print(f'✅ [4/7] training_module — {len(mods)} modules, {res[\"learning_summary\"][\"estimated_weeks_to_mvp\"]}wk to MVP (dynamic)')
+print(f'✅ [4/7] training_module -- {len(mods)} modules, {res[\"learning_summary\"][\"estimated_weeks_to_mvp\"]}wk to MVP (dynamic)')
 
 # 5. Database schema
 from database_schema import Base, REFERENCE_QUERIES
 tables = {t.name for t in Base.metadata.tables.values()}
 assert len(tables) >= 30 and len(REFERENCE_QUERIES) >= 7
-print(f'✅ [5/7] database_schema — {len(tables)} tables, {len(REFERENCE_QUERIES)} reference queries')
+print(f'✅ [5/7] database_schema -- {len(tables)} tables, {len(REFERENCE_QUERIES)} reference queries')
 
 # 6. All 21 agents + event routing
 from agent_orchestration import AgentOrchestrator, AgentType
@@ -1541,7 +1541,7 @@ async def test_routing():
         results = await orch.handle_event({'type':etype,'user_context':uc,'idea':{'title':'T','industry':'h','problem':'P','solution':'S'},'criteria':{}})
         assert len(results) == expected, f'{etype}: {len(results)} != {expected}'
 asyncio.run(test_routing())
-print(f'✅ [6/7] agent_orchestration — 21 agents, event routing verified')
+print(f'✅ [6/7] agent_orchestration -- 21 agents, event routing verified')
 
 # 7. Integration guide
 from integration_guide import TechITAIBrain, GSISService
@@ -1549,11 +1549,11 @@ brain = TechITAIBrain()
 assert brain is TechITAIBrain()
 gsis_val = GSISService(brain).compute({'pps':65,'evi':70,'mrs':60,'bss':55,'rgs':40,'frs':72,'cis':50,'iis':35,'cs':80})
 assert 0 < gsis_val['gsis'] < 100
-print(f'✅ [7/7] integration_guide — singleton, GSIS={gsis_val[\"gsis\"]}')
+print(f'✅ [7/7] integration_guide -- singleton, GSIS={gsis_val[\"gsis\"]}')
 
 print()
 print('=' * 60)
-print('✅ ALL 7 MODULES VERIFIED — ZERO FAILURES')
+print('✅ ALL 7 MODULES VERIFIED -- ZERO FAILURES')
 print('=' * 60)
 "
 
@@ -1566,7 +1566,7 @@ docker compose exec api python3 -c "from training_module import ModuleLibrary; p
 
 ---
 
-### 15. Production Deployment — AWS
+### 15. Production Deployment -- AWS
 
 ```bash
 # ── Infrastructure provisioning (Terraform or AWS Console) ────────────────
@@ -1627,10 +1627,10 @@ docker push <account>.dkr.ecr.<region>.amazonaws.com/techit-api:latest
 
 ---
 
-### 16. Production Deployment — Kubernetes
+### 16. Production Deployment -- Kubernetes
 
 ```bash
-# Step 1 — Generate the Kubernetes manifest from deployment_architecture.py
+# Step 1 -- Generate the Kubernetes manifest from deployment_architecture.py
 python3 -c "
 from deployment_architecture import K8S_MANIFEST
 with open('k8s-techit.yaml', 'w') as f:
@@ -1638,10 +1638,10 @@ with open('k8s-techit.yaml', 'w') as f:
 print('k8s-techit.yaml written')
 "
 
-# Step 2 — Create the namespace
+# Step 2 -- Create the namespace
 kubectl create namespace techit-prod
 
-# Step 3 — Create secrets (from AWS Secrets Manager or manually)
+# Step 3 -- Create secrets (from AWS Secrets Manager or manually)
 kubectl create secret generic techit-secrets \
     --from-literal=database-url="postgresql://techit:pass@postgres:5432/techit_db" \
     --from-literal=openai-api-key="sk-..." \
@@ -1650,7 +1650,7 @@ kubectl create secret generic techit-secrets \
     --from-literal=redis-url="redis://redis:6379" \
     --namespace techit-prod
 
-# Step 4 — Deploy PostgreSQL with pgvector (or use external RDS)
+# Step 4 -- Deploy PostgreSQL with pgvector (or use external RDS)
 helm repo add bitnami https://charts.bitnami.com/bitnami
 helm install techit-postgres bitnami/postgresql \
     --namespace techit-prod \
@@ -1658,27 +1658,27 @@ helm install techit-postgres bitnami/postgresql \
     --set primary.extraEnvVars[0].name=POSTGRESQL_SHARED_PRELOAD_LIBRARIES \
     --set primary.extraEnvVars[0].value=pg_stat_statements
 
-# Step 5 — Deploy Redis
+# Step 5 -- Deploy Redis
 helm install techit-redis bitnami/redis \
     --namespace techit-prod \
     --set architecture=standalone
 
-# Step 6 — Apply the TechIT manifests
+# Step 6 -- Apply the TechIT manifests
 kubectl apply -f k8s-techit.yaml --namespace techit-prod
 
-# Step 7 — Watch rollout
+# Step 7 -- Watch rollout
 kubectl rollout status deployment/techit-api --namespace techit-prod
 
-# Step 8 — Verify all pods are running
+# Step 8 -- Verify all pods are running
 kubectl get pods --namespace techit-prod
 # Expected: api (3 replicas), worker (2 replicas), scheduler (1 replica)
 
-# Step 9 — View logs
+# Step 9 -- View logs
 kubectl logs -l app=techit-api --namespace techit-prod --tail=50 -f
 
-# Step 10 — Get the external IP
+# Step 10 -- Get the external IP
 kubectl get service techit-api --namespace techit-prod
-# Copy the EXTERNAL-IP — this is your load balancer address
+# Copy the EXTERNAL-IP -- this is your load balancer address
 
 # Useful commands:
 kubectl describe pod <pod-name> --namespace techit-prod   # Diagnose issues
@@ -1688,12 +1688,12 @@ kubectl scale deployment techit-api --replicas=6 --namespace techit-prod  # Manu
 
 ---
 
-### 17. CI/CD Pipeline — GitHub Actions
+### 17. CI/CD Pipeline -- GitHub Actions
 
 Create `.github/workflows/deploy.yml` in your repository:
 
 ```yaml
-name: TechIT — Build, Test, Deploy
+name: TechIT -- Build, Test, Deploy
 
 on:
   push:
@@ -1842,8 +1842,8 @@ docker compose exec api python3 -c "
 import sentry_sdk
 import os
 sentry_sdk.init(dsn=os.getenv('SENTRY_DSN'))
-sentry_sdk.capture_message('TechIT platform health check — Sentry connected')
-print('✅ Test event sent to Sentry — check your Sentry dashboard')
+sentry_sdk.capture_message('TechIT platform health check -- Sentry connected')
+print('✅ Test event sent to Sentry -- check your Sentry dashboard')
 "
 
 # ── Prometheus + Grafana (metrics) ─────────────────────────────────────────
@@ -1896,7 +1896,7 @@ aws cloudwatch put-metric-alarm \
 # ALERT: Celery queue depth > 500 (workers overwhelmed)
 #   Monitor via Redis: LLEN celery (default queue length)
 
-# Flower (Celery monitoring) — already running at http://localhost:5555
+# Flower (Celery monitoring) -- already running at http://localhost:5555
 # For production, secure with basic auth:
 docker compose exec scheduler celery -A workers.celery flower \
     --basic_auth=admin:your-secure-password \
@@ -1918,7 +1918,7 @@ docker compose exec api pip install sqlalchemy psycopg2-binary pgvector
 The user's `subscription_tier` does not have access to the requested `TaskType`. Check `SubscriptionAccessControl.TIER_MAP` in `ai_router_core.py`. Either upgrade the user's tier or verify the operation is appropriate for their plan.
 
 **`TypeError: Object of type UserContext is not JSON serializable`**
-This was a known bug — fixed in the current version. Ensure you are running the latest `ai_router_core.py`. The `SafetyEngine` and `PromptEngine` both use `default=str` in `json.dumps`.
+This was a known bug -- fixed in the current version. Ensure you are running the latest `ai_router_core.py`. The `SafetyEngine` and `PromptEngine` both use `default=str` in `json.dumps`.
 
 **`alembic.util.exc.CommandError: Target database is not up to date`**
 ```bash
@@ -1965,7 +1965,7 @@ docker compose up api  # Restart
 ```
 
 **`PermissionError: Request blocked: Prompt injection detected.`**
-User input contains one of the 13 injection patterns monitored by `SafetyEngine._detect_injection()`. Common false positives: the phrase "act as" in a legitimate business context. To add a whitelist, extend `SafetyEngine.INJECTION_PATTERNS` in `ai_router_core.py` — remove the specific pattern or add pre-processing to escape it before the AI call.
+User input contains one of the 13 injection patterns monitored by `SafetyEngine._detect_injection()`. Common false positives: the phrase "act as" in a legitimate business context. To add a whitelist, extend `SafetyEngine.INJECTION_PATTERNS` in `ai_router_core.py` -- remove the specific pattern or add pre-processing to escape it before the AI call.
 
 **`AssertionError: ip_protected=True required for this TaskType`**
 An AI call that handles proprietary idea or solution content was made without `ip_protected=True`. Check the call site and add `ip_protected=True` to the `AIRequest`. All operations on `IDEA_EVALUATION`, `UNICORN_ANALYSIS`, `BUSINESS_PLAN`, `EXECUTIVE_SUMMARY`, `PIVOT_INTELLIGENCE`, `RISK_ANALYSIS`, `SOLUTION_SYNTHESIS`, `DEPLOYMENT_PLANNING`, `GRANT_MATCHING`, `FEASIBILITY_ESTIMATE`, and all `DOCUMENT_*` types must set `ip_protected=True`.
@@ -1977,14 +1977,14 @@ The application is connecting without setting `app.user_id`:
 conn.execute("SET app.user_id = %s", [str(current_user.id)])
 conn.execute("SET app.user_role = %s", [current_user.role.value])
 ```
-For admin/scheduled Celery tasks that need to bypass RLS, connect as `techit_system` role — **not** as `techit_app`.
+For admin/scheduled Celery tasks that need to bypass RLS, connect as `techit_system` role -- **not** as `techit_app`.
 
-**`idea_embeddings` table is empty — leak detection not firing**
+**`idea_embeddings` table is empty -- leak detection not firing**
 The embedding creation call in `VentureIntakeAgent` and `IdeaSolutionHubService.submit_problem()` is currently a stub. To activate it in production:
 1. Uncomment the `TaskType.EMBEDDINGS` call in `VentureIntakeAgent.execute()`
 2. Add the SQLAlchemy `INSERT INTO idea_embeddings` statement
 3. Run `apply_rls_policies(engine)` from `database_schema.py` to enable row-level isolation
-4. Verify with: `SELECT COUNT(*) FROM idea_embeddings;` — should grow with each new idea submission
+4. Verify with: `SELECT COUNT(*) FROM idea_embeddings;` -- should grow with each new idea submission
 
 **Document generation returns `credits_consumed: 0`**
 The `AIRequest` in `DocumentGenerationService.generate_document()` uses `ip_protected=True` but the mock `_call_llm` returns a placeholder response with no credit deduction. In production, ensure your `AICommandLayer._call_llm()` connects to the real OpenAI/Anthropic API and returns the actual token count for `CreditCost` to deduct correctly.
@@ -2024,8 +2024,8 @@ DATABASE
   □ Document Generation tables present: generated_documents,
       document_exports, document_templates
   □ RLS policies applied: apply_rls_policies(engine) called post-migration
-  □ techit_app role created (non-superuser — RLS always enforced)
-  □ techit_system role created (BYPASSRLS — IP leak detection only)
+  □ techit_app role created (non-superuser -- RLS always enforced)
+  □ techit_system role created (BYPASSRLS -- IP leak detection only)
 
 API
   □ GET /health returns {"status":"healthy","agents":33,"scoring_models":20,"task_types":49}
@@ -2082,7 +2082,7 @@ IP PROTECTION
   □ RLS policy project_owner_policy active on projects table
   □ RLS policy ai_output_owner_policy active on ai_outputs table
   □ RLS policy idea_embedding_owner_policy active on idea_embeddings table
-  □ Investor visibility exception: surfaces score/stage only — never idea_text
+  □ Investor visibility exception: surfaces score/stage only -- never idea_text
   □ IPProtectionService.get_protection_status() returns all 3 layers active=True
 
 IDEA & SOLUTION HUB
@@ -2121,12 +2121,12 @@ CELERY
 
 SECURITY
   □ DEBUG=False in production
-  □ SECRET_KEY is cryptographically random (256-bit) — not the example value
-  □ CORS restricted to your actual domain(s) — not allow_origins=["*"]
+  □ SECRET_KEY is cryptographically random (256-bit) -- not the example value
+  □ CORS restricted to your actual domain(s) -- not allow_origins=["*"]
   □ .env is in .gitignore and NOT committed to git
-  □ API keys stored in AWS Secrets Manager (production) — not .env files
+  □ API keys stored in AWS Secrets Manager (production) -- not .env files
   □ Rate limiting active in Redis
-  □ RLS policies applied via apply_rls_policies(engine) — verify with:
+  □ RLS policies applied via apply_rls_policies(engine) -- verify with:
       SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname = 'public';
   □ techit_app role cannot BYPASSRLS (verify: \du in psql)
   □ techit_system role BYPASSRLS limited to IP detection queries only
@@ -2182,8 +2182,8 @@ MONITORING
 |-------|----------------|
 | Auth | JWT (python-jose) |
 | Authorization | Role + subscription tier gates on every request |
-| AI safety | SafetyEngine — credits, permissions, injection, IP fingerprinting |
-| Data isolation | PostgreSQL RLS — 9 tables, project-scoped, techit_app non-superuser |
+| AI safety | SafetyEngine -- credits, permissions, injection, IP fingerprinting |
+| Data isolation | PostgreSQL RLS -- 9 tables, project-scoped, techit_app non-superuser |
 | Prompt injection | Pattern-matching on 13 known injection templates |
 | Rate limiting | Redis-backed per-user-per-hour counters |
 | Secrets | AWS Secrets Manager in production (never in .env files) |
@@ -2191,14 +2191,14 @@ MONITORING
 
 ### IP Protection Architecture (Three Layers)
 
-**Layer 1 — SHA-256 Fingerprinting**
+**Layer 1 -- SHA-256 Fingerprinting**
 Every `ip_protected=True` AIRequest is stamped with a SHA-256 hash of its payload by `SafetyEngine._fingerprint()` before the AI call. The fingerprint is stored in `ai_outputs.input_data["_ip_fingerprint"]` for audit, in `idea_embeddings.idea_fingerprint` for exact-match deduplication, and returned to callers for storage in project records. `VentureIntakeAgent` fingerprints every startup idea on intake. `IdeaSolutionHubService.submit_problem()` fingerprints every problem submission.
 
-**Layer 2 — Vector Similarity Leak Detection (pgvector)**
-Every idea and solution is embedded using `text-embedding-3-small` (1536 dimensions) and stored in `idea_embeddings`. The `idea_similarity_check` reference query runs cosine similarity across all stored embeddings. Similarity ≥ 0.95 triggers an IP alert and blocks the result. This runs as the `techit_system` role (`BYPASSRLS`) — the query returns only `project_id` and `similarity` score, never `idea_text`. `SafetyEngine.check_similarity_leak()` handles exact-match checking at application level.
+**Layer 2 -- Vector Similarity Leak Detection (pgvector)**
+Every idea and solution is embedded using `text-embedding-3-small` (1536 dimensions) and stored in `idea_embeddings`. The `idea_similarity_check` reference query runs cosine similarity across all stored embeddings. Similarity ≥ 0.95 triggers an IP alert and blocks the result. This runs as the `techit_system` role (`BYPASSRLS`) -- the query returns only `project_id` and `similarity` score, never `idea_text`. `SafetyEngine.check_similarity_leak()` handles exact-match checking at application level.
 
-**Layer 3 — Row-Level Security (PostgreSQL RLS)**
-Applied via `database_schema.apply_rls_policies(engine)` after migration. Covers 9 tables: `projects`, `ai_outputs`, `idea_embeddings`, `generated_documents`, `document_exports`, `solution_projects`, `grant_applications`, `credit_ledger`, `paywall_hits`. The application connects as `techit_app` (non-superuser) so RLS always applies. An investor visibility exception exposes score and stage metadata only — never raw idea text. The `techit_system` role with `BYPASSRLS` is used exclusively for IP leak detection queries.
+**Layer 3 -- Row-Level Security (PostgreSQL RLS)**
+Applied via `database_schema.apply_rls_policies(engine)` after migration. Covers 9 tables: `projects`, `ai_outputs`, `idea_embeddings`, `generated_documents`, `document_exports`, `solution_projects`, `grant_applications`, `credit_ledger`, `paywall_hits`. The application connects as `techit_app` (non-superuser) so RLS always applies. An investor visibility exception exposes score and stage metadata only -- never raw idea text. The `techit_system` role with `BYPASSRLS` is used exclusively for IP leak detection queries.
 
 **Operations protected by `ip_protected=True`**
 
@@ -2221,19 +2221,19 @@ Applied via `database_schema.apply_rls_policies(engine)` after migration. Covers
 
 ## Core Principles
 
-1. **GSIS is the master score** — every section feeds into it; investors and founders see the same truth
-2. **EVI-I is distinct from EVI** — founder momentum ≠ investor execution signal
-3. **Training duration is computed, not scheduled** — time-to-MVP engine, not "Week 1"
-4. **Billing is hybrid** — subscription + PAYG run simultaneously; subscription depletes first
-5. **Paywalls trigger at momentum moments** — taste value, then block progress
-6. **Decay is anti-gaming** — `e^(−0.02×d)` makes inactivity immediately punishing in rankings
-7. **Prompts are data** — stored in `ai_prompts` table, versioned, A/B-testable
-8. **No vendor lock-in** — ModelRouter abstracts all providers with fallback chains
-9. **Everything logs** — every AI execution recorded with cost, credits, model, and tokens
-10. **IP protection is non-negotiable** — ideas fingerprinted, isolated, similarity-monitored
-11. **Problems are first-class citizens** — not every solution is a startup; NGOs, policy, and infrastructure are equal pathways
-12. **Documents are execution outputs** — AI generates investor-ready documents from analysis already computed, eliminating weeks of manual work
-13. **Speed is a feature, not a goal** — from prompt to live scaffold in under 60 seconds; from scaffold to investor-ready company in under 30 days
+1. **GSIS is the master score** -- every section feeds into it; investors and founders see the same truth
+2. **EVI-I is distinct from EVI** -- founder momentum ≠ investor execution signal
+3. **Training duration is computed, not scheduled** -- time-to-MVP engine, not "Week 1"
+4. **Billing is hybrid** -- subscription + PAYG run simultaneously; subscription depletes first
+5. **Paywalls trigger at momentum moments** -- taste value, then block progress
+6. **Decay is anti-gaming** -- `e^(−0.02×d)` makes inactivity immediately punishing in rankings
+7. **Prompts are data** -- stored in `ai_prompts` table, versioned, A/B-testable
+8. **No vendor lock-in** -- ModelRouter abstracts all providers with fallback chains
+9. **Everything logs** -- every AI execution recorded with cost, credits, model, and tokens
+10. **IP protection is non-negotiable** -- ideas fingerprinted, isolated, similarity-monitored
+11. **Problems are first-class citizens** -- not every solution is a startup; NGOs, policy, and infrastructure are equal pathways
+12. **Documents are execution outputs** -- AI generates investor-ready documents from analysis already computed, eliminating weeks of manual work
+13. **Speed is a feature, not a goal** -- from prompt to live scaffold in under 60 seconds; from scaffold to investor-ready company in under 30 days
 
 ---
 
@@ -2241,15 +2241,15 @@ Applied via `database_schema.apply_rls_policies(engine)` after migration. Covers
 
 With this architecture deployed, TechIT becomes:
 
-- **For Founders**: An AI co-founder that evaluates your idea against the Unicorn model, builds your strategy, designs your tech stack, generates your product scaffold, deploys your first live version, tracks your execution with GSIS and EVI-I, and adapts your training to your actual time-to-MVP — all without leaving the platform. Not a plan. A running product.
+- **For Founders**: An AI co-founder that evaluates your idea against the Unicorn model, builds your strategy, designs your tech stack, generates your product scaffold, deploys your first live version, tracks your execution with GSIS and EVI-I, and adapts your training to your actual time-to-MVP -- all without leaving the platform. Not a plan. A running product.
 
-- **For Investors**: A real-time deal flow intelligence engine with EVI-I execution signals on every startup — 6-dimensional, decay-adjusted, narrative-explained. Not just deal flow. Signal.
+- **For Investors**: A real-time deal flow intelligence engine with EVI-I execution signals on every startup -- 6-dimensional, decay-adjusted, narrative-explained. Not just deal flow. Signal.
 
 - **For Builders**: A talent marketplace with AI-matched projects, adaptive role-specific training, and credibility scoring that compounds with every contribution.
 
 - **For Accelerators**: A cohort management system where AI evaluates every team continuously against GSIS, flags stagnation with decay scores, and adapts training to each founder's pace.
 
-- **For NGOs and Governments**: A structured problem-solving infrastructure — submit real-world problems, get AI-synthesised solutions, plan real-world deployments, generate grant applications, and measure field impact. Not a startup tool. A global execution platform.
+- **For NGOs and Governments**: A structured problem-solving infrastructure -- submit real-world problems, get AI-synthesised solutions, plan real-world deployments, generate grant applications, and measure field impact. Not a startup tool. A global execution platform.
 
 - **For Communities and Researchers**: A problem intelligence layer that discovers underserved crises before anyone submits them, matches existing solutions globally, and closes the feedback loop from deployment back to optimisation.
 

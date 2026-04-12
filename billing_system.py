@@ -1,5 +1,5 @@
 """
-TECHIT — HYBRID BILLING SYSTEM
+TECHIT -- HYBRID BILLING SYSTEM
 ================================
 Module: billing_system.py
 Layer:  Revenue Engine + Access Control
@@ -10,15 +10,15 @@ TechIT must feel like a career decision, not a subscription.
 People cancel streaming services. They do not cancel income,
 reputation, or opportunity.
 
-Two Billing Tracks — Running Simultaneously
+Two Billing Tracks -- Running Simultaneously
 ────────────────────────────────────────────
-TRACK A — SUBSCRIPTION
+TRACK A -- SUBSCRIPTION
   Monthly or annual plan per role.
   Includes a monthly credit allocation.
   Unlocks feature tiers and paywalls.
   Best for: regular active users.
 
-TRACK B — PAY-AS-YOU-GO (PAYG)
+TRACK B -- PAY-AS-YOU-GO (PAYG)
   No monthly commitment.
   Buy credit packs that never expire.
   Each AI operation costs a fixed number of credits.
@@ -34,7 +34,7 @@ Role-Based Pricing
 ──────────────────
   Founders     → pay for execution survival and investor access
   Collaborators → pay for career leverage and project income
-  Organisations → NO free tier — every engagement is billable (primary cash engine)
+  Organisations → NO free tier -- every engagement is billable (primary cash engine)
   Investors    → invite-only annual access, premium signal quality
 
 Paywall Philosophy
@@ -93,7 +93,7 @@ class CollaboratorPlan(Enum):
 
 
 class OrganisationPlan(Enum):
-    PROJECT_LAUNCH = "org_project"      # $299/project — no free tier
+    PROJECT_LAUNCH = "org_project"      # $299/project -- no free tier
     GROWTH         = "org_growth"       # $999/project
     ENTERPRISE     = "org_enterprise"   # Custom
 
@@ -142,7 +142,7 @@ class PlanSpec:
     locked_features:     List[str]    # trigger upgrade prompts
     paywall_copy:        str
     upgrade_cta:         str
-    psychology_note:     str          # internal — why this tier converts
+    psychology_note:     str          # internal -- why this tier converts
 
 
 # ── FOUNDER PLANS ──────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ FOUNDER_FREE = PlanSpec(
     features=[
         "1 idea submission",
         "Basic AI idea evaluation (simplified score)",
-        "View-only collaborator matches — no contact",
+        "View-only collaborator matches -- no contact",
         "Tour Guide daily check-in",
         "Dashboard GSIS overview",
         "Feed / Hangout (read-only)",
@@ -173,7 +173,7 @@ FOUNDER_FREE = PlanSpec(
         "Tech stack design",
     ],
     paywall_copy="Your idea scored {score}% market readiness.\nUnlock the full roadmap, risks, and team recommendations.",
-    upgrade_cta="Unlock Builder Plan — $29/month",
+    upgrade_cta="Unlock Builder Plan -- $29/month",
     psychology_note="High score creates urgency. Founder must know more to survive.",
 )
 
@@ -190,7 +190,7 @@ FOUNDER_BUILDER = PlanSpec(
         "GSIS dashboard with all component scores",
         "Team matching with contact access",
         "Market readiness tracker",
-        "Workspace AI — task suggestions and sprint planning",
+        "Workspace AI -- task suggestions and sprint planning",
         "Tour Guide with audio briefings",
         "Adaptive training curriculum (time-to-MVP engine)",
         "AI profile analysis",
@@ -210,7 +210,7 @@ FOUNDER_BUILDER = PlanSpec(
         "EVI-I investor signal",
     ],
     paywall_copy="3 investors are tracking startups in your category.\nUnlock investor visibility and the full business plan.",
-    upgrade_cta="Upgrade to Scale — $99/month",
+    upgrade_cta="Upgrade to Scale -- $99/month",
     psychology_note="Founders on Builder are executing. They upgrade when investors enter the picture.",
 )
 
@@ -227,9 +227,9 @@ FOUNDER_SCALE = PlanSpec(
         "Market survey simulation (AI synthetic research)",
         "Finance strategy report",
         "Investor readiness report",
-        "Investor section — full visibility to investors",
+        "Investor section -- full visibility to investors",
         "EVI-I investor execution signal",
-        "Priority matching — top-ranked in all results",
+        "Priority matching -- top-ranked in all results",
         "Advanced insights and export reports",
         "Org Sphere (full team intelligence)",
         "Market ready certification",
@@ -264,7 +264,7 @@ COLLAB_FREE = PlanSpec(
         "Full adaptive training curriculum",
     ],
     paywall_copy="Paid projects available in your skill area.\nUpgrade to apply and get seen by serious founders.",
-    upgrade_cta="Go Pro — $19/month",
+    upgrade_cta="Go Pro -- $19/month",
     psychology_note="Collaborators upgrade when they see peers earning from projects.",
 )
 
@@ -291,7 +291,7 @@ COLLAB_PRO = PlanSpec(
         "Equity / revenue share tracking",
     ],
     paywall_copy="Unlock the Verified Builder badge and top placement.\nBe the first collaborator founders see.",
-    upgrade_cta="Upgrade to Elite — $49/month",
+    upgrade_cta="Upgrade to Elite -- $49/month",
     psychology_note="Pro builders upgrade to Elite when competing for high-value projects.",
 )
 
@@ -314,7 +314,7 @@ COLLAB_ELITE = PlanSpec(
     locked_features=[],
     paywall_copy="",
     upgrade_cta="",
-    psychology_note="Elite is the career achievement tier — no paywalls above.",
+    psychology_note="Elite is the career achievement tier -- no paywalls above.",
 )
 
 # ── ORGANISATION PLANS ─────────────────────────────────────────────────────
@@ -322,7 +322,7 @@ COLLAB_ELITE = PlanSpec(
 ORG_PROJECT = PlanSpec(
     plan_id="org_project", role=BillingRole.ORGANISATION,
     display_name="Project Launch",
-    price_monthly_usd=0, price_annual_usd=299,   # $299 per project — no monthly
+    price_monthly_usd=0, price_annual_usd=299,   # $299 per project -- no monthly
     monthly_credits=200, payg_credit_rate=0.20,
     max_projects=1, max_team_members=5,
     features=[
@@ -339,7 +339,7 @@ ORG_PROJECT = PlanSpec(
         "Priority talent pool",
     ],
     paywall_copy="Upgrade to Growth for a dedicated Project Manager and priority talent.",
-    upgrade_cta="Upgrade to Growth — $999/project",
+    upgrade_cta="Upgrade to Growth -- $999/project",
     psychology_note="Orgs start here and upgrade after first successful delivery.",
 )
 
@@ -418,7 +418,7 @@ INVESTOR_ACCESS = PlanSpec(
         "White-label reports",
     ],
     paywall_copy="Unlock portfolio monitoring and cohort-level analytics.",
-    upgrade_cta="Upgrade to Institutional — $10,000/year",
+    upgrade_cta="Upgrade to Institutional -- $10,000/year",
     psychology_note="Investors upgrade when managing 5+ startups simultaneously.",
 )
 
@@ -493,11 +493,11 @@ CREDIT_OPERATIONS: Dict[str, CreditOperation] = {
     "unicorn_analysis": CreditOperation(
         "unicorn_analysis", "Unicorn Analysis (Full)", 2, "founder_builder",
         "Your idea scored {score}%.\nUnlock the full unicorn model, driver breakdown, and improvement roadmap.",
-        "Unlock Builder Plan — $29/month"),
+        "Unlock Builder Plan -- $29/month"),
     "market_intelligence": CreditOperation(
         "market_intelligence", "Market Intelligence", 2, "founder_builder",
         "Your target market has strong signals.\nUnlock the full TAM/SAM/SOM analysis and competitor map.",
-        "Unlock Builder Plan — $29/month"),
+        "Unlock Builder Plan -- $29/month"),
     "startup_strategy": CreditOperation(
         "startup_strategy", "Startup Strategy", 3, "founder_builder", None, None),
     "tech_stack_design": CreditOperation(
@@ -505,29 +505,29 @@ CREDIT_OPERATIONS: Dict[str, CreditOperation] = {
     "execution_roadmap": CreditOperation(
         "execution_roadmap", "Execution Roadmap", 2, "founder_builder",
         "Estimated launch: {days} days.\nUnlock milestones, risks, and investor readiness pathway.",
-        "Unlock Market Pathway — $29/month"),
+        "Unlock Market Pathway -- $29/month"),
     "business_plan": CreditOperation(
         "business_plan", "Full Business Plan", 4, "founder_scale",
         "Your investor-grade business plan is ready to generate.\nUnlock Scale plan to export and share.",
-        "Unlock Scale Plan — $99/month"),
+        "Unlock Scale Plan -- $99/month"),
     "investor_readiness": CreditOperation(
         "investor_readiness", "Investor Readiness Report", 2, "founder_scale",
         "3 investors are tracking startups in your category.\nUnlock investor visibility and readiness scoring.",
-        "Unlock Scale Plan — $99/month"),
+        "Unlock Scale Plan -- $99/month"),
     "investor_evi": CreditOperation(
         "investor_evi", "EVI-I Investor Signal", 2, "founder_scale",
         "Your execution velocity is being watched by investors.\nUnlock the full EVI-I signal breakdown.",
-        "Unlock Scale Plan — $99/month"),
+        "Unlock Scale Plan -- $99/month"),
     "market_survey": CreditOperation(
         "market_survey", "Market Survey Simulation", 3, "founder_scale", None, None),
     "matching_contact": CreditOperation(
         "matching_contact", "Contact Matched Collaborator", 1, "founder_builder",
         "{count} collaborators matched your idea.\nUpgrade to connect and start building.",
-        "Start Building Now — $29/month"),
+        "Start Building Now -- $29/month"),
     "paid_project_access": CreditOperation(
         "paid_project_access", "Access Paid Projects", 0, "collab_pro",
         "Paid projects available in your skill area.\nUpgrade to apply and get seen by serious founders.",
-        "Go Pro — $19/month"),
+        "Go Pro -- $19/month"),
     "full_pipeline": CreditOperation(
         "full_pipeline", "Full Venture Pipeline", 12, "founder_scale", None, None),
     "gsis_compute": CreditOperation(
@@ -625,7 +625,7 @@ class HybridCreditEngine:
                 paywall_triggered=True, paywall_copy="Unknown operation.",
             )
 
-        # Step 1 — plan permission
+        # Step 1 -- plan permission
         if not self._plan_permits(state.plan_id, op.min_plan_id):
             copy = self._render_copy(op.paywall_copy, context_vars)
             return CreditResolutionResult(
@@ -639,7 +639,7 @@ class HybridCreditEngine:
                 required_min_plan=op.min_plan_id,
             )
 
-        # Step 2 — credit sufficiency
+        # Step 2 -- credit sufficiency
         total = state.total_credits_available
         cost  = op.credit_cost
         if total < cost:
@@ -657,7 +657,7 @@ class HybridCreditEngine:
                 upgrade_cta="Buy Credits",
             )
 
-        # Step 3 — subscription-first deduction
+        # Step 3 -- subscription-first deduction
         if state.subscription_credits_remaining >= cost:
             from_sub  = cost
             from_payg = 0
@@ -707,7 +707,7 @@ class HybridCreditEngine:
 
 @dataclass
 class PaywallHit:
-    """Recorded every time a user hits a paywall — analytics + A/B testing."""
+    """Recorded every time a user hits a paywall -- analytics + A/B testing."""
     paywall_id:       str
     user_id:          str
     role:             BillingRole
@@ -901,7 +901,7 @@ class ReferralEngine:
         },
         "five_successful_invites": {
             "credits": 0, "credibility_pts": 50, "usd_credit": 0, "free_months": 1,
-            "description": "5 successful referrals — 1 free subscription month",
+            "description": "5 successful referrals -- 1 free subscription month",
         },
     }
 
@@ -1018,10 +1018,10 @@ def example_billing() -> None:
     ledger  = BillingLedger()
 
     print("=" * 65)
-    print("TECHIT — HYBRID BILLING SYSTEM DEMO")
+    print("TECHIT -- HYBRID BILLING SYSTEM DEMO")
     print("=" * 65)
 
-    # Scenario 1: Subscription nearly exhausted — overflow to PAYG
+    # Scenario 1: Subscription nearly exhausted -- overflow to PAYG
     print("\n📋 Scenario 1: Builder subscription exhausted → PAYG overflow")
     state1 = UserBillingState(
         user_id="founder_001", role=BillingRole.FOUNDER,
@@ -1061,7 +1061,7 @@ def example_billing() -> None:
         print(f"   Paywall copy:   {hit.paywall_copy}")
         print(f"   Upgrade CTA:    {hit.upgrade_cta}")
 
-    # Scenario 3: Pure PAYG — subscription exhausted
+    # Scenario 3: Pure PAYG -- subscription exhausted
     print("\n💳 Scenario 3: Pure PAYG run (subscription zeroed out)")
     state3 = UserBillingState(
         user_id="founder_003", role=BillingRole.FOUNDER,

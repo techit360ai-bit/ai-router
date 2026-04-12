@@ -1,5 +1,5 @@
 """
-TECHIT — ADAPTIVE TRAINING MODULE SYSTEM
+TECHIT -- ADAPTIVE TRAINING MODULE SYSTEM
 ==========================================
 Module: training_module.py
 Layer:  Learning Intelligence Layer
@@ -9,7 +9,7 @@ Design Philosophy
 The training system is NOT a fixed 12-week bootcamp.
 
 It is a living curriculum engine that adapts to where a founder
-actually is — not where a schedule assumes they should be.
+actually is -- not where a schedule assumes they should be.
 
 Duration is derived from the learner's time-to-MVP estimate,
 project stage, role, available hours per week, and pace.
@@ -17,18 +17,18 @@ No two founders receive the same plan. No plan is fixed to a calendar.
 
 Two Curriculum Zones
 ────────────────────
-ZONE 1 — PRE-MVP
+ZONE 1 -- PRE-MVP
   Everything needed to go from idea → first live product.
   Duration: computed dynamically from time-to-MVP.
   Goal: shippable MVP with market validation.
 
   Tracks:
-    Founder   — Strategy, validation, business model, fundraising
-    Builder   — Technical execution, architecture, dev workflow
-    Investor  — Deal evaluation, due diligence, portfolio
-    Hybrid    — Founder who is also the primary builder
+    Founder   -- Strategy, validation, business model, fundraising
+    Builder   -- Technical execution, architecture, dev workflow
+    Investor  -- Deal evaluation, due diligence, portfolio
+    Hybrid    -- Founder who is also the primary builder
 
-ZONE 2 — POST-MVP
+ZONE 2 -- POST-MVP
   Everything needed to grow, scale, and operate after launching.
   Triggered automatically when:
     - Market Readiness stage advances past "MVP"
@@ -37,11 +37,11 @@ ZONE 2 — POST-MVP
     - Investor expresses interest (investor_expressed_interest event)
 
   Tracks:
-    Growth      — User acquisition, retention, CAC/LTV
-    Revenue     — Monetisation engineering, pricing iteration
-    Fundraising — Pitch, investor targeting, term sheets
-    Scale       — Team building, infrastructure, international
-    Operations  — Compliance, governance, legal, processes
+    Growth      -- User acquisition, retention, CAC/LTV
+    Revenue     -- Monetisation engineering, pricing iteration
+    Fundraising -- Pitch, investor targeting, term sheets
+    Scale       -- Team building, infrastructure, international
+    Operations  -- Compliance, governance, legal, processes
 
 Time-to-MVP Engine
 ──────────────────
@@ -123,9 +123,9 @@ class ModuleFormat(Enum):
 
 
 class LearningPace(Enum):
-    INTENSIVE = "intensive"   # 3+ hours/day — 40% faster
+    INTENSIVE = "intensive"   # 3+ hours/day -- 40% faster
     STANDARD  = "standard"   # 1–2 hours/day
-    PART_TIME = "part_time"  # < 1 hour/day — 80% slower
+    PART_TIME = "part_time"  # < 1 hour/day -- 80% slower
 
 
 class UnlockTrigger(Enum):
@@ -226,12 +226,12 @@ class PersonalisedCurriculum:
 
 
 # ============================================================================
-# MODULE LIBRARY — 37 CANONICAL MODULES
+# MODULE LIBRARY -- 37 CANONICAL MODULES
 # ============================================================================
 
 class ModuleLibrary:
     """
-    Complete TechIT module library. Modules are canonical — composed into
+    Complete TechIT module library. Modules are canonical -- composed into
     personalised curricula dynamically. Adding a module here makes it
     immediately available to the curriculum engine.
     """
@@ -480,7 +480,7 @@ class ModuleLibrary:
             ),
             TrainingModule(
                 "bb_002", "Authentication and Security Foundations",
-                "Implement auth correctly from day one — mistakes here follow you forever.",
+                "Implement auth correctly from day one -- mistakes here follow you forever.",
                 "Implement JWT-based auth with role-based access control.",
                 TrainingZone.PRE_MVP, TrainingTrack.BUILDER, TrainingPhase.BUILD,
                 ModulePriority.CRITICAL, 2.0,
@@ -508,7 +508,7 @@ class ModuleLibrary:
             ),
             TrainingModule(
                 "bb_004", "CI/CD and Deployment Fundamentals",
-                "Ship code with confidence — automated tests, containers, pipelines.",
+                "Ship code with confidence -- automated tests, containers, pipelines.",
                 "Set up a CI/CD pipeline that tests and deploys on push.",
                 TrainingZone.PRE_MVP, TrainingTrack.BUILDER, TrainingPhase.BUILD,
                 ModulePriority.IMPORTANT, 2.5,
@@ -594,7 +594,7 @@ class ModuleLibrary:
             ),
             TrainingModule(
                 "pg_003", "Analytics Setup and Instrumentation",
-                "Instrument your product properly — if you can't measure it, you can't improve it.",
+                "Instrument your product properly -- if you can't measure it, you can't improve it.",
                 "Set up event tracking and create a metrics dashboard.",
                 TrainingZone.POST_MVP, TrainingTrack.GROWTH, TrainingPhase.GROW,
                 ModulePriority.IMPORTANT, 2.0,
@@ -658,7 +658,7 @@ class ModuleLibrary:
             ),
             TrainingModule(
                 "pr_003", "Financial Modelling for Operators",
-                "Build the financial model that runs your business — not just the one you show investors.",
+                "Build the financial model that runs your business -- not just the one you show investors.",
                 "Produce a rolling 12-month operating model with weekly actuals tracking.",
                 TrainingZone.POST_MVP, TrainingTrack.REVENUE, TrainingPhase.OPTIMISE,
                 ModulePriority.IMPORTANT, 3.0,
@@ -679,7 +679,7 @@ class ModuleLibrary:
         return [
             TrainingModule(
                 "pf_001", "Investor Targeting and Research",
-                "Find the 20 investors most likely to fund your startup — and ignore the rest.",
+                "Find the 20 investors most likely to fund your startup -- and ignore the rest.",
                 "Build a targeted pipeline of 20 qualified investors with personalised outreach.",
                 TrainingZone.POST_MVP, TrainingTrack.FUNDRAISING, TrainingPhase.RAISE,
                 ModulePriority.CRITICAL, 2.0,
@@ -693,7 +693,7 @@ class ModuleLibrary:
             ),
             TrainingModule(
                 "pf_002", "Pitch Deck Construction",
-                "Build the 10-slide deck that gets you the meeting — not the 40-slide deck that loses it.",
+                "Build the 10-slide deck that gets you the meeting -- not the 40-slide deck that loses it.",
                 "Produce a complete, investor-grade pitch deck that passes AI review.",
                 TrainingZone.POST_MVP, TrainingTrack.FUNDRAISING, TrainingPhase.RAISE,
                 ModulePriority.CRITICAL, 3.0,
@@ -708,7 +708,7 @@ class ModuleLibrary:
             ),
             TrainingModule(
                 "pf_003", "Term Sheet Literacy",
-                "Understand what you sign before you sign it — dilution, pro-rata, control rights.",
+                "Understand what you sign before you sign it -- dilution, pro-rata, control rights.",
                 "Read and explain every standard clause in a seed-stage term sheet.",
                 TrainingZone.POST_MVP, TrainingTrack.FUNDRAISING, TrainingPhase.RAISE,
                 ModulePriority.IMPORTANT, 2.0,
@@ -828,7 +828,7 @@ class ModuleLibrary:
 class TimeToMVPEngine:
     """
     Estimates weeks to MVP from learner profile.
-    This drives curriculum duration — training compresses or expands to fit.
+    This drives curriculum duration -- training compresses or expands to fit.
 
     Base weeks by stage → complexity modifier → team modifier → pace multiplier
     """
@@ -923,12 +923,12 @@ class AdaptiveCurriculumEngine:
                          (c.post_mvp_modules_unlocked[0] if c.post_mvp_modules_unlocked else None))
 
         role_cert_map = {
-            "founder":  ["TechIT Founder — Pre-Launch Certification",
-                         "TechIT Founder — Market-Ready Certification"],
-            "builder":  ["TechIT Builder — Technical Foundations Certification"],
-            "investor": ["TechIT Investor — Deal Evaluation Certification"],
-            "hybrid":   ["TechIT Founder — Pre-Launch Certification",
-                         "TechIT Builder — Technical Foundations Certification"],
+            "founder":  ["TechIT Founder -- Pre-Launch Certification",
+                         "TechIT Founder -- Market-Ready Certification"],
+            "builder":  ["TechIT Builder -- Technical Foundations Certification"],
+            "investor": ["TechIT Investor -- Deal Evaluation Certification"],
+            "hybrid":   ["TechIT Founder -- Pre-Launch Certification",
+                         "TechIT Builder -- Technical Foundations Certification"],
         }
         c.certifications_eligible = role_cert_map.get(profile.role, [])
         return c
@@ -947,7 +947,7 @@ class AdaptiveCurriculumEngine:
             curriculum.post_mvp_modules_unlocked = unlocked
             curriculum.post_mvp_modules_locked   = locked
             curriculum.post_mvp_tracks_available  = tracks
-            curriculum.adaptation_reason = "MVP shipped — post-MVP curriculum activated"
+            curriculum.adaptation_reason = "MVP shipped -- post-MVP curriculum activated"
 
         elif trigger_event == "investor_expressed_interest":
             fundraising = [m for m in curriculum.post_mvp_modules_locked
@@ -956,20 +956,20 @@ class AdaptiveCurriculumEngine:
                 curriculum.post_mvp_modules_locked.remove(m)
                 if m not in curriculum.post_mvp_modules_unlocked:
                     curriculum.post_mvp_modules_unlocked.insert(0, m)
-            curriculum.adaptation_reason = "Investor interest — fundraising track fast-tracked"
+            curriculum.adaptation_reason = "Investor interest -- fundraising track fast-tracked"
 
         elif trigger_event == "revenue_went_live":
             revenue_mods = [m for m in ModuleLibrary.post_mvp_revenue()
                             if m not in curriculum.post_mvp_modules_unlocked]
             curriculum.post_mvp_modules_unlocked.extend(revenue_mods)
-            curriculum.adaptation_reason = "Revenue live — revenue track unlocked"
+            curriculum.adaptation_reason = "Revenue live -- revenue track unlocked"
 
         elif trigger_event == "pivot_detected":
             validation = [m for m in ModuleLibrary.pre_mvp_founder_validation()
                           if m.module_id not in curriculum.completed_module_ids
                           and m not in curriculum.pre_mvp_modules]
             curriculum.pre_mvp_modules = validation + curriculum.pre_mvp_modules
-            curriculum.adaptation_reason = "Pivot detected — validation modules re-prioritised"
+            curriculum.adaptation_reason = "Pivot detected -- validation modules re-prioritised"
 
         curriculum.last_adapted_at = datetime.utcnow()
         return curriculum
@@ -1061,7 +1061,7 @@ class AdaptiveCurriculumEngine:
 
 class AdaptiveTrainingService:
     """
-    Service layer — replaces the old fixed TrainingCurriculumService.
+    Service layer -- replaces the old fixed TrainingCurriculumService.
     Called by AdaptiveTrainingAgent in agent_orchestration.py.
     """
 
@@ -1179,11 +1179,11 @@ def example_adaptive_training() -> None:
     svc = AdaptiveTrainingService()
 
     print("=" * 65)
-    print("TECHIT — ADAPTIVE TRAINING MODULE SYSTEM")
+    print("TECHIT -- ADAPTIVE TRAINING MODULE SYSTEM")
     print("=" * 65)
 
     # Scenario 1: Solo non-technical founder, idea stage
-    print("\n🧑‍🚀 Solo non-technical founder — idea stage, 8h/week")
+    print("\n🧑‍🚀 Solo non-technical founder -- idea stage, 8h/week")
     c1 = svc.generate_curriculum(
         user_id="founder_solo", role="founder", industry="healthtech",
         project_stage="idea", hours_available_per_week=8,
@@ -1198,7 +1198,7 @@ def example_adaptive_training() -> None:
     print(f"   Next module:     {c1['next_module']['title']}")
 
     # Scenario 2: Technical team, intensive pace
-    print("\n🛠  Technical co-founder team — validation, intensive 20h/week")
+    print("\n🛠  Technical co-founder team -- validation, intensive 20h/week")
     c2 = svc.generate_curriculum(
         user_id="founder_tech", role="hybrid", industry="fintech",
         project_stage="validation", hours_available_per_week=20,
@@ -1211,7 +1211,7 @@ def example_adaptive_training() -> None:
     print(f"   Certs eligible:  {c2['certifications_eligible']}")
 
     # Scenario 3: Post-MVP with revenue + investor interest
-    print("\n🚀 Post-MVP — revenue live, investor interest, 5h/week")
+    print("\n🚀 Post-MVP -- revenue live, investor interest, 5h/week")
     c3 = svc.generate_curriculum(
         user_id="founder_scale", role="founder", industry="edtech",
         project_stage="growth", hours_available_per_week=5,

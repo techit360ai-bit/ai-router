@@ -1,0 +1,117 @@
+
+version: '3.8'
+
+services:
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://techit:password@postgres:5432/techit_db
+      - REDIS_URL=redis://redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - COHERE_API_KEY=${COHERE_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - PINECONE_API_KEY=${PINECONE_API_KEY}
+      - PINECONE_INDEX=techit-embeddings
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      - ENVIRONMENT=development
+      - SECRET_KEY=${SECRET_KEY}
+      - SENTRY_DSN=${SENTRY_DSN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - DATABASE_URL=postgresql://techit:password@postgres:5432/techit_db
+      - REDIS_URL=redis://redis:6379
+      - CELERY_BROKER=redis://redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - COHERE_API_KEY=${COHERE_API_KEY}
+    depends_on:
+      - postgres
+      - redis
+    command: >
+      celery -A workers.celery worker
+      --loglevel=info
+      --concurrency=4
+      -Q default,ai_heavy,ai_light,scheduled
+    deploy:
+      replicas: 2
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - CELERY_BROKER=redis://redis:6379
+    depends_on:
+      - redis
+      - worker
+    command: celery -A workers.celery beat --loglevel=info
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=techit
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=techit_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U techit"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER=redis://redis:6379
+    depends_on:
+      - redis
+    command: celery -A workers.celery flower --port=5555
+
+volumes:
+  postgres_data:
+  redis_data:

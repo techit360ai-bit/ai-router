@@ -1,16 +1,16 @@
 """
-TECHIT — IDEA & SOLUTION HUB
+TECHIT -- IDEA & SOLUTION HUB
 ==============================
 Module: idea_solution_hub.py
-Layer:  Incubation Hub Extension — Problem-Driven Pathway
+Layer:  Incubation Hub Extension -- Problem-Driven Pathway
 
 Design Philosophy
 ─────────────────
 Most platforms start with: "I have a startup idea."
 TechIT also serves:        "Here is a real-world problem that needs solving."
 
-This module introduces a second entry pathway into the Incubation Hub —
-the Problem-Driven Pathway — where users, communities, NGOs, researchers,
+This module introduces a second entry pathway into the Incubation Hub --
+the Problem-Driven Pathway -- where users, communities, NGOs, researchers,
 and governments post real-world problems and the platform structures,
 discusses, synthesises, and converts them into funded, deployed solutions.
 
@@ -29,8 +29,8 @@ Platform Sections Served
 
 Two Entry Pathways
 ──────────────────
-  A. IDEA-DRIVEN  (existing)  — "I want to build X" → Startup Builder
-  B. PROBLEM-DRIVEN  (new)    — "Here is a problem" → Idea & Solution Hub
+  A. IDEA-DRIVEN  (existing)  -- "I want to build X" → Startup Builder
+  B. PROBLEM-DRIVEN  (new)    -- "Here is a problem" → Idea & Solution Hub
 
 Solution Types Supported
 ─────────────────────────
@@ -44,12 +44,12 @@ Solution Types Supported
 
 AI Roles in This Hub
 ─────────────────────
-  1. Problem Analyzer     — expands scope, adds missing context
-  2. Solution Synthesizer — combines best discussion ideas
-  3. Feasibility Engine   — cost, complexity, timeline estimates
-  4. Impact Predictor     — real-world effect estimate
-  5. Discovery Engine     — finds problems before users do
-  6. Solution Matcher     — reuses existing solutions globally
+  1. Problem Analyzer     -- expands scope, adds missing context
+  2. Solution Synthesizer -- combines best discussion ideas
+  3. Feasibility Engine   -- cost, complexity, timeline estimates
+  4. Impact Predictor     -- real-world effect estimate
+  5. Discovery Engine     -- finds problems before users do
+  6. Solution Matcher     -- reuses existing solutions globally
 
 New TaskTypes added to ai_router_core.py
 ─────────────────────────────────────────
@@ -260,7 +260,7 @@ class SolutionProject:
     A solution built from a problem discussion or directly proposed.
 
     Created when a discussion matures and a user clicks
-    "Convert to Solution Project". Supports all solution types —
+    "Convert to Solution Project". Supports all solution types --
     not just startups, but also NGOs, policy proposals, community
     projects, and infrastructure programs.
     """
@@ -297,7 +297,7 @@ class SolutionDeployment:
     """
     A real-world deployment of a validated solution.
 
-    This is TechIT's critical differentiator — solutions don't just sit
+    This is TechIT's critical differentiator -- solutions don't just sit
     in the platform. They get deployed to the real world with tracking,
     partner onboarding, resource allocation, and timeline management.
     """
@@ -444,11 +444,11 @@ class ImpactScoringEngine:
 
     @classmethod
     def _classify_impact(cls, score: float) -> str:
-        if score >= 80: return "Transformative — global scale potential"
-        if score >= 65: return "High Impact — significant population benefit"
-        if score >= 50: return "Moderate Impact — meaningful but localised"
-        if score >= 35: return "Early Stage — impact model needs strengthening"
-        return "Limited — refine problem scope and impact model"
+        if score >= 80: return "Transformative -- global scale potential"
+        if score >= 65: return "High Impact -- significant population benefit"
+        if score >= 50: return "Moderate Impact -- meaningful but localised"
+        if score >= 35: return "Early Stage -- impact model needs strengthening"
+        return "Limited -- refine problem scope and impact model"
 
     @classmethod
     def compute_priority_score(
@@ -506,7 +506,7 @@ class ImpactScoringEngine:
 
     @classmethod
     def _classify_priority(cls, score: float):
-        if score >= 85: return ("🔴", "Critical — Immediate Action")
+        if score >= 85: return ("🔴", "Critical -- Immediate Action")
         if score >= 65: return ("🟠", "High Priority")
         if score >= 45: return ("🟡", "Emerging Opportunity")
         return ("🔵", "Long-term Research")
@@ -638,7 +638,7 @@ class SolutionMatchingEngine:
     Matches existing solutions, startups, and NGOs to new problems.
 
     Instead of building from scratch every time, TechIT reuses intelligence
-    globally — a solution that worked in Kenya is matched to a similar
+    globally -- a solution that worked in Kenya is matched to a similar
     problem in Nigeria.
 
     Match Sources:
@@ -690,7 +690,7 @@ class SolutionMatchingEngine:
         Compute match score between a problem and an existing solution.
         Production: use vector similarity on problem + solution embeddings.
         """
-        # Simplified category matching — production uses semantic similarity
+        # Simplified category matching -- production uses semantic similarity
         problem_cat   = problem.category.value
         solution_tags = getattr(solution, "tags", [])
         category_sim  = 8.0 if problem_cat in solution_tags else 5.0
@@ -717,7 +717,7 @@ class SolutionMatchingEngine:
         score  = round(min(100.0, max(0.0, raw)), 2)
         reason = (
             f"Category overlap with {problem_cat}. "
-            f"Solution is at '{solution.stage.value}' stage — "
+            f"Solution is at '{solution.stage.value}' stage -- "
             f"{'immediately reusable' if score >= 70 else 'adaptable'}."
         )
         return {"match_score": score, "reason": reason}
@@ -731,16 +731,16 @@ class DeploymentEngine:
     """
     Manages real-world deployment of validated solutions.
 
-    TechIT does not just build solutions — it deploys them.
+    TechIT does not just build solutions -- it deploys them.
     This is the core differentiator from every other innovation platform.
 
     Deployment Modes:
-      Pilot Program       — small region test
-      NGO Rollout         — NGO-led field execution
-      Government Partner  — government agency partnership
-      Startup Launch      — commercial product launch
-      CSR Execution       — corporate social responsibility program
-      Community Led       — grassroots community implementation
+      Pilot Program       -- small region test
+      NGO Rollout         -- NGO-led field execution
+      Government Partner  -- government agency partnership
+      Startup Launch      -- commercial product launch
+      CSR Execution       -- corporate social responsibility program
+      Community Led       -- grassroots community implementation
 
     Each deployment has:
       - Deployment checklist
@@ -1042,7 +1042,7 @@ class IdeaSolutionHubService:
         people_affected_millions: float = 1.0,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/solutions/problems/submit — 2 credits, Free+
+        POST /api/v1/solutions/problems/submit -- 2 credits, Free+
 
         Accepts a real-world problem statement and:
           1. Computes Impact Score
@@ -1134,7 +1134,7 @@ class IdeaSolutionHubService:
         self, user_context, problem_id: str, problem_data: Dict
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/solutions/problems/{id}/analyze — 2 credits, Builder+
+        POST /api/v1/solutions/problems/{id}/analyze -- 2 credits, Builder+
 
         Deep AI analysis: expands scope, adds missing context,
         generates stakeholder map, identifies root causes.
@@ -1161,7 +1161,7 @@ class IdeaSolutionHubService:
         categories: Optional[List[str]] = None, limit: int = 20
     ) -> Dict[str, Any]:
         """
-        GET /api/v1/solutions/problems/discover — 2 credits, Builder+
+        GET /api/v1/solutions/problems/discover -- 2 credits, Builder+
 
         Runs the automated Problem Discovery Engine and returns
         AI-discovered problems for review and activation.
@@ -1192,7 +1192,7 @@ class IdeaSolutionHubService:
         problem_id: str, content: str,
         contribution_type: Optional[str] = None
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/discussions/{id}/contribute — 1 credit, Free+"""
+        """POST /api/v1/solutions/discussions/{id}/contribute -- 1 credit, Free+"""
         ct = (ContributionType(contribution_type)
               if contribution_type in [e.value for e in ContributionType]
               else self.moderator.classify_contribution(content))
@@ -1212,7 +1212,7 @@ class IdeaSolutionHubService:
         self, user_context, thread_id: str,
         contributions: List[DiscussionContribution]
     ) -> Dict[str, Any]:
-        """GET /api/v1/solutions/discussions/{id}/summary — 1 credit, Free+"""
+        """GET /api/v1/solutions/discussions/{id}/summary -- 1 credit, Free+"""
         from ai_router_core import AIRequest, TaskType
 
         direction = self.moderator.detect_strongest_direction(contributions)
@@ -1251,7 +1251,7 @@ class IdeaSolutionHubService:
         discussion_summary: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/solutions/discussions/{id}/convert — 3 credits, Founder Pro+
+        POST /api/v1/solutions/discussions/{id}/convert -- 3 credits, Founder Pro+
 
         Converts a matured discussion into a Solution Project.
         Runs AI solution synthesis to structure the best direction.
@@ -1301,7 +1301,7 @@ class IdeaSolutionHubService:
     async def run_feasibility_estimate(
         self, user_context, solution_id: str, solution_data: Dict
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/projects/{id}/feasibility — 2 credits, Builder+"""
+        """POST /api/v1/solutions/projects/{id}/feasibility -- 2 credits, Builder+"""
         from ai_router_core import AIRequest, TaskType
 
         resp = await self.brain.process(AIRequest(
@@ -1320,7 +1320,7 @@ class IdeaSolutionHubService:
         severity: float = 7.0, scalability: float = 6.0,
         sustainability: float = 6.0, measurability: float = 7.0
     ) -> Dict[str, Any]:
-        """GET /api/v1/solutions/projects/{id}/impact — 1 credit, Free+"""
+        """GET /api/v1/solutions/projects/{id}/impact -- 1 credit, Free+"""
         from ai_router_core import AIRequest, TaskType
 
         impact = self.impact_engine.compute_impact_score(
@@ -1343,7 +1343,7 @@ class IdeaSolutionHubService:
         self, user_context, solution: SolutionProject,
         mode: str, region: str, beneficiaries_target: int
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/deployments/create — 2 credits, Founder Pro+"""
+        """POST /api/v1/solutions/deployments/create -- 2 credits, Founder Pro+"""
         from ai_router_core import AIRequest, TaskType
 
         dm = DeploymentMode(mode) if mode in [e.value for e in DeploymentMode] else DeploymentMode.PILOT_PROGRAM
@@ -1382,7 +1382,7 @@ class IdeaSolutionHubService:
         self, user_context, deployment_id: str, solution_id: str,
         field_report: str, impact_metrics: Dict, failure_points: List[str]
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/deployments/{id}/feedback — 1 credit, Free+"""
+        """POST /api/v1/solutions/deployments/{id}/feedback -- 1 credit, Free+"""
         from ai_router_core import AIRequest, TaskType
 
         resp = await self.brain.process(AIRequest(
@@ -1412,7 +1412,7 @@ class IdeaSolutionHubService:
         funder_name: str, funding_type: str,
         amount_usd: float
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/grants/generate — 3 credits, Founder Pro+"""
+        """POST /api/v1/solutions/grants/generate -- 3 credits, Founder Pro+"""
         from ai_router_core import AIRequest, TaskType
 
         resp = await self.brain.process(AIRequest(
@@ -1456,7 +1456,7 @@ class IdeaSolutionHubService:
         funds_deployed_usd: float,
     ) -> Dict[str, Any]:
         """
-        GET /api/v1/solutions/impact/global — 0 credits, Free+
+        GET /api/v1/solutions/impact/global -- 0 credits, Free+
 
         Real-time global impact metrics for the platform homepage
         and government/NGO dashboards.
@@ -1505,9 +1505,9 @@ def example_idea_solution_hub() -> None:
     )
 
     print("=" * 65)
-    print("TECHIT — IDEA & SOLUTION HUB DEMO")
+    print("TECHIT -- IDEA & SOLUTION HUB DEMO")
     print("=" * 65)
-    print(f"\n📊 Impact Score:   {impact['impact_score']} — {impact['classification']}")
+    print(f"\n📊 Impact Score:   {impact['impact_score']} -- {impact['classification']}")
     print(f"🎯 Priority Score: {priority['priority_score']} {priority['colour']} {priority['label']}")
 
     # Discovery engine
