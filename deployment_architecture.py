@@ -5,23 +5,23 @@ Production-grade infrastructure for the TechIT AI Incubation Platform.
 
 Stack
 ─────
-  API Layer         → FastAPI (Python 3.11)
-  Database          → PostgreSQL 16 + pgvector
-  Cache / Queue     → Redis 7
-  Vector Search     → pgvector (primary) + Pinecone (scale)
-  Background Jobs   → Celery + Celery Beat
-  Containers        → Docker + Kubernetes
-  Object Storage    → AWS S3 + CloudFront
-  Monitoring        → Sentry + Grafana + Prometheus + CloudWatch
-  CI/CD             → GitHub Actions
+  API Layer         -> FastAPI (Python 3.11)
+  Database          -> PostgreSQL 16 + pgvector
+  Cache / Queue     -> Redis 7
+  Vector Search     -> pgvector (primary) + Pinecone (scale)
+  Background Jobs   -> Celery + Celery Beat
+  Containers        -> Docker + Kubernetes
+  Object Storage    -> AWS S3 + CloudFront
+  Monitoring        -> Sentry + Grafana + Prometheus + CloudWatch
+  CI/CD             -> GitHub Actions
 
 Microservices
 ─────────────
-  api-service        → FastAPI REST API (all endpoints)
-  worker-service     → Celery workers (AI agent execution, 4 queues)
-  scheduler-service  → Celery Beat (all cron jobs)
-  scoring-service    → Real-time WCRS + GSIS + decay computation
-  notification-svc   → Push + email notification delivery
+  api-service        -> FastAPI REST API (all endpoints)
+  worker-service     -> Celery workers (AI agent execution, 4 queues)
+  scheduler-service  -> Celery Beat (all cron jobs)
+  scoring-service    -> Real-time WCRS + GSIS + decay computation
+  notification-svc   -> Push + email notification delivery
 
 Services included in this deployment
 ──────────────────────────────────────
@@ -333,7 +333,7 @@ app.add_middleware(
 
 
 async def get_user_context(request: Request) -> UserContext:
-    # Production: decode JWT → fetch user from DB → build UserContext
+    # Production: decode JWT -> fetch user from DB -> build UserContext
     return UserContext(
         user_id="demo_user", role=UserRole.FOUNDER,
         subscription_tier=SubscriptionTier.FOUNDER_PRO, credits_remaining=100,
@@ -1054,11 +1054,11 @@ TECHIT INFRASTRUCTURE COST MODEL
 
 AI Model Costs (per 1M tokens)
 ──────────────────────────────
-GPT-4 Turbo              $10.00  → Unicorn eval, code review, strategy, EVI-I
-Claude Sonnet 4.6         $3.00  → Business plans, summaries, investor reports
-GPT-4o-mini               $0.20  → Tour guide, chat, dashboard, GSIS narration
-Claude Haiku              $0.25  → Matching, profile analysis, admin monitor
-Cohere Embeddings         $0.10  → All semantic search operations
+GPT-4 Turbo              $10.00  -> Unicorn eval, code review, strategy, EVI-I
+Claude Sonnet 4.6         $3.00  -> Business plans, summaries, investor reports
+GPT-4o-mini               $0.20  -> Tour guide, chat, dashboard, GSIS narration
+Claude Haiku              $0.25  -> Matching, profile analysis, admin monitor
+Cohere Embeddings         $0.10  -> All semantic search operations
 
 Per-User Monthly Cost (Founder Pro, active)
 ────────────────────────────────────────────
@@ -1089,21 +1089,21 @@ Grand total at 10K users         ~$20,900/month
 
 Revenue at 10K users (blended)
 ───────────────────────────────
-30% Free             →      $0
-50% Founder Pro @$49 → $245,000
-15% Investor @$199   → $298,500
-5%  Enterprise @$999 →  $49,950
+30% Free             ->      $0
+50% Founder Pro @$49 -> $245,000
+15% Investor @$199   -> $298,500
+5%  Enterprise @$999 ->  $49,950
 MRR                  $593,450
 Gross Margin         ~96.5%
 
 Cost Optimisation Levers
 ─────────────────────────
-1. Aggressive Redis caching             → 40% AI call reduction
-2. Prompt compression and batching      → 20% token reduction
-3. Free tier always routed to Haiku     → 85% cost reduction for free users
-4. Credit economy                       → users self-regulate consumption
-5. GSIS/WCRS computed deterministically → only narration costs credits
-6. Embeddings cached permanently        → never recomputed
+1. Aggressive Redis caching             -> 40% AI call reduction
+2. Prompt compression and batching      -> 20% token reduction
+3. Free tier always routed to Haiku     -> 85% cost reduction for free users
+4. Credit economy                       -> users self-regulate consumption
+5. GSIS/WCRS computed deterministically -> only narration costs credits
+6. Embeddings cached permanently        -> never recomputed
 """
 
 # ============================================================================
@@ -1141,7 +1141,7 @@ TECHIT -- PRODUCTION DEPLOYMENT CHECKLIST
   □ Stripe webhook endpoint configured and verified
   □ Monthly credit reset cron verified
   □ Paywall hit logging verified end-to-end
-  □ PAYG overflow resolution tested (subscription_credits → payg_credits)
+  □ PAYG overflow resolution tested (subscription_credits -> payg_credits)
 
 □ CELERY
   □ All 14 scheduled tasks registered in beat_schedule
@@ -1180,15 +1180,15 @@ TECHIT -- PRODUCTION DEPLOYMENT CHECKLIST
     - Stripe webhook failures
 
 □ FINAL SMOKE TESTS
-  □ POST /api/v1/incubation/idea/diagnose → returns structured profile
-  □ POST /api/v1/training/curriculum/generate → returns adaptive curriculum with weeks
-  □ POST /api/v1/tour-guide/daily-check-in → returns momentum + decay
-  □ GET  /api/v1/dashboard/intelligence → returns GSIS score card
-  □ POST /api/v1/gsis/compute → returns GSIS with narrative
-  □ POST /api/v1/investor/evi/{id} → returns EVI-I 6-dimension signal
+  □ POST /api/v1/incubation/idea/diagnose -> returns structured profile
+  □ POST /api/v1/training/curriculum/generate -> returns adaptive curriculum with weeks
+  □ POST /api/v1/tour-guide/daily-check-in -> returns momentum + decay
+  □ GET  /api/v1/dashboard/intelligence -> returns GSIS score card
+  □ POST /api/v1/gsis/compute -> returns GSIS with narrative
+  □ POST /api/v1/investor/evi/{id} -> returns EVI-I 6-dimension signal
   □ Full venture pipeline test (12 credits) completes without error
   □ Paywall fires correctly for Free user on business_plan operation
-  □ PAYG overflow: subscription credits → payg credits with correct USD charge
+  □ PAYG overflow: subscription credits -> payg credits with correct USD charge
 """
 
 
@@ -1198,7 +1198,7 @@ if __name__ == "__main__":
 ║       TECHIT AI ROUTER v2.0 -- DEPLOYMENT ARCHITECTURE        ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Quick Start:                                                 ║
-║    1. cp .env.example .env  →  fill in API keys               ║
+║    1. cp .env.example .env  ->  fill in API keys               ║
 ║    2. docker-compose up -d                                    ║
 ║    3. docker-compose exec api alembic upgrade head            ║
 ║    4. curl http://localhost:8000/health                       ║

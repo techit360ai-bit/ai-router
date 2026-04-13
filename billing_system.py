@@ -28,23 +28,23 @@ HYBRID RESOLUTION
   A subscriber ALSO holds PAYG credits.
   When subscription allocation exhausts, PAYG credits take over automatically.
   Subscribers always pay a lower per-credit rate than pure PAYG buyers.
-  Resolution order: subscription credits first → PAYG overflow.
+  Resolution order: subscription credits first -> PAYG overflow.
 
 Role-Based Pricing
 ──────────────────
-  Founders     → pay for execution survival and investor access
-  Collaborators → pay for career leverage and project income
-  Organisations → NO free tier -- every engagement is billable (primary cash engine)
-  Investors    → invite-only annual access, premium signal quality
+  Founders     -> pay for execution survival and investor access
+  Collaborators -> pay for career leverage and project income
+  Organisations -> NO free tier -- every engagement is billable (primary cash engine)
+  Investors    -> invite-only annual access, premium signal quality
 
 Paywall Philosophy
 ──────────────────
   "Let them taste value, then block progress."
   Paywalls trigger at high-momentum moments:
-    - Idea scored 80%+ → block full roadmap
-    - 3 collaborators matched → block contact
-    - Market tracker started → block milestone detail
-    - Investor viewed profile → block reply
+    - Idea scored 80%+ -> block full roadmap
+    - 3 collaborators matched -> block contact
+    - Market tracker started -> block milestone detail
+    - Investor viewed profile -> block reply
 
 Contents
 ────────
@@ -597,7 +597,7 @@ class HybridCreditEngine:
       2. Check total credit availability (subscription + PAYG combined)
       3. Deduct from subscription_credits_remaining first
       4. Overflow into payg_credits_balance if subscription exhausted
-      5. If total insufficient → paywall with upgrade prompt
+      5. If total insufficient -> paywall with upgrade prompt
 
     Guarantees:
       - Subscribers never pay PAYG rates until allocation exhausted
@@ -729,11 +729,11 @@ class PaywallEnforcementService:
     "Let them taste value, then block progress."
 
     High-conversion paywall moments:
-      1. After idea scores ≥ 75%    → block full roadmap
-      2. After 3+ collaborators matched → block contact
-      3. After market tracker starts  → block milestone detail
-      4. After investor views profile → block reply
-      5. After collaborator applies   → block project chat on free
+      1. After idea scores ≥ 75%    -> block full roadmap
+      2. After 3+ collaborators matched -> block contact
+      3. After market tracker starts  -> block milestone detail
+      4. After investor views profile -> block reply
+      5. After collaborator applies   -> block project chat on free
 
     All hits logged for conversion-rate analytics.
     """
@@ -876,10 +876,10 @@ class ReferralEngine:
     Viral growth through referral rewards and viral locks.
 
     Reward structure:
-      Invite collaborator → +10 credibility pts + 5 PAYG credits
-      Invite founder      → +5 PAYG credits (both sides)
-      Invite organisation → $20 account credit (applied to next invoice)
-      5 successful invites → 1 free subscription month
+      Invite collaborator -> +10 credibility pts + 5 PAYG credits
+      Invite founder      -> +5 PAYG credits (both sides)
+      Invite organisation -> $20 account credit (applied to next invoice)
+      5 successful invites -> 1 free subscription month
 
     Viral locks:
       Advanced matching unlocks after inviting 2 collaborators.
@@ -946,9 +946,9 @@ class RevenueProjectionModel:
     90-day acquisition and revenue simulation.
 
     Acquisition channels:
-      A. Partnerships (universities, bootcamps, hubs) → ~500K users
-      B. Viral invites (3 invites/user × 40% conversion) → ~240K users
-      C. Content + social (Twitter, LinkedIn, YouTube)  → ~100K users
+      A. Partnerships (universities, bootcamps, hubs) -> ~500K users
+      B. Viral invites (3 invites/user × 40% conversion) -> ~240K users
+      C. Content + social (Twitter, LinkedIn, YouTube)  -> ~100K users
       Total: ~840K–1M users
 
     Conversion by segment:
@@ -1022,7 +1022,7 @@ def example_billing() -> None:
     print("=" * 65)
 
     # Scenario 1: Subscription nearly exhausted -- overflow to PAYG
-    print("\n📋 Scenario 1: Builder subscription exhausted → PAYG overflow")
+    print("\n📋 Scenario 1: Builder subscription exhausted -> PAYG overflow")
     state1 = UserBillingState(
         user_id="founder_001", role=BillingRole.FOUNDER,
         plan_id="founder_builder", plan_spec=FOUNDER_BUILDER,
@@ -1089,9 +1089,9 @@ def example_billing() -> None:
     print(f"   Gross Margin:      {proj['gross_margin_pct']}%")
     for role, seg in proj["segments"].items():
         print(f"   {role:14s}  {seg['total_users']:>7,} users  "
-              f"→ {seg['paid_pct']:>4} paid  "
-              f"→ {seg['paying']:>6,} paying  "
-              f"→ ${seg['mrr_usd']:>10,.0f} MRR")
+              f"-> {seg['paid_pct']:>4} paid  "
+              f"-> {seg['paying']:>6,} paying  "
+              f"-> ${seg['mrr_usd']:>10,.0f} MRR")
 
     print("=" * 65)
 

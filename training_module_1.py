@@ -18,7 +18,7 @@ No two founders receive the same plan. No plan is fixed to a calendar.
 Two Curriculum Zones
 ────────────────────
 ZONE 1 -- PRE-MVP
-  Everything needed to go from idea → first live product.
+  Everything needed to go from idea -> first live product.
   Duration: computed dynamically from time-to-MVP.
   Goal: shippable MVP with market validation.
 
@@ -53,12 +53,12 @@ Time-to-MVP Engine
 
 Adaptive Triggers
 ─────────────────
-  pivot_detected            → re-trigger validation modules
-  mvp_shipped               → activate full post-MVP curriculum
-  revenue_went_live         → unlock revenue optimisation track
-  investor_expressed_interest → fast-track fundraising modules
-  evi_dropped               → surface execution discipline modules
-  unicorn_score_below_50    → elevate validation to critical
+  pivot_detected            -> re-trigger validation modules
+  mvp_shipped               -> activate full post-MVP curriculum
+  revenue_went_live         -> unlock revenue optimisation track
+  investor_expressed_interest -> fast-track fundraising modules
+  evi_dropped               -> surface execution discipline modules
+  unicorn_score_below_50    -> elevate validation to critical
 """
 
 from __future__ import annotations
@@ -830,7 +830,7 @@ class TimeToMVPEngine:
     Estimates weeks to MVP from learner profile.
     This drives curriculum duration -- training compresses or expands to fit.
 
-    Base weeks by stage → complexity modifier → team modifier → pace multiplier
+    Base weeks by stage -> complexity modifier -> team modifier -> pace multiplier
     """
 
     BASE_WEEKS: Dict[str, float] = {
@@ -881,9 +881,9 @@ class AdaptiveCurriculumEngine:
     Builds and adapts personalised curricula from the module library.
 
     Pre-MVP priority filter by available weeks:
-      < 4 weeks  → CRITICAL only
-      4–8 weeks  → CRITICAL + IMPORTANT
-      > 8 weeks  → all three priorities
+      < 4 weeks  -> CRITICAL only
+      4–8 weeks  -> CRITICAL + IMPORTANT
+      > 8 weeks  -> all three priorities
 
     Post-MVP module unlocking:
       Each module has conditions (stage, beta_users, revenue, investor_interest).

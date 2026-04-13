@@ -18,19 +18,19 @@ Route: /incubator/solutions
 
 Platform Sections Served
 ────────────────────────
-  /incubator/solutions                → Main dashboard
-  /incubator/solutions/problems       → Global Problems Board
-  /incubator/solutions/discussions    → Idea Discussion Threads
-  /incubator/solutions/builder        → Solution Builder
-  /incubator/solutions/deployments    → Active Deployments
-  /incubator/solutions/impact         → Global Impact Dashboard
-  /incubator/solutions/funding        → Funding & Grants Layer
-  /incubator/solutions/marketplace    → Impact Marketplace
+  /incubator/solutions                -> Main dashboard
+  /incubator/solutions/problems       -> Global Problems Board
+  /incubator/solutions/discussions    -> Idea Discussion Threads
+  /incubator/solutions/builder        -> Solution Builder
+  /incubator/solutions/deployments    -> Active Deployments
+  /incubator/solutions/impact         -> Global Impact Dashboard
+  /incubator/solutions/funding        -> Funding & Grants Layer
+  /incubator/solutions/marketplace    -> Impact Marketplace
 
 Two Entry Pathways
 ──────────────────
-  A. IDEA-DRIVEN  (existing)  -- "I want to build X" → Startup Builder
-  B. PROBLEM-DRIVEN  (new)    -- "Here is a problem" → Idea & Solution Hub
+  A. IDEA-DRIVEN  (existing)  -- "I want to build X" -> Startup Builder
+  B. PROBLEM-DRIVEN  (new)    -- "Here is a problem" -> Idea & Solution Hub
 
 Solution Types Supported
 ─────────────────────────
@@ -322,7 +322,7 @@ class FieldFeedback:
     """
     Real-world feedback collected after a solution is deployed.
 
-    TechIT closes the loop: Problem → Solution → Deployment → Feedback → Optimisation.
+    TechIT closes the loop: Problem -> Solution -> Deployment -> Feedback -> Optimisation.
     Most systems stop at launch. This one does not.
     """
     feedback_id:        str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -392,13 +392,13 @@ class ImpactScoringEngine:
         measurability:              float,   # 0–10: can outcomes be measured
     ) -> Dict[str, Any]:
         """
-        Impact Score = 0.30·PA + 0.25·SEV + 0.20·SCALE + 0.15·SUS + 0.10·MEAS
+        Impact Score = 0.30*PA + 0.25*SEV + 0.20*SCALE + 0.15*SUS + 0.10*MEAS
 
         people_affected_score: log-normalised to 0–10
-          < 10K people   → 1–3
-          10K–1M         → 4–6
-          1M–100M        → 7–8
-          > 100M         → 9–10
+          < 10K people   -> 1–3
+          10K–1M         -> 4–6
+          1M–100M        -> 7–8
+          > 100M         -> 9–10
         """
         import math
 
@@ -425,7 +425,7 @@ class ImpactScoringEngine:
             0.20 * scale    +
             0.15 * sus      +
             0.10 * meas
-        ) * 10   # scale each component (max 10) → total max 100
+        ) * 10   # scale each component (max 10) -> total max 100
 
         score = round(min(100.0, max(0.0, raw)), 2)
 
@@ -460,7 +460,7 @@ class ImpactScoringEngine:
         time_sensitivity:       float,   # 0–10
     ) -> Dict[str, Any]:
         """
-        Priority Score = 0.25·IS + 0.25·URG + 0.20·FUND + 0.15·POL + 0.15·TIME
+        Priority Score = 0.25*IS + 0.25*URG + 0.20*FUND + 0.15*POL + 0.15*TIME
 
         Outputs the ranking colour:
           🔴 Critical (85+)

@@ -1,5 +1,4 @@
 
-version: '3.8'
 
 services:
 
@@ -10,7 +9,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://techit:password@postgres:5432/techit_db
+      - DATABASE_URL=postgresql://techit:Techmachine123@postgres:5432/techit
       - REDIS_URL=redis://redis:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
@@ -29,6 +28,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
     volumes:
       - ./:/app
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -43,7 +43,7 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     environment:
-      - DATABASE_URL=postgresql://techit:password@postgres:5432/techit_db
+      - DATABASE_URL=postgresql://techit:Techmachine123@postgres:5432/techit
       - REDIS_URL=redis://redis:6379
       - CELERY_BROKER=redis://redis:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -75,8 +75,8 @@ services:
     image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_USER=techit
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=techit_db
+      - POSTGRES_PASSWORD=Techmachine123
+      - POSTGRES_DB=techit
     ports:
       - "5432:5432"
     volumes:

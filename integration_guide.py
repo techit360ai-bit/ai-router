@@ -352,7 +352,7 @@ class TourGuideService:
 
     async def get_audio_briefing(self, user_context: UserContext, briefing_text: str) -> Dict:
         """POST /api/v1/tour-guide/audio-briefing -- 0 credits"""
-        # Production: call ElevenLabs API → store in ai_audio_outputs
+        # Production: call ElevenLabs API -> store in ai_audio_outputs
         return {
             "audio_url":        f"https://cdn.techit.io/audio/{user_context.user_id}/briefing.mp3",
             "duration_seconds": 45,
@@ -435,10 +435,10 @@ class AdaptiveTrainingService:
         POST /api/v1/training/curriculum/adapt -- 0 credits
 
         Adaptation triggers:
-          mvp_shipped               → Activate full post-MVP curriculum
-          investor_expressed_interest → Fast-track fundraising modules
-          revenue_went_live         → Unlock revenue optimisation track
-          pivot_detected            → Re-trigger validation modules
+          mvp_shipped               -> Activate full post-MVP curriculum
+          investor_expressed_interest -> Fast-track fundraising modules
+          revenue_went_live         -> Unlock revenue optimisation track
+          pivot_detected            -> Re-trigger validation modules
         """
         ctx = AgentContext(
             user_context=user_context,
@@ -920,8 +920,8 @@ class GSISService:
     """
     Global Startup Intelligence Score -- the master composite score.
 
-    GSIS = 0.15·PPS + 0.15·EVI + 0.20·MRS + 0.10·BSS + 0.10·RGS
-          + 0.10·FRS + 0.05·CIS + 0.10·IIS + 0.05·CS
+    GSIS = 0.15*PPS + 0.15*EVI + 0.20*MRS + 0.10*BSS + 0.10*RGS
+          + 0.10*FRS + 0.05*CIS + 0.10*IIS + 0.05*CS
 
     AlertScore = Risk + Delay + DropInMetrics
     If AlertScore > 60: AI intervention triggered.
@@ -969,8 +969,8 @@ class IdeaSolutionHubService:
     Wraps idea_solution_hub.py and integrates with TechITAIBrain.
 
     Entry Points:
-      A. IDEA-DRIVEN  (existing) -- "I want to build X" → IncubationHubService
-      B. PROBLEM-DRIVEN (this)   -- "Here is a problem" → IdeaSolutionHubService
+      A. IDEA-DRIVEN  (existing) -- "I want to build X" -> IncubationHubService
+      B. PROBLEM-DRIVEN (this)   -- "Here is a problem" -> IdeaSolutionHubService
 
     Route: /incubator/solutions
 
@@ -983,13 +983,13 @@ class IdeaSolutionHubService:
       💰 Funding & Grants          -- /incubator/solutions/funding
 
     Solution Types Supported:
-      startup_for_profit · social_initiative · public_policy
-      community_project  · research_project  · infrastructure
-      service_based      · hybrid
+      startup_for_profit * social_initiative * public_policy
+      community_project  * research_project  * infrastructure
+      service_based      * hybrid
 
     Funding Types:
-      revenue · grants · donations · impact_investors
-      csr_partnerships · government_funding · development_banks · hybrid
+      revenue * grants * donations * impact_investors
+      csr_partnerships * government_funding * development_banks * hybrid
     """
 
     def __init__(self, brain: TechITAIBrain) -> None:
@@ -1284,9 +1284,9 @@ class DocumentGenerationService:
       Financial Projection   -- 5 pages,    2 credits, Founder Pro+
       Market Research Report -- 8 pages,    3 credits, Founder Pro+
 
-    3 Styles:   Concise · Standard · Detailed
-    3 Audiences: Founder Use · Investors · Accelerators
-    4 Formats:  PDF · Notion Doc · Google Doc · Slide Deck
+    3 Styles:   Concise * Standard * Detailed
+    3 Audiences: Founder Use * Investors * Accelerators
+    4 Formats:  PDF * Notion Doc * Google Doc * Slide Deck
 
     Route: /incubator/documents
     """
@@ -1314,7 +1314,7 @@ class DocumentGenerationService:
         Flow:
           1. Pull startup data + analysis results
           2. Assemble master prompt from DocumentPromptEngine
-          3. Select AI model (all documents → Claude Sonnet for long-form)
+          3. Select AI model (all documents -> Claude Sonnet for long-form)
           4. Generate via AI Command Layer
           5. Parse structured output by section
           6. Build all exports (PDF, links, edit URL)
@@ -1444,7 +1444,7 @@ class IPProtectionService:
        text-embedding-3-small) and stored in idea_embeddings.
        The `idea_similarity_check` SQL query (database_schema.REFERENCE_QUERIES)
        runs cosine similarity against ALL stored embeddings.
-       Similarity ≥ 0.95 → IP alert raised, result blocked.
+       Similarity ≥ 0.95 -> IP alert raised, result blocked.
        Runs as techit_system role (BYPASSRLS) -- never returns idea_text.
 
     3. ROW-LEVEL SECURITY (PostgreSQL RLS)
@@ -1521,7 +1521,7 @@ class IPProtectionService:
         Flow:
           1. Fingerprint the idea text (SHA-256)
           2. Check exact-match against existing fingerprints (fast path)
-          3. Call EMBEDDINGS TaskType → text-embedding-3-small (1536 dims)
+          3. Call EMBEDDINGS TaskType -> text-embedding-3-small (1536 dims)
           4. INSERT into idea_embeddings table
           5. Return fingerprint + embedding for storage
 
@@ -1616,12 +1616,12 @@ class IPProtectionService:
 
 
 # ============================================================================
-# APP SCAFFOLD SERVICE  (Prompt → Live App)
+# APP SCAFFOLD SERVICE  (Prompt -> Live App)
 # ============================================================================
 
 class AppScaffoldService:
     """
-    Service layer for TechIT's defining edge: Prompt → Live App in Minutes.
+    Service layer for TechIT's defining edge: Prompt -> Live App in Minutes.
 
     This is the feature that makes TechIT categorically different from every
     other startup platform. Others give you plans. TechIT gives you a running
@@ -1629,9 +1629,9 @@ class AppScaffoldService:
 
     The difference from Bolt.new / v0.dev:
     ┌──────────────────┬──────────────────────────────────────────────────────┐
-    │ Bolt.new / v0    │ User writes a prompt → AI generates code             │
+    │ Bolt.new / v0    │ User writes a prompt -> AI generates code             │
     │ TechIT           │ Platform already knows problem, market, unicorn score │
-    │                  │ → scaffold generated FROM intelligence, not scratch   │
+    │                  │ -> scaffold generated FROM intelligence, not scratch   │
     └──────────────────┴──────────────────────────────────────────────────────┘
 
     The scaffold is not generic. It is specific to:
@@ -1641,11 +1641,11 @@ class AppScaffoldService:
       - The feature set implied by the problem/solution pair
 
     Flow:
-      1. VenturePipeline runs → shared_memory has venture_profile + tech_architecture
-      2. AppScaffoldAgent runs → generates pages, schema, API routes, deploy config
+      1. VenturePipeline runs -> shared_memory has venture_profile + tech_architecture
+      2. AppScaffoldAgent runs -> generates pages, schema, API routes, deploy config
       3. User downloads ZIP or clicks 1-click Vercel deploy
       4. App is live in ~2 minutes
-      5. TechIT continues tracking: GSIS · EVI-I · Decay · Investors
+      5. TechIT continues tracking: GSIS * EVI-I * Decay * Investors
 
     Supported stacks:
       nextjs_supabase   Next.js 14 + Supabase + Tailwind (default)
@@ -1954,7 +1954,7 @@ IP PROTECTION
   POST /api/v1/ip-protection/check-fingerprint       0 credits  Founder Pro+
   POST /api/v1/ip-protection/embed-idea              1 credit   Founder Pro+
 
-PROMPT → LIVE APP  (App Scaffold Engine)
+PROMPT -> LIVE APP  (App Scaffold Engine)
   POST /api/v1/scaffold/generate                     5 credits  Founder Pro+
   GET  /api/v1/scaffold/{project_id}                 0 credits  Free+
   POST /api/v1/scaffold/{id}/deploy                  3 credits  Founder Pro+

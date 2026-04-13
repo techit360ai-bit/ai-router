@@ -128,7 +128,7 @@ class TaskType(Enum):
     DOCUMENT_PRODUCT_ROADMAP      = "document_product_roadmap"
     DOCUMENT_FINANCIAL_PROJECTION = "document_financial_projection"
     DOCUMENT_MARKET_RESEARCH      = "document_market_research"
-    # Prompt → Live App engine
+    # Prompt -> Live App engine
     APP_SCAFFOLD_GENERATION        = "app_scaffold_generation"
     APP_DEPLOY_CONFIG              = "app_deploy_config"
 
@@ -152,26 +152,26 @@ class CreditCost:
     Both subscription and PAYG tracks consume from this table.
 
     Key operations:
-      Idea Diagnostic              →  1 credit
-      Unicorn Analysis             →  2 credits
-      Market Intelligence          →  2 credits
-      Startup Strategy             →  3 credits
-      Investor Readiness           →  2 credits
-      Executive Summary            →  2 credits
-      Full Business Plan           →  4 credits
-      Market Survey Simulation     →  3 credits
-      Tech Stack Architecture      →  2 credits
-      Execution Roadmap            →  2 credits
-      Full Venture Pipeline        → 12 credits  (bundled)
-      Investor EVI Report          →  2 credits
-      GSIS Compute                 →  1 credit
+      Idea Diagnostic              ->  1 credit
+      Unicorn Analysis             ->  2 credits
+      Market Intelligence          ->  2 credits
+      Startup Strategy             ->  3 credits
+      Investor Readiness           ->  2 credits
+      Executive Summary            ->  2 credits
+      Full Business Plan           ->  4 credits
+      Market Survey Simulation     ->  3 credits
+      Tech Stack Architecture      ->  2 credits
+      Execution Roadmap            ->  2 credits
+      Full Venture Pipeline        -> 12 credits  (bundled)
+      Investor EVI Report          ->  2 credits
+      GSIS Compute                 ->  1 credit
 
     Monthly allocations by tier:
-      Free           →    5 / month
-      Builder        →   50 / month
-      Founder Pro    →  150 / month
-      Investor       →  500 / month
-      Enterprise     →  unlimited
+      Free           ->    5 / month
+      Builder        ->   50 / month
+      Founder Pro    ->  150 / month
+      Investor       ->  500 / month
+      Enterprise     ->  unlimited
     """
 
     COSTS: Dict[TaskType, int] = {
@@ -227,7 +227,7 @@ class CreditCost:
         TaskType.DOCUMENT_PRODUCT_ROADMAP:      2,
         TaskType.DOCUMENT_FINANCIAL_PROJECTION: 2,
         TaskType.DOCUMENT_MARKET_RESEARCH:      3,
-        # Prompt → Live App engine
+        # Prompt -> Live App engine
         TaskType.APP_SCAFFOLD_GENERATION:      5,
         TaskType.APP_DEPLOY_CONFIG:            3,
     }
@@ -240,7 +240,7 @@ class CreditCost:
         SubscriptionTier.ENTERPRISE:  999_999,
     }
 
-    # PAYG credit packs: credits → USD price
+    # PAYG credit packs: credits -> USD price
     CREDIT_PACKS: Dict[int, float] = {
         50:    20.00,
         150:   50.00,
@@ -265,11 +265,11 @@ class SubscriptionAccessControl:
     """
     Gates each TaskType behind a minimum subscription tier.
 
-    Free        → basic validation, tour guide, dashboard, chat
-    Builder     → unicorn, market intel, matching, training
-    Founder Pro → strategy, roadmap, tech stack, risk, org sphere
-    Investor    → business plan, investor reports, market survey, EVI-I
-    Enterprise  → all operations including admin monitor
+    Free        -> basic validation, tour guide, dashboard, chat
+    Builder     -> unicorn, market intel, matching, training
+    Founder Pro -> strategy, roadmap, tech stack, risk, org sphere
+    Investor    -> business plan, investor reports, market survey, EVI-I
+    Enterprise  -> all operations including admin monitor
     """
 
     _FREE = {
@@ -305,7 +305,7 @@ class SubscriptionAccessControl:
         TaskType.DOCUMENT_BUSINESS_PLAN, TaskType.DOCUMENT_PITCH_DECK,
         TaskType.DOCUMENT_PRODUCT_ROADMAP, TaskType.DOCUMENT_FINANCIAL_PROJECTION,
         TaskType.DOCUMENT_MARKET_RESEARCH,
-        # Prompt → Live App -- scaffold available from Founder Pro upward
+        # Prompt -> Live App -- scaffold available from Founder Pro upward
         TaskType.APP_SCAFFOLD_GENERATION, TaskType.APP_DEPLOY_CONFIG,
     }
     _INVESTOR = _FOUNDER_PRO | {
@@ -391,8 +391,8 @@ class ScoringEngine:
         compliance_score:        float,   # CS    -- governance
     ) -> Dict:
         """
-        GSIS = 0.15·PPS + 0.15·EVI + 0.20·MRS + 0.10·BSS + 0.10·RGS
-              + 0.10·FRS + 0.05·CIS + 0.10·IIS + 0.05·CS
+        GSIS = 0.15*PPS + 0.15*EVI + 0.20*MRS + 0.10*BSS + 0.10*RGS
+              + 0.10*FRS + 0.05*CIS + 0.10*IIS + 0.05*CS
 
         The master score that surfaces on investor dashboards,
         marketplace rankings, and the founder's home dashboard.
@@ -447,7 +447,7 @@ class ScoringEngine:
     ) -> float:
         """
         AlertScore = Risk + Delay + DropInMetrics
-        High AlertScore → AI intervention triggered.
+        High AlertScore -> AI intervention triggered.
         """
         risk  = max(0, 50 - gsis)
         delay = max(0, 40 - evi)
@@ -459,7 +459,7 @@ class ScoringEngine:
     @classmethod
     def compute_unicorn_potential_score(cls, drivers: Dict[str, float]) -> Dict:
         """
-        UPS = Σ (driver × weight) × 10  →  [0, 100]
+        UPS = Σ (driver × weight) × 10  ->  [0, 100]
         Each driver scored 0–10. Weights sum to 1.00.
         """
         total = 0.0
@@ -499,7 +499,7 @@ class ScoringEngine:
         stagnation_days:           int,
     ) -> float:
         """
-        EVI = (0.30·MC + 0.20·RC⁻¹ + 0.20·IC + 0.20·CC − 0.10·ST) × 100
+        EVI = (0.30*MC + 0.20*RC⁻¹ + 0.20*IC + 0.20*CC − 0.10*ST) × 100
         Founder-facing momentum score used by Tour Guide and WCRS.
         """
         mc = min(1.0, milestones_completed_30d / 10.0)
@@ -524,7 +524,7 @@ class ScoringEngine:
         days_since_last_update: int = 0,
     ) -> Dict:
         """
-        EVI-I = (0.25·MDR + 0.20·IS + 0.15·TRV + 0.20·RTA + 0.10·UGM + 0.10·CEV) × decay
+        EVI-I = (0.25*MDR + 0.20*IS + 0.15*TRV + 0.20*RTA + 0.10*UGM + 0.10*CEV) × decay
 
         Investor-grade execution signal. Distinct from founder EVI.
         Applies anti-gaming decay identical to WCRS.
@@ -572,7 +572,7 @@ class ScoringEngine:
         retention_pct:             float,
         revenue_consistency_score: float,
     ) -> float:
-        """RGS = 0.35·MRR + 0.25·UserGrowth + 0.25·Retention + 0.15·Consistency"""
+        """RGS = 0.35*MRR + 0.25*UserGrowth + 0.25*Retention + 0.15*Consistency"""
         rgs = (0.35 * min(100, mrr_growth_pct) + 0.25 * min(100, user_growth_pct) +
                0.25 * min(100, retention_pct)   + 0.15 * min(100, revenue_consistency_score))
         return round(max(0.0, min(100.0, rgs)), 2)
@@ -587,7 +587,7 @@ class ScoringEngine:
         nps:                    float,  # −100 to 100
         willingness_to_pay_pct: float,  # 0–100
     ) -> float:
-        """BSS = 0.30·UX + 0.25·Perf + 0.25·NPS_norm + 0.20·WTP"""
+        """BSS = 0.30*UX + 0.25*Perf + 0.25*NPS_norm + 0.20*WTP"""
         ux    = min(10.0, avg_ux_rating) / 10.0 * 100
         perf  = min(10.0, avg_performance_rating) / 10.0 * 100
         nps_n = (nps + 100) / 2.0
@@ -620,7 +620,7 @@ class ScoringEngine:
         global_readiness:  float,
         stability_score:   float,
     ) -> float:
-        """MRS = 0.25·EVI + 0.20·BSS + 0.20·RGS + 0.15·CS + 0.10·Global + 0.10·Stability"""
+        """MRS = 0.25*EVI + 0.20*BSS + 0.20*RGS + 0.15*CS + 0.10*Global + 0.10*Stability"""
         mrs = (0.25*execution_score + 0.20*beta_satisfaction + 0.20*revenue_signal +
                0.15*compliance_score + 0.10*global_readiness + 0.10*stability_score)
         return round(max(0.0, min(100.0, mrs)), 2)
@@ -650,7 +650,7 @@ class ScoringEngine:
         community_contribution:   float,
         profile_completeness_pct: float,
     ) -> float:
-        """FRS = 0.30·Login + 0.30·MilestoneRate + 0.20·Feedback + 0.10·Community + 0.10·Profile"""
+        """FRS = 0.30*Login + 0.30*MilestoneRate + 0.20*Feedback + 0.10*Community + 0.10*Profile"""
         frs = (0.30*login_consistency_pct + 0.30*milestone_hit_rate_pct +
                0.20*feedback_responsiveness + 0.10*community_contribution +
                0.10*profile_completeness_pct)
@@ -744,8 +744,8 @@ class ScoringEngine:
         days_since_last_update:     int = 0,
     ) -> Dict:
         """
-        Base  = 0.25·MR + 0.20·EVI + 0.15·BSS + 0.15·RGS
-                + 0.10·CS + 0.10·TS + 0.05·FRS
+        Base  = 0.25*MR + 0.20*EVI + 0.15*BSS + 0.15*RGS
+                + 0.10*CS + 0.10*TS + 0.05*FRS
         Final = Base × (1 + 0.05 × QualityFlags)   [max 1.15]
         Adjusted = Final × e^(−0.02 × days_inactive)
 
@@ -778,7 +778,7 @@ class ScoringEngine:
         growth_rate:           float,
         differentiation_score: float,
     ) -> float:
-        """InvestScore = 0.30·MR + 0.25·Traction + 0.15·Team + 0.15·RiskInverse + 0.10·Growth + 0.05·Diff"""
+        """InvestScore = 0.30*MR + 0.25*Traction + 0.15*Team + 0.15*RiskInverse + 0.10*Growth + 0.05*Diff"""
         score = (0.30*market_readiness + 0.25*traction_score + 0.15*team_score +
                  0.15*risk_inverse + 0.10*growth_rate + 0.05*differentiation_score)
         return round(max(0.0, min(100.0, score)), 2)
@@ -795,7 +795,7 @@ class ScoringEngine:
         trust_score:                float,
         domain_experience:          float,
     ) -> float:
-        """MatchScore = (0.30·Skill + 0.20·Goal + 0.15·Exec + 0.15·Avail + 0.10·Trust + 0.10·Domain) × 100"""
+        """MatchScore = (0.30*Skill + 0.20*Goal + 0.15*Exec + 0.15*Avail + 0.10*Trust + 0.10*Domain) × 100"""
         raw = (0.30*skill_similarity + 0.20*goal_similarity + 0.15*execution_style_similarity +
                0.15*availability_overlap + 0.10*trust_score + 0.10*domain_experience)
         return round(max(0.0, min(100.0, raw * 100)), 2)
@@ -920,7 +920,7 @@ class ModelRouter:
     """Routes each task to the optimal LLM. No feature is locked to one vendor."""
 
     TASK_MAP: Dict[TaskType, ModelProvider] = {
-        # Deep reasoning → GPT-4
+        # Deep reasoning -> GPT-4
         TaskType.IDEA_EVALUATION:          ModelProvider.OPENAI_GPT4,
         TaskType.UNICORN_ANALYSIS:         ModelProvider.OPENAI_GPT4,
         TaskType.CODE_REVIEW:              ModelProvider.OPENAI_GPT4,
@@ -930,7 +930,7 @@ class ModelRouter:
         TaskType.PRODUCT_FEASIBILITY:      ModelProvider.OPENAI_GPT4,
         TaskType.TECH_STACK_DESIGN:        ModelProvider.OPENAI_GPT4,
         TaskType.INVESTOR_EVI:             ModelProvider.OPENAI_GPT4,
-        # Long-form generation → Claude Sonnet
+        # Long-form generation -> Claude Sonnet
         TaskType.BUSINESS_PLAN:            ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.EXECUTIVE_SUMMARY:        ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.MARKET_INTELLIGENCE:      ModelProvider.ANTHROPIC_CLAUDE,
@@ -942,7 +942,7 @@ class ModelRouter:
         TaskType.MARKET_SURVEY_SIMULATION: ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.EXECUTION_ROADMAP:        ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.ORG_SPHERE:               ModelProvider.ANTHROPIC_CLAUDE,
-        # Lightweight ops → GPT-4o-mini
+        # Lightweight ops -> GPT-4o-mini
         TaskType.CHAT:                     ModelProvider.OPENAI_GPT4_MINI,
         TaskType.TOUR_GUIDE:               ModelProvider.OPENAI_GPT4_MINI,
         TaskType.WORKSPACE_ASSISTANT:      ModelProvider.OPENAI_GPT4_MINI,
@@ -961,7 +961,7 @@ class ModelRouter:
         TaskType.GRANT_MATCHING:           ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.DISCUSSION_MODERATION:    ModelProvider.OPENAI_GPT4_MINI,
         TaskType.FIELD_FEEDBACK_ANALYSIS:  ModelProvider.OPENAI_GPT4_MINI,
-        # Document Generation -- all long-form → Claude Sonnet
+        # Document Generation -- all long-form -> Claude Sonnet
         TaskType.DOCUMENT_EXECUTIVE_SUMMARY:    ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.DOCUMENT_BUSINESS_PLAN:        ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.DOCUMENT_PITCH_DECK:           ModelProvider.ANTHROPIC_CLAUDE,
@@ -970,14 +970,14 @@ class ModelRouter:
         TaskType.DOCUMENT_PRODUCT_ROADMAP:      ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.DOCUMENT_FINANCIAL_PROJECTION: ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.DOCUMENT_MARKET_RESEARCH:      ModelProvider.ANTHROPIC_CLAUDE,
-        # Fast classification → Haiku
+        # Fast classification -> Haiku
         TaskType.MATCHING:                 ModelProvider.ANTHROPIC_HAIKU,
         TaskType.PROFILE_ANALYSIS:         ModelProvider.ANTHROPIC_HAIKU,
         TaskType.ADMIN_MONITOR:            ModelProvider.ANTHROPIC_HAIKU,
-        # Prompt → Live App -- Claude Sonnet for structured code scaffolds
+        # Prompt -> Live App -- Claude Sonnet for structured code scaffolds
         TaskType.APP_SCAFFOLD_GENERATION:  ModelProvider.ANTHROPIC_CLAUDE,
         TaskType.APP_DEPLOY_CONFIG:        ModelProvider.OPENAI_GPT4_MINI,
-        # Embeddings → Cohere
+        # Embeddings -> Cohere
         TaskType.EMBEDDINGS:               ModelProvider.COHERE_EMBED,
     }
 
@@ -1269,7 +1269,7 @@ class PromptEngine:
             "industry overview, TAM/SAM/SOM with methodology, trends, customer segmentation, "
             "competitor landscape, timing analysis, and entry barriers."
         ),
-        # ── Prompt → Live App Engine ───────────────────────────────────────
+        # ── Prompt -> Live App Engine ───────────────────────────────────────
         TaskType.APP_SCAFFOLD_GENERATION: (
             "You are TechIT's App Scaffold Engine -- the fastest path from idea to running code. "
             "Given a startup's venture profile (problem, solution, market, tech stack), generate a "
@@ -1370,9 +1370,9 @@ class SafetyEngine:
 
         Stamped onto every ip_protected=True request BEFORE the AI call.
         Stored in:
-          - request.input_data["_ip_fingerprint"]  → flows into ai_outputs.input_data
-          - idea_embeddings.idea_fingerprint        → written by VentureIntakeAgent
-          - problem_nodes.fingerprint               → written by IdeaSolutionHubService
+          - request.input_data["_ip_fingerprint"]  -> flows into ai_outputs.input_data
+          - idea_embeddings.idea_fingerprint        -> written by VentureIntakeAgent
+          - problem_nodes.fingerprint               -> written by IdeaSolutionHubService
 
         Used for:
           1. Exact-match deduplication (same idea submitted twice)

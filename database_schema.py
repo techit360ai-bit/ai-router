@@ -46,7 +46,7 @@ from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-
+from pgvector.sqlalchemy import Vector
 Base = declarative_base()
 
 
@@ -314,7 +314,7 @@ class CreditLedger(Base):
     Both subscription and PAYG credits logged here.
 
     Resolution order (enforced by HybridCreditEngine):
-      subscription_credits deducted first → overflow into payg_credits.
+      subscription_credits deducted first -> overflow into payg_credits.
     """
     __tablename__ = "credit_ledger"
 
@@ -677,7 +677,7 @@ class Evaluation(Base):
 
 class ReadinessTracker(Base):
     """
-    Tracks stage-gate progression: Idea → Validation → MVP → Beta → Launch → Growth → Scale.
+    Tracks stage-gate progression: Idea -> Validation -> MVP -> Beta -> Launch -> Growth -> Scale.
     Stage-gate criteria must ALL be met before advancing.
     """
     __tablename__ = "readiness_tracker"
@@ -974,7 +974,7 @@ class UserSkillEmbedding(Base):
 
     id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id         = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    embedding       = Column(ARRAY(Float))  # 1536 dims (OpenAI) / 1024 (Cohere)
+    embedding       = Column(Vector(1536))  # 1536 dims (OpenAI) / 1024 (Cohere)
     skill_text      = Column(Text)
     embedding_model = Column(String(100))
     created_at      = Column(TIMESTAMP, default=datetime.utcnow)
@@ -988,14 +988,14 @@ class IdeaEmbedding(Base):
     """
     Vector embedding of startup idea for IP protection.
     Leak detection: new ideas compared against all existing fingerprints.
-    Similarity > 0.95 → IP alert triggered.
+    Similarity > 0.95 -> IP alert triggered.
     """
     __tablename__ = "idea_embeddings"
 
     id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id       = Column(UUID(as_uuid=True), ForeignKey("projects.id"),
                               nullable=False, unique=True)
-    embedding        = Column(ARRAY(Float))
+    embedding        = Column(Vector(1536))
     idea_fingerprint = Column(String(64), unique=True)
     idea_text        = Column(Text)
     embedding_model  = Column(String(100))
@@ -1076,15 +1076,15 @@ class EventLog(Base):
     All platform events. Drives the agent orchestration routing.
 
     Events and their agent triggers (from agent_orchestration.py):
-      idea_submitted               → VentureIntake + RiskEvaluator + Matching
-      user_login                   → TourGuide + Dashboard + GSISCompute
-      training_completed           → AdaptiveTraining
-      milestone_updated            → Dashboard + TourGuide + GSISCompute
-      investor_views               → InvestorIntelligence
-      mvp_shipped                  → AdaptiveTraining + Dashboard
-      revenue_went_live            → AdaptiveTraining + InvestorIntelligence
-      pivot_detected               → PivotIntelligence + AdaptiveTraining
-      investor_expressed_interest  → AdaptiveTraining + InvestorIntelligence
+      idea_submitted               -> VentureIntake + RiskEvaluator + Matching
+      user_login                   -> TourGuide + Dashboard + GSISCompute
+      training_completed           -> AdaptiveTraining
+      milestone_updated            -> Dashboard + TourGuide + GSISCompute
+      investor_views               -> InvestorIntelligence
+      mvp_shipped                  -> AdaptiveTraining + Dashboard
+      revenue_went_live            -> AdaptiveTraining + InvestorIntelligence
+      pivot_detected               -> PivotIntelligence + AdaptiveTraining
+      investor_expressed_interest  -> AdaptiveTraining + InvestorIntelligence
     """
     __tablename__ = "event_logs"
 
@@ -1289,7 +1289,7 @@ class FieldFeedback(Base):
     """
     Real-world feedback from deployed solutions.
 
-    Closes the Problem → Solution → Deployment → Feedback → Optimisation loop.
+    Closes the Problem -> Solution -> Deployment -> Feedback -> Optimisation loop.
     AI analyses each submission to extract improvements and update impact scores.
     """
     __tablename__ = "field_feedback"
@@ -1474,7 +1474,7 @@ class DocumentTemplate(Base):
 
 
 # ============================================================================
-# APP SCAFFOLD TABLE  (Prompt → Live App)
+# APP SCAFFOLD TABLE  (Prompt -> Live App)
 # ============================================================================
 
 class AppScaffold(Base):
@@ -1493,7 +1493,7 @@ class AppScaffold(Base):
       fastapi_supabase  -- FastAPI + Supabase (API-only)
 
     Deploy status lifecycle:
-      pending → deploying → deployed → failed
+      pending -> deploying -> deployed -> failed
 
     IP protection:
       ip_protected=True on all scaffold AIRequests.

@@ -14,10 +14,10 @@ The Document Generation Engine is:
   "Notion + McKinsey Report + Pitch Deck -- generated instantly."
 
 It sits AFTER analysis and converts AI outputs into:
-  → investor-ready
-  → shareable
-  → downloadable
-  → structured documents
+  -> investor-ready
+  -> shareable
+  -> downloadable
+  -> structured documents
 
 This turns TechIT into:
   👉 Startup Operating System
@@ -43,7 +43,7 @@ Route: /incubator/documents
   3. Pitch Deck             -- slide-by-slide structure
   4. Investor Report        -- deep analysis with EVI-I and signals
   5. Unicorn Analysis Report -- 10 drivers, benchmarking, insights
-  6. Product Roadmap        -- MVP → Beta → Launch → Scale
+  6. Product Roadmap        -- MVP -> Beta -> Launch -> Scale
   7. Financial Projection   -- revenue model, cost structure, forecast
   8. Market Research Report -- TAM/SAM/SOM, trends, competition
 
@@ -147,7 +147,7 @@ class GeneratedDocument:
     word_count:         int = 0
     page_estimate:      int = 0
     investor_mode:      bool = False
-    export_urls:        Dict[str, str] = field(default_factory=dict)  # format → url
+    export_urls:        Dict[str, str] = field(default_factory=dict)  # format -> url
     shareable_link:     Optional[str] = None
     credits_consumed:   int = 0
     model_used:         str = ""
@@ -167,7 +167,7 @@ class DocumentTemplate:
     version:            int = 1
     system_prompt:      str = ""
     section_schema:     List[str] = field(default_factory=list)
-    estimated_pages:    Dict[str, int] = field(default_factory=dict)  # style → pages
+    estimated_pages:    Dict[str, int] = field(default_factory=dict)  # style -> pages
     is_active:          bool = True
     created_at:         datetime = field(default_factory=datetime.utcnow)
 
@@ -217,7 +217,7 @@ GENERAL RULES:
   - Avoid fluff -- focus on clarity and density
   - Adapt tone to target audience
   - Use bullet points where they aid clarity
-  - Ensure logical flow from problem → solution → market → execution
+  - Ensure logical flow from problem -> solution -> market -> execution
   - Every claim must be grounded in the input data provided
   - Do not invent metrics not present in the inputs
   - Use quantitative language wherever possible
@@ -712,7 +712,7 @@ class ExportService:
         Production: use WeasyPrint or reportlab with TechIT brand template.
         Returns S3 URL of the generated PDF.
         """
-        # Production: convert document.content → PDF → upload to S3
+        # Production: convert document.content -> PDF -> upload to S3
         pdf_url = f"https://cdn.techit.io/documents/{document.document_id}/export.pdf"
         return {
             "format":       "pdf",
@@ -928,14 +928,14 @@ class DocumentGenerationService:
       DOCUMENT_FINANCIAL_PROJECTION DOCUMENT_MARKET_RESEARCH
 
     Credit costs per document type:
-      Executive Summary          → 2 credits   (Builder+)
-      Full Business Plan         → 4 credits   (Investor+)
-      Pitch Deck                 → 3 credits   (Founder Pro+)
-      Investor Report            → 3 credits   (Investor+)
-      Unicorn Analysis Report    → 2 credits   (Builder+)
-      Product Roadmap            → 2 credits   (Founder Pro+)
-      Financial Projection       → 2 credits   (Founder Pro+)
-      Market Research Report     → 3 credits   (Founder Pro+)
+      Executive Summary          -> 2 credits   (Builder+)
+      Full Business Plan         -> 4 credits   (Investor+)
+      Pitch Deck                 -> 3 credits   (Founder Pro+)
+      Investor Report            -> 3 credits   (Investor+)
+      Unicorn Analysis Report    -> 2 credits   (Builder+)
+      Product Roadmap            -> 2 credits   (Founder Pro+)
+      Financial Projection       -> 2 credits   (Founder Pro+)
+      Market Research Report     -> 3 credits   (Founder Pro+)
 
     API Endpoints served
     ─────────────────────
@@ -951,7 +951,7 @@ class DocumentGenerationService:
       POST /api/v1/documents/{document_id}/share     0 credits    Free+
     """
 
-    # Map DocumentType → TaskType string (resolved in ai_router_core.py)
+    # Map DocumentType -> TaskType string (resolved in ai_router_core.py)
     TASK_TYPE_MAP: Dict[DocumentType, str] = {
         DocumentType.EXECUTIVE_SUMMARY:       "document_executive_summary",
         DocumentType.BUSINESS_PLAN:           "document_business_plan",
@@ -1188,7 +1188,7 @@ class DocumentGenerationService:
                 (DocumentType.PITCH_DECK,              "🎯", "Slide-by-slide pitch deck structure"),
                 (DocumentType.INVESTOR_REPORT,         "📈", "Deep analysis with EVI-I and signals"),
                 (DocumentType.UNICORN_ANALYSIS_REPORT, "🧠", "Full 10-driver unicorn breakdown"),
-                (DocumentType.PRODUCT_ROADMAP,         "🛠", "MVP → Beta → Launch → Scale timeline"),
+                (DocumentType.PRODUCT_ROADMAP,         "🛠", "MVP -> Beta -> Launch -> Scale timeline"),
                 (DocumentType.FINANCIAL_PROJECTION,    "💰", "Revenue model, costs, and forecast"),
                 (DocumentType.MARKET_RESEARCH_REPORT,  "🧪", "TAM/SAM/SOM, trends, competition"),
             ]

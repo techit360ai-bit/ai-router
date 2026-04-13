@@ -27,7 +27,7 @@ EVI-I integrates into:
 
 Formula
 ───────
-  EVI-I = (0.25·MDR + 0.20·IS + 0.15·TRV + 0.20·RTA + 0.10·UGM + 0.10·CEV)
+  EVI-I = (0.25*MDR + 0.20*IS + 0.15*TRV + 0.20*RTA + 0.10*UGM + 0.10*CEV)
 
   Anti-gaming decay (identical to WCRS):
     DecayFactor  = e^(−0.02 × days_since_last_update)
@@ -234,7 +234,7 @@ class EVIInvestorEngine:
         """
         Delivery rate    50% -- milestones_delivered / milestones_committed
         On-time rate     30% -- (delivered - late) / delivered
-        Quality          20% -- AI-assessed quality score (0–10 → 0–1)
+        Quality          20% -- AI-assessed quality score (0–10 -> 0–1)
         """
         strengths: List[str] = []
         flags:     List[str] = []

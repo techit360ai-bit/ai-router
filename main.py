@@ -1,4 +1,4 @@
-""" 
+
 """
 TECHIT AI INCUBATION PLATFORM
 ==============================
@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
     """
     Initialise the TechIT AI brain on startup.
     All 34 agents are registered at this point.
-    Nothing else should call TechITAIBrain() -- it's a singleton.
+    # Nothing else should call TechITAIBrain() -- it's a singleton.
     """
     global brain
     brain = TechITAIBrain()
@@ -87,7 +87,7 @@ app = FastAPI(
     version="3.0.0",
     description=(
         "The execution intelligence layer for the global startup ecosystem. "
-        "34 AI agents · 51 task types · 20 scoring models · Prompt → Live App."
+        "34 AI agents * 51 task types * 20 scoring models * Prompt -> Live App."
     ),
     lifespan=lifespan,
     docs_url="/docs",
@@ -121,7 +121,7 @@ async def get_user_context(request: Request) -> UserContext:
     Extract and validate the current user from the request.
 
     Production implementation:
-      1. Read Authorization header → "Bearer <jwt_token>"
+      1. Read Authorization header -> "Bearer <jwt_token>"
       2. Decode JWT using python-jose + SECRET_KEY
       3. Extract user_id from payload
       4. Query users + billing tables from PostgreSQL
@@ -194,7 +194,7 @@ async def root():
         "version":  "3.0.0",
         "docs":     "/docs",
         "health":   "/health",
-        "tagline":  "Idea → Score → Build → Deploy → Track → Raise. All here. All AI-native.",
+        "tagline":  "Idea -> Score -> Build -> Deploy -> Track -> Raise. All here. All AI-native.",
     }
 
 
@@ -209,8 +209,8 @@ async def run_pipeline(
 ):
     """
     Run the full 10-agent venture pipeline.
-    Intake → Unicorn → Market → Feasibility → Strategy → Finance →
-    BusinessPlan → TechArch → InvestorIntel → AppScaffold
+    Intake -> Unicorn -> Market -> Feasibility -> Strategy -> Finance ->
+    BusinessPlan -> TechArch -> InvestorIntel -> AppScaffold
 
     Cost: 12 credits. Min tier: Investor+
     """
@@ -287,17 +287,17 @@ async def investor_readiness(
 
 
 # ============================================================================
-# PROMPT → LIVE APP  (App Scaffold Engine)
+# PROMPT -> LIVE APP  (App Scaffold Engine)
 # ============================================================================
 
-@app.post("/api/v1/scaffold/generate", tags=["Prompt → Live App"])
+@app.post("/api/v1/scaffold/generate", tags=["Prompt -> Live App"])
 async def generate_scaffold(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
     """
     Generate a complete application scaffold from the venture profile.
-    Pages · Supabase schema SQL · API routes · .env.example · Deploy config.
+  
     5 credits. Founder Pro+
 
     Body params:
@@ -315,7 +315,7 @@ async def generate_scaffold(
     )
 
 
-@app.post("/api/v1/scaffold/{scaffold_id}/deploy", tags=["Prompt → Live App"])
+@app.post("/api/v1/scaffold/{scaffold_id}/deploy", tags=["Prompt -> Live App"])
 async def deploy_scaffold(
     scaffold_id: str,
     body: Dict[str, Any],
@@ -333,7 +333,7 @@ async def deploy_scaffold(
     )
 
 
-@app.get("/api/v1/scaffold/{scaffold_id}/status", tags=["Prompt → Live App"])
+@app.get("/api/v1/scaffold/{scaffold_id}/status", tags=["Prompt -> Live App"])
 async def scaffold_status(
     scaffold_id: str,
     user: UserContext = Depends(get_user_context),
@@ -342,7 +342,7 @@ async def scaffold_status(
     return AppScaffoldService(brain).get_deploy_status(scaffold_id)
 
 
-@app.get("/api/v1/scaffold/{scaffold_id}/live-url", tags=["Prompt → Live App"])
+@app.get("/api/v1/scaffold/{scaffold_id}/live-url", tags=["Prompt -> Live App"])
 async def scaffold_live_url(
     scaffold_id: str,
     user: UserContext = Depends(get_user_context),
@@ -351,7 +351,7 @@ async def scaffold_live_url(
     return AppScaffoldService(brain).get_live_url(scaffold_id)
 
 
-@app.get("/api/v1/scaffold/{project_id}", tags=["Prompt → Live App"])
+@app.get("/api/v1/scaffold/{project_id}", tags=["Prompt -> Live App"])
 async def get_scaffold(
     project_id: str,
     user: UserContext = Depends(get_user_context),
@@ -365,7 +365,7 @@ async def get_scaffold(
     }
 
 
-@app.get("/api/v1/scaffold/stacks", tags=["Prompt → Live App"])
+@app.get("/api/v1/scaffold/stacks", tags=["Prompt -> Live App"])
 async def get_stacks(user: UserContext = Depends(get_user_context)):
     """List all supported stacks with credit costs and deploy times. 0 credits, Free+"""
     return AppScaffoldService(brain).get_available_stacks()
@@ -869,4 +869,3 @@ if __name__ == "__main__":
         reload=True,          # auto-reload on file changes (dev only)
         log_level="info",
     )
-"""

@@ -30,7 +30,7 @@ techit-ai-router/
 ├── idea_solution_hub.py       # Problem-Driven pathway, impact scoring, deployment engine
 ├── document_generation.py     # 8-type document factory, master prompt, export system
 ├── deployment_architecture.py # Docker, Kubernetes, Celery (14 jobs), cost model
-├── app_scaffold.py            # Prompt → Live App: scaffold engine, deploy config, stacks
+├── app_scaffold.py            # Prompt -> Live App: scaffold engine, deploy config, stacks
 └── README.md                  # This file
 ```
 
@@ -41,8 +41,8 @@ techit-ai-router/
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │               TECHIT APPLICATION LAYER                           │
-│  Dashboard · Incubation Hub · Workspace · Training · Feed        │
-│  Investor Section · Org Sphere · Profile · Market Ready · Admin  │
+│  Dashboard * Incubation Hub * Workspace * Training * Feed        │
+│  Investor Section * Org Sphere * Profile * Market Ready * Admin  │
 └───────────────────────────────┬──────────────────────────────────┘
                                 │
                                 ▼
@@ -55,16 +55,16 @@ techit-ai-router/
 │  • Rate limit  │  Claude Sonnet   │  VenturePipeline             │
 │  • Credit deduct│ GPT-4o-mini     │  (10-agent sequential)       │
 │  • Prompt build│  Claude Haiku    │                              │
-│  • Audit log   │  Cohere Embed    │  Event → Agent routing       │
+│  • Audit log   │  Cohere Embed    │  Event -> Agent routing       │
 └────────────────┴──────────────────┴─────────────────────────────┘
                                 │
         ┌───────────────────────┼───────────────────────┐
         ▼                       ▼                       ▼
 ┌──────────────┐   ┌────────────────┐   ┌─────────────────────────┐
 │  PostgreSQL  │   │  Redis         │   │  External AI Services   │
-│  + pgvector  │   │                │   │  OpenAI · Anthropic     │
-│  42 tables   │   │  Cache · Queue │   │  Cohere · ElevenLabs    │
-│  GSIS snaps  │   │  Rate limits   │   │  Pinecone · Stripe      │
+│  + pgvector  │   │                │   │  OpenAI * Anthropic     │
+│  42 tables   │   │  Cache * Queue │   │  Cohere * ElevenLabs    │
+│  GSIS snaps  │   │  Rate limits   │   │  Pinecone * Stripe      │
 │  EVI-I snaps │   │  Agent memory  │   │                         │
 │  Billing     │   │  WCRS/GSIS     │   │                         │
 └──────────────┘   └────────────────┘   └─────────────────────────┘
@@ -78,26 +78,26 @@ Every score is computed by `ScoringEngine` in `ai_router_core.py`.
 
 | # | Score | Formula | Purpose |
 |---|-------|---------|---------|
-| 1 | **GSIS** | `0.15·PPS + 0.15·EVI + 0.20·MRS + 0.10·BSS + 0.10·RGS + 0.10·FRS + 0.05·CIS + 0.10·IIS + 0.05·CS` | Master composite score |
+| 1 | **GSIS** | `0.15*PPS + 0.15*EVI + 0.20*MRS + 0.10*BSS + 0.10*RGS + 0.10*FRS + 0.05*CIS + 0.10*IIS + 0.05*CS` | Master composite score |
 | 2 | **UPS** | Σ(driver × weight) × 10 | Unicorn probability (10 drivers) |
-| 3 | **EVI** | `(0.30·MC + 0.20·RC⁻¹ + 0.20·IC + 0.20·CC − 0.10·ST) × 100` | Founder momentum |
-| 4 | **EVI-I** | `(0.25·MDR + 0.20·IS + 0.15·TRV + 0.20·RTA + 0.10·UGM + 0.10·CEV)` | Investor execution signal |
-| 5 | **RGS** | `0.35·MRR + 0.25·Users + 0.25·Retention + 0.15·Consistency` | Revenue health |
-| 6 | **BSS** | `0.30·UX + 0.25·Perf + 0.25·NPS + 0.20·WTP` | Beta satisfaction |
+| 3 | **EVI** | `(0.30*MC + 0.20*RC⁻¹ + 0.20*IC + 0.20*CC − 0.10*ST) × 100` | Founder momentum |
+| 4 | **EVI-I** | `(0.25*MDR + 0.20*IS + 0.15*TRV + 0.20*RTA + 0.10*UGM + 0.10*CEV)` | Investor execution signal |
+| 5 | **RGS** | `0.35*MRR + 0.25*Users + 0.25*Retention + 0.15*Consistency` | Revenue health |
+| 6 | **BSS** | `0.30*UX + 0.25*Perf + 0.25*NPS + 0.20*WTP` | Beta satisfaction |
 | 7 | **CS** | `(Σ passed / total) × 100` | Compliance checklist |
-| 8 | **MRS** | `0.25·EVI + 0.20·BSS + 0.20·RGS + 0.15·CS + 0.10·Global + 0.10·Stability` | Launch readiness |
+| 8 | **MRS** | `0.25*EVI + 0.20*BSS + 0.20*RGS + 0.15*CS + 0.10*Global + 0.10*Stability` | Launch readiness |
 | 9 | **TS** | `(Σ provided / total) × 100` | Transparency (investor visibility) |
-| 10 | **FRS** | `0.30·Login + 0.30·Milestones + 0.20·Feedback + 0.10·Community + 0.10·Profile` | Founder reliability |
+| 10 | **FRS** | `0.30*Login + 0.30*Milestones + 0.20*Feedback + 0.10*Community + 0.10*Profile` | Founder reliability |
 | 11 | **CIS** | `(Engagement + ContentValue + FollowerQuality) / 3` | Community influence |
 | 12 | **IIS** | `(Views + Saves + ContactRequests + Watchlist) / 4` | Investor interest |
 | 13 | **PPS** | `(CompletedTasks / TotalTasks) × QualityFactor × 100` | Product progress |
 | 14 | **TSS** | `(SkillCoverage + Activity + Delivery + Collaboration) / 4` | Team strength |
 | 15 | **WCRS** | `Base × QualityMultiplier × DecayFactor` | Marketplace ranking |
-| 16 | **IS** | `0.30·MR + 0.25·Traction + 0.15·Team + 0.15·RiskInverse + 0.10·Growth + 0.05·Diff` | Investment attractiveness |
-| 17 | **MatchScore** | `(0.30·Skill + 0.20·Goal + 0.15·Exec + 0.15·Avail + 0.10·Trust + 0.10·Domain) × 100` | Team compatibility |
+| 16 | **IS** | `0.30*MR + 0.25*Traction + 0.15*Team + 0.15*RiskInverse + 0.10*Growth + 0.05*Diff` | Investment attractiveness |
+| 17 | **MatchScore** | `(0.30*Skill + 0.20*Goal + 0.15*Exec + 0.15*Avail + 0.10*Trust + 0.10*Domain) × 100` | Team compatibility |
 | 18 | **Decay** | `e^(−0.02 × days_inactive)` | Anti-gaming inactivity penalty |
-| 19 | **Impact Score** | `0.30·PA + 0.25·SEV + 0.20·SCALE + 0.15·SUS + 0.10·MEAS` | Idea & Solution Hub -- problem/solution severity |
-| 20 | **Problem Priority Score** | `0.25·IS + 0.25·URG + 0.20·FUND + 0.15·POL + 0.15·TIME` | Global Problems Board ranking |
+| 19 | **Impact Score** | `0.30*PA + 0.25*SEV + 0.20*SCALE + 0.15*SUS + 0.10*MEAS` | Idea & Solution Hub -- problem/solution severity |
+| 20 | **Problem Priority Score** | `0.25*IS + 0.25*URG + 0.20*FUND + 0.15*POL + 0.15*TIME` | Global Problems Board ranking |
 
 ---
 
@@ -106,7 +106,7 @@ Every score is computed by `ScoringEngine` in `ai_router_core.py`.
 ### Incubation Hub (10 agents)
 | Agent | Purpose | Min Tier | Credits |
 |-------|---------|----------|---------|
-| VentureIntakeAgent | Structures raw input → Venture Data Model | Free | 1 |
+| VentureIntakeAgent | Structures raw input -> Venture Data Model | Free | 1 |
 | UnicornEvaluatorAgent | 10-driver UPS + Dileep Rao Benchmark | Builder | 2 |
 | MarketIntelligenceAgent | TAM/SAM/SOM, competition, timing | Builder | 2 |
 | ProductFeasibilityAgent | Build complexity, technical risk | Founder Pro | 2 |
@@ -144,7 +144,7 @@ Every score is computed by `ScoringEngine` in `ai_router_core.py`.
 | DeploymentPlannerAgent | Creates real-world deployment plans | Founder Pro | 2 |
 | GrantMatcherAgent | Generates grant applications for funding | Founder Pro | 3 |
 | DiscussionModeratorAgent | Summarises, clusters, and directs discussions | Free | 1 |
-| FieldFeedbackAgent | Closes the Problem → Deploy → Optimise loop | Free | 1 |
+| FieldFeedbackAgent | Closes the Problem -> Deploy -> Optimise loop | Free | 1 |
 
 ### Document Generation (2 agents)
 | Agent | Purpose | Min Tier | Credits |
@@ -171,7 +171,7 @@ TRACK B -- Pay-As-You-Go (PAYG)
 
 HYBRID RESOLUTION:
   credit_cost = from_subscription + from_payg
-  Subscription depleted first → PAYG overflow automatically.
+  Subscription depleted first -> PAYG overflow automatically.
 ```
 
 ### Role-Based Plans
@@ -194,9 +194,9 @@ HYBRID RESOLUTION:
 *"Let them taste value, then block progress."*
 
 ```
-Idea scored 82% →  block full roadmap    → "Unlock Builder -- $29/month"
-3 matches found →  block contact         → "Start Building -- $29/month"
-Investor viewing → block reply           → "Unlock Scale -- $99/month"
+Idea scored 82% ->  block full roadmap    -> "Unlock Builder -- $29/month"
+3 matches found ->  block contact         -> "Start Building -- $29/month"
+Investor viewing -> block reply           -> "Unlock Scale -- $99/month"
 ```
 
 ---
@@ -208,7 +208,7 @@ The **EVI-I** (in `investor_evi.py`) answers: *"Is this team executing fast enou
 Six independent sub-dimensions, decay-adjusted:
 
 ```
-EVI-I = 0.25·MDR + 0.20·IS + 0.15·TRV + 0.20·RTA + 0.10·UGM + 0.10·CEV
+EVI-I = 0.25*MDR + 0.20*IS + 0.15*TRV + 0.20*RTA + 0.10*UGM + 0.10*CEV
 
 MDR  Milestone Delivery Rate        -- are they shipping what they committed?
 IS   Iteration Speed                -- how fast do they learn?
@@ -240,32 +240,32 @@ base_weeks  (from project stage)
 ```
 
 **Examples from live test:**
-- Solo non-technical founder, idea stage, 8h/week → **18 weeks**, 144 hours
-- Technical co-founder team, validation, 20h/week intensive → **3.6 weeks**, 72 hours
-- Post-MVP founder with revenue + investor interest → **all 5 post-MVP tracks unlocked immediately**
+- Solo non-technical founder, idea stage, 8h/week -> **18 weeks**, 144 hours
+- Technical co-founder team, validation, 20h/week intensive -> **3.6 weeks**, 72 hours
+- Post-MVP founder with revenue + investor interest -> **all 5 post-MVP tracks unlocked immediately**
 
 **Two Curriculum Zones:**
 
-Zone 1 -- Pre-MVP: Validation → Build → Launch (22 modules)
+Zone 1 -- Pre-MVP: Validation -> Build -> Launch (22 modules)
 Zone 2 -- Post-MVP: Growth + Revenue + Fundraising + Scale + Operations (15 modules)
 
 Post-MVP modules unlock conditionally:
-- Growth → requires `stage = beta`
-- Revenue → requires `has_revenue = true`
-- Fundraising → requires `investor_interest = true`
-- Scale → requires `team_size >= 3`
+- Growth -> requires `stage = beta`
+- Revenue -> requires `has_revenue = true`
+- Fundraising -> requires `investor_interest = true`
+- Scale -> requires `team_size >= 3`
 
 **Adaptive triggers** (real-time re-prioritisation):
 ```
-mvp_shipped               → Activate full post-MVP curriculum
-investor_expressed_interest → Fast-track fundraising track
-revenue_went_live          → Unlock revenue optimisation track
-pivot_detected             → Re-trigger validation modules
+mvp_shipped               -> Activate full post-MVP curriculum
+investor_expressed_interest -> Fast-track fundraising track
+revenue_went_live          -> Unlock revenue optimisation track
+pivot_detected             -> Re-trigger validation modules
 ```
 
 ---
 
-## Event → Agent Routing
+## Event -> Agent Routing
 
 ```python
 {
@@ -305,8 +305,8 @@ TechIT also serves:        "Here is a real-world problem that needs solving"
 ### Two Entry Pathways
 
 ```
-A. IDEA-DRIVEN  (existing)  -- "I want to build X" → Startup Builder
-B. PROBLEM-DRIVEN (new)     -- "Here is a problem" → Idea & Solution Hub
+A. IDEA-DRIVEN  (existing)  -- "I want to build X" -> Startup Builder
+B. PROBLEM-DRIVEN (new)     -- "Here is a problem" -> Idea & Solution Hub
 ```
 
 ### Hub Sections (Route: /incubator/solutions)
@@ -315,7 +315,7 @@ B. PROBLEM-DRIVEN (new)     -- "Here is a problem" → Idea & Solution Hub
 |---------|-------|-------------|
 | 🌍 Global Problems Board | `/incubator/solutions/problems` | Submit and browse real-world problems |
 | 💡 Idea Discussions | `/incubator/solutions/discussions` | Structured threads with AI moderation |
-| 🛠 Solution Builder | `/incubator/solutions/builder` | Convert discussion → Solution Project |
+| 🛠 Solution Builder | `/incubator/solutions/builder` | Convert discussion -> Solution Project |
 | 🚀 Deployments | `/incubator/solutions/deployments` | Real-world deployment management |
 | 🌍 Global Impact Dashboard | `/incubator/solutions/impact` | Live impact metrics worldwide |
 | 💰 Funding & Grants | `/incubator/solutions/funding` | AI-generated grant applications |
@@ -323,14 +323,14 @@ B. PROBLEM-DRIVEN (new)     -- "Here is a problem" → Idea & Solution Hub
 ### Impact Scoring System
 
 ```
-Impact Score = 0.30·PA + 0.25·SEV + 0.20·SCALE + 0.15·SUS + 0.10·MEAS
+Impact Score = 0.30*PA + 0.25*SEV + 0.20*SCALE + 0.15*SUS + 0.10*MEAS
   PA    People affected (log-normalised)
   SEV   Severity (0–10)
   SCALE Scalability (0–10)
   SUS   Sustainability (0–10)
   MEAS  Measurability (0–10)
 
-Problem Priority Score = 0.25·IS + 0.25·URG + 0.20·FUND + 0.15·POL + 0.15·TIME
+Problem Priority Score = 0.25*IS + 0.25*URG + 0.20*FUND + 0.15*POL + 0.15*TIME
   🔴 Critical (85+)    🟠 High Priority (65–84)
   🟡 Emerging (45–64)  🔵 Long-term Research (0–44)
 ```
@@ -348,7 +348,7 @@ Problem Priority Score = 0.25·IS + 0.25·URG + 0.20·FUND + 0.15·POL + 0.15·T
 | `service_based` | Non-SaaS service delivery | Revenue + grants |
 | `hybrid` | Mixed model | Hybrid |
 
-### Problem → Solution → Deployment → Feedback Loop
+### Problem -> Solution -> Deployment -> Feedback Loop
 
 ```
 User submits problem
@@ -369,14 +369,14 @@ Deploy to real world
       ↓
 Collect field feedback
       ↓
-AI optimises → loop repeats
+AI optimises -> loop repeats
 ```
 
 ### Problem Discovery Engine
 
 TechIT finds problems **before** users submit them:
 
-- **Sources:** News feeds · NGO reports (ReliefWeb) · Government open datasets · WHO data · Climate signals
+- **Sources:** News feeds * NGO reports (ReliefWeb) * Government open datasets * WHO data * Climate signals
 - **Output:** Auto-generated `ProblemNode` candidates with AI classification
 - **Schedule:** Runs daily at 6 AM via `problem_discovery_daily` Celery task
 
@@ -426,10 +426,10 @@ TechIT generates everything in minutes.
 
 | Option | Choices |
 |--------|---------|
-| **Style** | Concise · Standard · Detailed |
-| **Audience** | Founder Use · Investors · Accelerators |
-| **Export Format** | PDF · Notion Doc · Google Doc · Slide Deck |
-| **Investor Mode** | Off · On (adds risk scoring + recommendation page) |
+| **Style** | Concise * Standard * Detailed |
+| **Audience** | Founder Use * Investors * Accelerators |
+| **Export Format** | PDF * Notion Doc * Google Doc * Slide Deck |
+| **Investor Mode** | Off * On (adds risk scoring + recommendation page) |
 
 ### Investor Pack (One-Click)
 
@@ -459,11 +459,11 @@ Pull analysis results (GSIS, EVI-I, Unicorn Score)
 DocumentPromptEngine assembles master prompt
   (system role + type template + style + audience + investor mode)
       ↓
-AI call → Claude Sonnet 4.6 (all long-form documents)
+AI call -> Claude Sonnet 4.6 (all long-form documents)
       ↓
 Parse structured output by section schema
       ↓
-Build exports: PDF URL · shareable link · Edit with AI URL
+Build exports: PDF URL * shareable link * Edit with AI URL
       ↓
 Return preview + full content + all export options
 ```
@@ -482,7 +482,7 @@ DELETE /api/v1/documents/{id}              0 credits  Free+
 
 ---
 
-## Prompt → Live App Engine
+## Prompt -> Live App Engine
 
 ```
 TechIT's defining edge.
@@ -529,7 +529,7 @@ User clicks: "Deploy to Vercel"  (1 click, 3 credits)
 "Your app is live: https://student-market.vercel.app"
                     ↓
 TechIT keeps tracking:
-  GSIS · EVI-I · Decay Factor · Investor Signals · Momentum
+  GSIS * EVI-I * Decay Factor * Investor Signals * Momentum
 ```
 
 ### Supported Stacks
@@ -561,8 +561,8 @@ This reaction is the growth engine. Every time a founder sees their live URL, th
 The loop:
 
 ```
-Scaffold → Live product → Founder shares → New user signs up
-→ New idea submitted → New scaffold generated → Loop repeats
+Scaffold -> Live product -> Founder shares -> New user signs up
+-> New idea submitted -> New scaffold generated -> Loop repeats
 ```
 
 ---
@@ -591,7 +591,7 @@ TechIT's answer to "what is the one thing?":
 
 Not "we help startups." Not "we connect founders." Not "we generate business plans."
 
-**Idea → Score → Build → Deploy → Track → Raise. All here. All AI-native.**
+**Idea -> Score -> Build -> Deploy -> Track -> Raise. All here. All AI-native.**
 
 ### The Formula
 
@@ -677,46 +677,46 @@ TechIT requires API keys from external services. Collect these before proceeding
 
 **OpenAI**
 1. Go to [platform.openai.com](https://platform.openai.com)
-2. Sign in → click your profile → **API keys**
-3. Click **+ Create new secret key** → name it `techit-dev`
+2. Sign in -> click your profile -> **API keys**
+3. Click **+ Create new secret key** -> name it `techit-dev`
 4. Copy immediately -- it will not be shown again
 5. Ensure your account has GPT-4 access (requires payment method on file)
 
 **Anthropic**
 1. Go to [console.anthropic.com](https://console.anthropic.com)
-2. Sign in → **API Keys** in the left sidebar
-3. Click **+ Create Key** → name it `techit-dev`
+2. Sign in -> **API Keys** in the left sidebar
+3. Click **+ Create Key** -> name it `techit-dev`
 4. Copy the `sk-ant-...` key immediately
 
 #### Strongly Recommended
 
 **Stripe** (required for billing system to process payments)
 1. Go to [dashboard.stripe.com](https://dashboard.stripe.com)
-2. Navigate to **Developers → API keys**
+2. Navigate to **Developers -> API keys**
 3. Copy the **Secret key** (`sk_test_...` for development, `sk_live_...` for production)
-4. For webhooks: **Developers → Webhooks → Add endpoint** → set URL to `https://yourdomain.com/api/v1/webhooks/stripe` → copy the signing secret (`whsec_...`)
+4. For webhooks: **Developers -> Webhooks -> Add endpoint** -> set URL to `https://yourdomain.com/api/v1/webhooks/stripe` -> copy the signing secret (`whsec_...`)
 
 **Cohere** (fallback embeddings provider)
 1. Go to [dashboard.cohere.com](https://dashboard.cohere.com)
-2. **API Keys** → **New Trial Key** (free tier available)
+2. **API Keys** -> **New Trial Key** (free tier available)
 3. Copy the key
 
 #### Optional
 
 **Pinecone** (vector search at scale -- pgvector sufficient for < 100K users)
-1. Go to [app.pinecone.io](https://app.pinecone.io) → sign in
-2. **API Keys** → copy your key
+1. Go to [app.pinecone.io](https://app.pinecone.io) -> sign in
+2. **API Keys** -> copy your key
 3. Create an index named `techit-embeddings` with **1536 dimensions**, **cosine** metric
 
 **ElevenLabs** (Tour Guide audio briefings)
-1. Go to [elevenlabs.io](https://elevenlabs.io) → sign in
-2. Click your profile icon → **Profile + API key**
+1. Go to [elevenlabs.io](https://elevenlabs.io) -> sign in
+2. Click your profile icon -> **Profile + API key**
 3. Copy your API key
 
 **AWS** (S3 for audio and document storage)
-1. Go to AWS Console → **IAM → Users → Create user**
-2. Name: `techit-dev` → attach policy `AmazonS3FullAccess`
-3. **Security credentials → Create access key** → copy both keys
+1. Go to AWS Console -> **IAM -> Users -> Create user**
+2. Name: `techit-dev` -> attach policy `AmazonS3FullAccess`
+3. **Security credentials -> Create access key** -> copy both keys
 4. Create an S3 bucket named `techit-assets-dev` in your preferred region
 
 ---
@@ -825,7 +825,7 @@ docker compose build
 
 # Step 4 -- Start all services in detached mode
 docker compose up -d
-# Services started: api · worker · scheduler · postgres · redis · flower
+# Services started: api * worker * scheduler * postgres * redis * flower
 
 # Step 5 -- Confirm all containers are healthy
 docker compose ps
@@ -1356,7 +1356,7 @@ INSERT INTO ai_prompts (
 sql = '\n'.join(inserts)
 with open('/tmp/seed_prompts.sql', 'w') as f:
     f.write(sql)
-print(f'Generated {len(inserts)} prompt inserts → /tmp/seed_prompts.sql')
+print(f'Generated {len(inserts)} prompt inserts -> /tmp/seed_prompts.sql')
 "
 
 # Step 2 -- Execute the seed SQL
@@ -1385,7 +1385,7 @@ By default TechIT uses **pgvector** for all embedding operations. Pinecone is op
 
 ```bash
 # Step 1 -- Create a Pinecone index
-# Go to app.pinecone.io → Create Index:
+# Go to app.pinecone.io -> Create Index:
 #   Name:       techit-embeddings
 #   Dimensions: 1536   (OpenAI text-embedding-3-small output size)
 #   Metric:     cosine
@@ -1455,7 +1455,7 @@ audio_resp = requests.post(
 audio_resp.raise_for_status()
 with open('/tmp/test_briefing.mp3', 'wb') as f:
     f.write(audio_resp.content)
-print(f'✅ Audio generated: {len(audio_resp.content):,} bytes → /tmp/test_briefing.mp3')
+print(f'✅ Audio generated: {len(audio_resp.content):,} bytes -> /tmp/test_briefing.mp3')
 "
 
 # Step 4 -- Add S3 bucket for audio storage (recommended for production)
@@ -1832,7 +1832,7 @@ jobs:
 
 ```bash
 # ── Sentry (error tracking) ────────────────────────────────────────────────
-# 1. Create a project at sentry.io → Python → FastAPI
+# 1. Create a project at sentry.io -> Python -> FastAPI
 # 2. Copy the DSN (looks like: https://abc123@o123.ingest.sentry.io/456)
 # 3. Add to .env:
 echo "SENTRY_DSN=https://your-dsn@sentry.io/project-id" >> .env

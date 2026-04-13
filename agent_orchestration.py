@@ -33,19 +33,19 @@ Platform:
  20. AdminMonitorAgent           -- abuse detection + anomaly alerts
  21. GSISComputeAgent            -- Global Startup Intelligence Score
 
-EVENT → AGENT ROUTING
+EVENT -> AGENT ROUTING
 ──────────────────────
-  idea_submitted         → VentureIntake + RiskEvaluator + Matching
-  user_login             → TourGuide + DashboardIntelligence + GSISCompute
-  training_completed     → AdaptiveTraining (adaptive update)
-  milestone_updated      → DashboardIntelligence + TourGuide + GSISCompute
-  investor_views         → InvestorIntelligence
-  profile_updated        → AIProfile
-  org_created            → OrgSphere
-  mvp_shipped            → AdaptiveTraining (activate post-MVP tracks)
-  revenue_went_live      → AdaptiveTraining + InvestorIntelligence
-  pivot_detected         → PivotIntelligence + AdaptiveTraining
-  investor_expressed_interest → AdaptiveTraining (fast-track fundraising)
+  idea_submitted         -> VentureIntake + RiskEvaluator + Matching
+  user_login             -> TourGuide + DashboardIntelligence + GSISCompute
+  training_completed     -> AdaptiveTraining (adaptive update)
+  milestone_updated      -> DashboardIntelligence + TourGuide + GSISCompute
+  investor_views         -> InvestorIntelligence
+  profile_updated        -> AIProfile
+  org_created            -> OrgSphere
+  mvp_shipped            -> AdaptiveTraining (activate post-MVP tracks)
+  revenue_went_live      -> AdaptiveTraining + InvestorIntelligence
+  pivot_detected         -> PivotIntelligence + AdaptiveTraining
+  investor_expressed_interest -> AdaptiveTraining (fast-track fundraising)
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ class AgentType(Enum):
     # Document Generation agents
     DOCUMENT_GENERATION   = "document_generation"
     DOCUMENT_EXPORT       = "document_export"
-    # Prompt → Live App
+    # Prompt -> Live App
     APP_SCAFFOLD          = "app_scaffold"
 
 
@@ -940,7 +940,7 @@ class VenturePipeline:
         r = await self.orch.trigger_agent(AgentType.INVESTOR_INTELLIGENCE, ctx())
         results["investor"] = r
 
-        # Prompt → Live App: scaffold runs after architecture is designed
+        # Prompt -> Live App: scaffold runs after architecture is designed
         r = await self.orch.trigger_agent(AgentType.APP_SCAFFOLD, ctx())
         results["app_scaffold"] = r
 
@@ -1087,7 +1087,7 @@ class DiscussionModeratorAgent(BaseAgent):
 
 
 class FieldFeedbackAgent(BaseAgent):
-    """Analyses real-world field feedback to close the Problem → Solution → Deploy → Optimise loop."""
+    """Analyses real-world field feedback to close the Problem -> Solution -> Deploy -> Optimise loop."""
     async def execute(self, context: AgentContext) -> AgentResult:
         t = datetime.now()
         resp = await self._call_ai(TaskType.FIELD_FEEDBACK_ANALYSIS, context.trigger_event or {}, context.user_context)
@@ -1177,12 +1177,12 @@ class DocumentExportAgent(BaseAgent):
 
 
 # ============================================================================
-# PROMPT → LIVE APP AGENT
+# PROMPT -> LIVE APP AGENT
 # ============================================================================
 
 class AppScaffoldAgent(BaseAgent):
     """
-    TechIT's defining edge agent -- Prompt → Live App in Minutes.
+    TechIT's defining edge agent -- Prompt -> Live App in Minutes.
 
     This agent sits at the end of the Venture Pipeline, after TechArchitectAgent.
     Where TechArchitectAgent produces architecture *descriptions*, this agent
@@ -1197,9 +1197,9 @@ class AppScaffoldAgent(BaseAgent):
       - Numbered setup steps (exact CLI commands)
 
     This is NOT Bolt.new. The difference:
-      Bolt.new:    User describes an app → code generated
+      Bolt.new:    User describes an app -> code generated
       TechIT:      Platform already knows the problem, market, stack, and
-                   unicorn score → scaffold is generated FROM intelligence,
+                   unicorn score -> scaffold is generated FROM intelligence,
                    not FROM scratch.
 
     The result: a scaffold that is architecturally correct for the market,
@@ -1316,7 +1316,7 @@ class AppScaffoldAgent(BaseAgent):
     def _select_stack(self, profile: dict, arch: dict) -> str:
         """
         Select the optimal stack based on venture profile and architecture output.
-        Mobile products → Expo; API-first B2B → FastAPI; default → Next.js + Supabase.
+        Mobile products -> Expo; API-first B2B -> FastAPI; default -> Next.js + Supabase.
         Production: parse from TechArchitectAgent structured output.
         """
         description = (
@@ -1422,7 +1422,7 @@ class AgentOrchestrator:
             # Document Generation agents
             (AgentType.DOCUMENT_GENERATION,   DocumentGenerationAgent,   "Document Generation Engine",  [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.BUILDER,     None),
             (AgentType.DOCUMENT_EXPORT,       DocumentExportAgent,       "Document Export Agent",       [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FREE,        None),
-            # Prompt → Live App
+            # Prompt -> Live App
             (AgentType.APP_SCAFFOLD,          AppScaffoldAgent,          "App Scaffold Engine",         [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FOUNDER_PRO, None),
         ]
         for atype, cls, name, triggers, min_tier, schedule in registry:
@@ -1439,7 +1439,7 @@ class AgentOrchestrator:
 
     async def handle_event(self, event: Dict) -> List[AgentResult]:
         """
-        Event → agent routing.
+        Event -> agent routing.
 
         All events trigger agents that run concurrently where possible.
         Training agent adapts on lifecycle events (mvp_shipped, pivot_detected, etc.).
@@ -1488,11 +1488,11 @@ class AgentOrchestrator:
         INVESTOR_ELEVATED = {AgentType.INVESTOR_INTELLIGENCE}
 
         routing: Dict[str, List[AgentType]] = {
-            # idea_submitted  → VentureIntake (structures input) + RiskEvaluator + Matching
+            # idea_submitted  -> VentureIntake (structures input) + RiskEvaluator + Matching
             "idea_submitted":              [AgentType.VENTURE_INTAKE,
                                             AgentType.RISK_EVALUATOR,
                                             AgentType.MATCHING],
-            # user_login → all three run on every login
+            # user_login -> all three run on every login
             "user_login":                  [AgentType.TOUR_GUIDE,
                                             AgentType.DASHBOARD_INTELLIGENCE,
                                             AgentType.GSIS_COMPUTE],
@@ -1527,7 +1527,7 @@ class AgentOrchestrator:
             # Document Generation events
             "document_requested":          [AgentType.DOCUMENT_GENERATION],
             "document_export_requested":   [AgentType.DOCUMENT_EXPORT],
-            # Prompt → Live App events
+            # Prompt -> Live App events
             "tech_architecture_complete":  [AgentType.APP_SCAFFOLD],
             "app_scaffold_requested":      [AgentType.APP_SCAFFOLD],
         }
