@@ -1159,7 +1159,7 @@ print(f'✅ EVI-I verified')
 "
 
 # ── Check 7: Celery workers ────────────────────────────────────────────────
-docker compose exec worker celery -A workers.celery inspect registered
+docker compose exec worker celery -A workers.workers.celery inspect registered
 # Expected: lists all 14 registered tasks including:
 #   daily_tour_guide, weekly_summaries, daily_investor_signals,
 #   adaptive_curriculum_weekly, wcrs_gsis_refresh, stagnation_roster,
@@ -1229,19 +1229,19 @@ docker compose up worker scheduler
 open http://localhost:5555  # Flower dashboard
 
 # Or via CLI
-docker compose exec worker celery -A workers.celery inspect active
-docker compose exec worker celery -A workers.celery inspect scheduled
-docker compose exec worker celery -A workers.celery inspect reserved
+docker compose exec worker celery -A workers.workers.celery inspect active
+docker compose exec worker celery -A workers.workers.celery inspect scheduled
+docker compose exec worker celery -A workers.workers.celery inspect reserved
 
 # Trigger a scheduled task manually for testing
-docker compose exec worker celery -A workers.celery call daily_tour_guide
-docker compose exec worker celery -A workers.celery call wcrs_gsis_refresh
+docker compose exec worker celery -A workers.workers.celery call daily_tour_guide
+docker compose exec worker celery -A workers.workers.celery call wcrs_gsis_refresh
 
 # View task history
-docker compose exec worker celery -A workers.celery events
+docker compose exec worker celery -A workers.workers.celery events
 
 # Check beat scheduler is running all 9 jobs
-docker compose exec scheduler celery -A workers.celery beat --dry-run
+docker compose exec scheduler celery -A workers.workers.celery beat --dry-run
 # Expected: lists all 9 cron entries with their next run times
 
 # Scale workers up (for production load)
@@ -1313,10 +1313,10 @@ psql -U techit -d techit_db < init_functions.sql
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 # Step 8 -- Start Celery workers (separate terminal)
-celery -A workers.celery worker --loglevel=info -Q default,ai_heavy,ai_light,scheduled
+celery -A workers.workers.celery worker --loglevel=info -Q default,ai_heavy,ai_light,scheduled
 
 # Step 9 -- Start Celery Beat scheduler (separate terminal)
-celery -A workers.celery beat --loglevel=info
+celery -A workers.workers.celery beat --loglevel=info
 ```
 
 ---
@@ -1898,7 +1898,7 @@ aws cloudwatch put-metric-alarm \
 
 # Flower (Celery monitoring) -- already running at http://localhost:5555
 # For production, secure with basic auth:
-docker compose exec scheduler celery -A workers.celery flower \
+docker compose exec scheduler celery -A workers.workers.celery flower \
     --basic_auth=admin:your-secure-password \
     --port=5555
 ```
@@ -1944,7 +1944,7 @@ redis-cli -h localhost ping      # Should return: PONG
 The worker has not imported the task module. Ensure `workers/celery.py` imports the task file and run:
 ```bash
 docker compose restart worker scheduler
-docker compose exec worker celery -A workers.celery inspect registered
+docker compose exec worker celery -A workers.workers.celery inspect registered
 ```
 
 **`stripe.error.SignatureVerificationError`**
@@ -1953,7 +1953,7 @@ The `STRIPE_WEBHOOK_SECRET` in `.env` does not match the webhook signing secret 
 **Decay factor not updating (scores not decreasing for inactive projects)**
 The `wcrs_gsis_refresh` Celery task runs every 30 minutes. Verify it is running:
 ```bash
-docker compose exec worker celery -A workers.celery inspect scheduled
+docker compose exec worker celery -A workers.workers.celery inspect scheduled
 # Should show wcrs_gsis_refresh in the scheduled tasks list
 ```
 

@@ -141,7 +141,7 @@ services:
       - postgres
       - redis
     command: >
-      celery -A workers.celery worker
+      celery -A workers.workers.celery worker
       --loglevel=info
       --concurrency=4
       -Q default,ai_heavy,ai_light,scheduled
@@ -157,7 +157,7 @@ services:
     depends_on:
       - redis
       - worker
-    command: celery -A workers.celery beat --loglevel=info
+    command: celery -A workers.workers.celery beat --loglevel=info
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -198,7 +198,7 @@ services:
       - CELERY_BROKER=redis://redis:6379
     depends_on:
       - redis
-    command: celery -A workers.celery flower --port=5555
+    command: celery -A workers.workers.celery flower --port=5555
 
 volumes:
   postgres_data:
