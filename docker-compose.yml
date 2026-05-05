@@ -44,7 +44,7 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     environment:
-      - DATABASE_URL=postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit
+      - DATABASE_URL=postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db
       - REDIS_URL=redis://redis:6379
       - CELERY_BROKER=redis://redis:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -79,7 +79,7 @@ services:
     environment:
       - POSTGRES_USER=techit
       - POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      - POSTGRES_DB=techit
+      - POSTGRES_DB=techit_db
       - PYTHONPATH=/app
     ports:
       - "5432:5432"
