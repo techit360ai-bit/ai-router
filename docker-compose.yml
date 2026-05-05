@@ -1,6 +1,27 @@
 
 
 services:
+# dedicated migration step:
+migrate:
+  build:
+    context: .
+    dockerfile: Dockerfile.api
+  command: alembic upgrade head
+  environment:
+    - DATABASE_URL=postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db
+    - PYTHONPATH=/app
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: "no"   # run once and exit
+
+api:
+  # ... existing config ...
+  depends_on:
+    postgres:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
 
   api:
     build:
