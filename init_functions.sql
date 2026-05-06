@@ -96,7 +96,7 @@ SELECT
     u.subscription_credits_remaining,
     u.payg_credits_balance,
     COUNT(cl.id) AS transactions_this_month,
-    SUM(ABS(cl.credits_delta)) FILTER (WHERE cl.event_type = 'credits_deducted')
+    SUM(ABS(cl.credits_delta)) FILTER (WHERE cl.event_type = 'CREDITS_DEDUCTED')
         AS credits_consumed,
     SUM(cl.usd_charged_payg) AS payg_usd_spent
 FROM users u
@@ -114,5 +114,5 @@ SELECT p.id, p.title, p.owner_id, p.days_since_update,
        p.gsis_score, p.wcrs_score
 FROM projects p
 WHERE p.decay_factor < 0.70
-  AND p.stage NOT IN ('scale')
+  AND p.stage NOT IN ('SCALE')
 ORDER BY p.decay_factor ASC;
