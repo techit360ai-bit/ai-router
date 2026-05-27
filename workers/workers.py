@@ -50,8 +50,8 @@ logger = structlog.get_logger()
 
 celery = Celery(
     "techit_workers",
-    broker=os.getenv("CELERY_BROKER", "redis://redis:6379"),
-    backend=os.getenv("CELERY_BROKER", "redis://redis:6379"),
+    broker=os.getenv("CELERY_BROKER", os.getenv("REDIS_URL", "redis://redis:6379")),
+    backend=os.getenv("CELERY_BROKER", os.getenv("REDIS_URL", "redis://redis:6379")),
     # include= forces Celery to import this module and register all
     # @celery.task decorated functions. Without this, `inspect registered`
     # only shows tasks from whichever module Celery happened to import.
