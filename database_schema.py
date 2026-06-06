@@ -1974,6 +1974,53 @@ class Payout(Base):
     __table_args__ = (Index("idx_payout_user", "user_id", "month_iso"),)
 
 
+# ============================================================================
+# INVESTOR — CAPITAL POOLS  (micro-funds, escrow, milestone-based release)
+# ============================================================================
+# Backs the investor Capital Pools dashboard: an investor funds a pool, capital
+# is deployed across startups above a readiness threshold, and funds are released
+# from escrow automatically as milestones are hit.
+
+class CapitalPool(Base):
+    """An investor micro-fund with deployment + milestone-release rules."""
+    __tablename__ = "capital_pools"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investor_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    name          = Column(String(160), nullable=False)
+    total_capital_usd = Column(DECIMAL(16, 2), nullable=False)
+    deployed_usd      = Column(DECIMAL(16, 2), default=0)
+    funds_released_usd = Column(DECIMAL(16, 2), default=0)  # escrow released on milestones
+    startups_count    = Column(Integer, default=0)
+    milestones_hit    = Column(Integer, default=0)
+    roi_simulation    = Column(Float, default=0)            # projected multiple, e.g. 3.2x
+    # rules
+    min_readiness     = Column(Integer, default=80)
+    max_per_startup_percent = Column(Float, default=20)
+    milestone_trigger = Column(Boolean, default=True)
+    status        = Column(String(20), default="active")    # active | closed
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at    = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_pool_investor", "investor_id", "status"),)
+
+
+class PoolMilestoneRelease(Base):
+    """An escrow release event: capital paid out of a pool when a startup hits a milestone."""
+    __tablename__ = "pool_milestone_releases"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pool_id     = Column(UUID(as_uuid=True), ForeignKey("capital_pools.id"), nullable=False)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"),     nullable=False)
+    milestone   = Column(String(200))
+    amount_usd  = Column(DECIMAL(16, 2), nullable=False)
+    released     = Column(Boolean, default=False)           # False = held in escrow
+    triggered_at = Column(TIMESTAMP)
+    created_at   = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_release_pool", "pool_id", "released"),)
+
+
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════╗

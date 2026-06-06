@@ -46,6 +46,7 @@ from integration_guide import (
     AppScaffoldService,
     EquityService,
     PayoutService,
+    CapitalPoolService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -480,6 +481,31 @@ async def investor_evi(
 ):
     """6-dimensional EVI-I investor execution signal. 2 credits, Investor+"""
     return await InvestorSectionService(brain).get_investor_evi(user, startup_data)
+
+
+@app.get("/api/v1/investor/capital-pools", tags=["Investor"])
+async def investor_capital_pools(user: UserContext = Depends(get_user_context)):
+    """Investor micro-fund capital pools with deployment + milestone release. 0 credits."""
+    return await CapitalPoolService(brain).get_capital_pools(user)
+
+
+@app.post("/api/v1/investor/capital-pools", tags=["Investor"])
+async def investor_create_pool(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Create a new capital pool. 0 credits. Body: { name, totalCapital, rules }"""
+    return await CapitalPoolService(brain).create_pool(user, body)
+
+
+@app.post("/api/v1/investor/capital-pools/{pool_id}/release", tags=["Investor"])
+async def investor_pool_release(
+    pool_id: str,
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Release escrowed capital on a hit milestone. 0 credits. Body: { projectId, milestone, amount }"""
+    return await CapitalPoolService(brain).release_on_milestone(user, {**body, "poolId": pool_id})
 
 
 # ============================================================================

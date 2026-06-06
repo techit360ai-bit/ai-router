@@ -2304,6 +2304,79 @@ class PayoutService:
 
 
 # ============================================================================
+# CAPITAL POOL SERVICE  (Investor micro-funds + escrow milestone release)
+# ============================================================================
+
+class CapitalPoolService:
+    """
+    Investor micro-funds: pooled capital deployed across startups with automated,
+    milestone-based escrow release. Backs the investor Capital Pools dashboard.
+
+    Response keys camelCase to match the frontend CapitalPool contract.
+    Production: query `capital_pools` + `pool_milestone_releases`.
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_capital_pools(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/investor/capital-pools -- 0 credits, Investor+"""
+        return {"pools": self._load_pools(user_context)}
+
+    async def create_pool(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """POST /api/v1/investor/capital-pools -- 0 credits. Body: pool definition."""
+        rules = body.get("rules", {})
+        pool = {
+            "id": body.get("id", "new"),
+            "name": body.get("name", "Untitled Pool"),
+            "totalCapital": float(body.get("totalCapital", 0) or 0),
+            "deployed": 0,
+            "startups": 0,
+            "milestonesHit": 0,
+            "fundsReleased": 0,
+            "roiSimulation": 0,
+            "rules": {
+                "minReadiness": int(rules.get("minReadiness", 80)),
+                "maxPerStartup": float(rules.get("maxPerStartup", 20)),
+                "milestoneTrigger": bool(rules.get("milestoneTrigger", True)),
+            },
+        }
+        return {"ok": True, "pool": pool}
+
+    async def release_on_milestone(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/investor/capital-pools/{pool_id}/release -- 0 credits.
+        Release escrowed capital for a startup that hit a milestone.
+        Body: { projectId, milestone, amount }
+        """
+        amount = float(body.get("amount", 0) or 0)
+        return {
+            "ok": amount > 0,
+            "poolId": body.get("poolId"),
+            "projectId": body.get("projectId"),
+            "milestone": body.get("milestone"),
+            "amountReleased": amount,
+            "released": amount > 0,
+        }
+
+    def _load_pools(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        return [
+            {"id": "1", "name": "TechIT Micro Fund Alpha", "totalCapital": 500000,
+             "deployed": 380000, "startups": 8, "milestonesHit": 24,
+             "fundsReleased": 280000, "roiSimulation": 3.2,
+             "rules": {"minReadiness": 85, "maxPerStartup": 20, "milestoneTrigger": True}},
+            {"id": "2", "name": "AI Governance Fund", "totalCapital": 750000,
+             "deployed": 520000, "startups": 10, "milestonesHit": 31,
+             "fundsReleased": 420000, "roiSimulation": 4.1,
+             "rules": {"minReadiness": 80, "maxPerStartup": 15, "milestoneTrigger": True}},
+        ]
+
+
+# ============================================================================
 # DEMO
 # ============================================================================
 
