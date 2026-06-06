@@ -2210,6 +2210,100 @@ class EquityService:
 
 
 # ============================================================================
+# PAYOUT SERVICE  (Collaborator cash layer — money going OUT)
+# ============================================================================
+
+class PayoutService:
+    """
+    Collaborator cash earnings + payout ledger + withdrawals. Distinct from the
+    billing credit engine (money coming in). Backs the Earnings dashboard.
+
+    Response keys camelCase to match frontend CashEarning / Payout / cashTotals.
+    Production: query `collaborator_earnings` and `payouts` (database_schema.py).
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_collaborator_earnings(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/collaborator/earnings -- 0 credits, Free+"""
+        earnings = self._load_earnings(user_context)
+        payouts  = self._load_payouts(user_context)
+        return {
+            "cashEarnings": earnings,
+            "payouts":      payouts,
+            "totals":       self._totals(earnings, payouts),
+        }
+
+    async def request_withdrawal(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/collaborator/earnings/withdraw -- 0 credits.
+        Body: { amount, destination? }. Creates a 'processing' payout.
+        Production: INSERT payouts; debit pending balance atomically.
+        """
+        amount = float(body.get("amount", 0) or 0)
+        totals = self._totals(self._load_earnings(user_context),
+                              self._load_payouts(user_context))
+        if amount <= 0 or amount > float(totals["pendingUSD"]):
+            return {"ok": False, "error": "invalid_amount",
+                    "available": totals["pendingUSD"]}
+        # month/id are stamped by caller/DB in production (no clock in this layer).
+        return {
+            "ok": True,
+            "payout": {
+                "id": body.get("idemKey", "pending"),
+                "monthIso": body.get("monthIso", ""),
+                "amount": amount,
+                "status": "processing",
+            },
+            "destination": body.get("destination", "•••1234"),
+            "newPendingUSD": round(float(totals["pendingUSD"]) - amount, 2),
+        }
+
+    # ── helpers ───────────────────────────────────────────────────────────
+    def _load_earnings(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        return [
+            {"projectId": "1", "projectName": "NeuralSync AI",  "earned": 45000,
+             "pending": 5000, "revenueSharePercent": 2.5,
+             "contributionNote": "Dashboard feature increased user retention by 18%"},
+            {"projectId": "2", "projectName": "FinFlow", "earned": 38000,
+             "pending": 4500, "revenueSharePercent": 1.8,
+             "contributionNote": "Payment integration enabled $500K in transactions"},
+            {"projectId": "3", "projectName": "HealthTrack Pro", "earned": 22000,
+             "pending": 2850, "revenueSharePercent": 1.2,
+             "contributionNote": "ML model improved prediction accuracy by 12%"},
+        ]
+
+    def _load_payouts(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        rows = [
+            ("p12", "2025-06", 8200), ("p11", "2025-07", 9100),
+            ("p10", "2025-08", 10400), ("p9", "2025-09", 11200),
+            ("p8", "2025-10", 10800), ("p7", "2025-11", 12400),
+            ("p6", "2025-12", 11900), ("p5", "2026-01", 13200),
+            ("p4", "2026-02", 13800), ("p3", "2026-03", 14100),
+            ("p2", "2026-04", 14600), ("p1", "2026-05", 12350),
+        ]
+        out = [{"id": i, "monthIso": m, "amount": a, "status": "paid"} for i, m, a in rows]
+        out[-1]["status"] = "processing"
+        return out
+
+    @staticmethod
+    def _totals(earnings: List[Dict[str, Any]],
+                payouts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        lifetime = sum(float(e["earned"]) for e in earnings)
+        pending  = sum(float(e["pending"]) for e in earnings)
+        # Trailing-12 revenue-share approximation from the payout ledger tail.
+        ttm = sum(float(p["amount"]) for p in payouts[-12:]) * 0.1
+        return {
+            "lifetimeUSD": round(lifetime, 2),
+            "pendingUSD": round(pending, 2),
+            "revenueShareTTMUsd": round(ttm, 2),
+        }
+
+
+# ============================================================================
 # DEMO
 # ============================================================================
 

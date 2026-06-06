@@ -26,7 +26,7 @@ Paired frontend branch: `feat/dashboard-intelligence` in the `techIT` clone.
 
 ### Section A — frontend exists, build backend
 - ✅ A1 Collaborator Equity/vesting engine — EquityGrant/CapTableEntry/DilutionEvent models, EquityService (holdings/totals/vesting timeline/dilution protection), GET+POST /api/v1/collaborator/equity[/dilution]
-- ⬜ A2 Collaborator Earnings/payouts — payout ledger (money out), distinct from credits
+- ✅ A2 Collaborator Earnings/payouts — CollaboratorEarning/Payout models, PayoutService (earnings/payouts/totals + withdrawal w/ balance check), GET /collaborator/earnings + POST .../withdraw
 - ⬜ A3 Investor Capital Pools — pool/escrow/milestone-release entity
 - ⬜ A4 Investor Deal Rooms — cap table, term sheet, e-signature, negotiation workflow
 - ⬜ A5 Investor Data Rooms — document vault container + access control + per-investor sharing

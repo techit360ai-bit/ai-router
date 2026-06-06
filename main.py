@@ -45,6 +45,7 @@ from integration_guide import (
     IPProtectionService,
     AppScaffoldService,
     EquityService,
+    PayoutService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -506,6 +507,29 @@ async def collaborator_equity_dilution(
     Already-vested equity is shielded unless consent is given.
     """
     return await EquityService(brain).record_dilution_event(user, body)
+
+
+# ============================================================================
+# COLLABORATOR — EARNINGS & PAYOUTS
+# ============================================================================
+
+@app.get("/api/v1/collaborator/earnings", tags=["Collaborator"])
+async def collaborator_earnings(user: UserContext = Depends(get_user_context)):
+    """
+    Collaborator cash earnings, payout ledger, and totals. 0 credits, Free+.
+    Returns { cashEarnings, payouts, totals } in camelCase (matches frontend
+    CashEarning / Payout / cashTotals contracts).
+    """
+    return await PayoutService(brain).get_collaborator_earnings(user)
+
+
+@app.post("/api/v1/collaborator/earnings/withdraw", tags=["Collaborator"])
+async def collaborator_withdraw(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Request a withdrawal of pending funds. 0 credits. Body: { amount, destination? }"""
+    return await PayoutService(brain).request_withdrawal(user, body)
 
 
 # ============================================================================

@@ -1927,6 +1927,53 @@ class DilutionEvent(Base):
     __table_args__ = (Index("idx_dilution_project", "project_id", "event_date"),)
 
 
+# ============================================================================
+# PAYOUTS & EARNINGS  (Collaborator cash layer — money going OUT)
+# ============================================================================
+# Distinct from billing credits (money coming in). Backs the collaborator
+# Earnings dashboard: per-project cash earned + pending, revenue share, and the
+# payout ledger with withdrawals.
+
+class CollaboratorEarning(Base):
+    """Per-project cash earnings for a collaborator (earned + pending + rev share)."""
+    __tablename__ = "collaborator_earnings"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id      = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
+    project_id   = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    earned_usd            = Column(DECIMAL(14, 2), default=0)
+    pending_usd           = Column(DECIMAL(14, 2), default=0)
+    revenue_share_percent = Column(Float, default=0)
+    contribution_note     = Column(Text)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_earning_user", "user_id"),
+        Index("idx_earning_user_project", "user_id", "project_id"),
+    )
+
+
+class Payout(Base):
+    """
+    A single payout in the collaborator ledger. `status`:
+      processing -> in flight to the destination account
+      paid       -> settled
+    """
+    __tablename__ = "payouts"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id     = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    month_iso   = Column(String(7), nullable=False)        # "2026-05"
+    amount_usd  = Column(DECIMAL(14, 2), nullable=False)
+    status      = Column(String(20), default="processing") # processing | paid
+    destination = Column(String(120))                      # masked acct, e.g. "•••1234"
+    initiated_at = Column(TIMESTAMP, default=datetime.utcnow)
+    settled_at   = Column(TIMESTAMP)
+
+    __table_args__ = (Index("idx_payout_user", "user_id", "month_iso"),)
+
+
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════╗
