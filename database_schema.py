@@ -1853,6 +1853,80 @@ def setup_extensions(engine) -> None:
         print("✅ Extensions: vector, uuid-ossp, pg_trgm")
 
 
+# ============================================================================
+# EQUITY & VESTING  (Collaborator value layer)
+# ============================================================================
+# Backs the collaborator Equity dashboard: per-startup grants, vesting schedules
+# with cliffs, dilution protection, and cap-table snapshots. Money-as-ownership,
+# distinct from cash payouts (see Payouts section below) and from billing credits.
+
+class EquityGrant(Base):
+    """
+    A collaborator's equity grant in one project. Vesting is schedule-driven
+    (years + cliff); vested_percent is snapshotted and also recomputable from
+    grant_date + schedule. dilution_protected freezes already-vested equity.
+    """
+    __tablename__ = "equity_grants"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id      = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
+    project_id   = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+
+    equity_percent          = Column(Float, nullable=False)          # e.g. 0.8 (% of cap table)
+    value_usd               = Column(DECIMAL(14, 2), default=0)      # current paper value
+    vested_percent          = Column(Float, default=0)              # 0..100
+    vesting_years           = Column(Integer, default=4)
+    vesting_cliff_months    = Column(Integer, default=12)
+    grant_date              = Column(TIMESTAMP, nullable=False, default=datetime.utcnow)
+    next_vest_date          = Column(TIMESTAMP)
+    next_vest_delta_percent = Column(Float)                          # equity unlocked at next vest
+    dilution_protected      = Column(Boolean, default=True)          # vested cannot be diluted w/o consent
+    role_at_grant           = Column(String(120))
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_equity_user",    "user_id"),
+        Index("idx_equity_project", "project_id"),
+        Index("idx_equity_user_project", "user_id", "project_id"),
+    )
+
+
+class CapTableEntry(Base):
+    """One row of a project's cap table (Founders / Collaborator pool / You / ...)."""
+    __tablename__ = "cap_table_entries"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    label       = Column(String(120), nullable=False)   # "Founders", "Investors", "You", ...
+    percent     = Column(Float, nullable=False)
+    holder_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))  # set when row is a specific user
+    sort_order  = Column(Integer, default=0)
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_captable_project", "project_id", "sort_order"),)
+
+
+class DilutionEvent(Base):
+    """
+    Audit trail of cap-table dilution events. Honors dilution protection: a
+    collaborator's already-vested equity is shielded unless they consented.
+    """
+    __tablename__ = "dilution_events"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id    = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    description   = Column(Text)                       # "Series A new shares", etc.
+    new_shares_percent = Column(Float, default=0)
+    affected_user_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    consent_given      = Column(Boolean, default=False)
+    protected_applied  = Column(Boolean, default=True) # vested equity shielded
+    event_date    = Column(TIMESTAMP, default=datetime.utcnow)
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_dilution_project", "project_id", "event_date"),)
+
+
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════╗

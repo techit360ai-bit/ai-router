@@ -2041,6 +2041,175 @@ impact_snapshot_daily          0 1 * * *           Snapshot impact scores for ac
 
 
 # ============================================================================
+# EQUITY SERVICE  (Collaborator value layer)
+# ============================================================================
+
+class EquityService:
+    """
+    Collaborator equity: per-startup grants, vesting (years + cliff), dilution
+    protection, and cap tables. Backs the collaborator Equity dashboard.
+
+    Response keys are camelCase to match the frontend TS contracts
+    (EquityHolding / equityTotals / VestingTimelineSeries) directly.
+
+    Production: query `equity_grants`, `cap_table_entries`, `dilution_events`
+    (database_schema.py). Below returns correctly-shaped data so the endpoint
+    works before DB wiring — same house style as other pre-DB endpoints.
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    # ── public API ────────────────────────────────────────────────────────
+    async def get_collaborator_equity(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/collaborator/equity -- 0 credits, Free+"""
+        holdings = self._load_holdings(user_context)
+        return {
+            "holdings": holdings,
+            "totals":   self._totals(holdings),
+            "vestingTimeline": [self._vesting_series(h) for h in holdings],
+        }
+
+    async def record_dilution_event(
+        self, user_context: UserContext, event: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/collaborator/equity/dilution -- 0 credits.
+        Honors dilution protection: already-vested equity is shielded unless the
+        collaborator consented. Returns the protected/effective dilution.
+        """
+        holding = next(
+            (h for h in self._load_holdings(user_context)
+             if h["projectId"] == event.get("projectId")),
+            None,
+        )
+        new_shares = float(event.get("newSharesPercent", 0) or 0)
+        consent    = bool(event.get("consentGiven", False))
+        vested_pct = float(holding["vestedPercent"]) if holding else 0.0
+        equity     = float(holding["equityPercent"]) if holding else 0.0
+
+        # Protected portion of the grant = the vested fraction (cannot be diluted
+        # without consent). Unvested equity dilutes normally.
+        vested_equity   = equity * (vested_pct / 100.0)
+        unvested_equity = equity - vested_equity
+        if consent:
+            diluted = equity * (new_shares / 100.0)
+            protected = False
+        else:
+            diluted = unvested_equity * (new_shares / 100.0)  # vested shielded
+            protected = True
+        return {
+            "projectId":        event.get("projectId"),
+            "newSharesPercent": new_shares,
+            "consentGiven":     consent,
+            "protectedApplied": protected,
+            "equityBefore":     round(equity, 4),
+            "equityAfter":      round(max(0.0, equity - diluted), 4),
+            "shieldedEquity":   round(vested_equity, 4),
+        }
+
+    # ── helpers ───────────────────────────────────────────────────────────
+    def _load_holdings(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        # Production: SELECT * FROM equity_grants JOIN projects WHERE user_id = :uid
+        return [
+            {
+                "projectId": "1", "projectName": "NeuralSync AI", "projectLogo": "🧠",
+                "equityPercent": 0.8, "valueUSD": 24000, "vestedPercent": 50,
+                "vestingSchedule": {"years": 4, "cliffMonths": 12},
+                "grantDate": "2025-01-15",
+                "nextVest": {"date": "2026-06-12", "deltaPercent": 0.2},
+                "dilutionProtected": True,
+                "capTable": [
+                    {"label": "Founders", "percent": 65},
+                    {"label": "Collaborator pool", "percent": 12},
+                    {"label": "You", "percent": 0.8, "highlighted": True},
+                    {"label": "Investors", "percent": 18},
+                    {"label": "Treasury", "percent": 4.2},
+                ],
+            },
+            {
+                "projectId": "2", "projectName": "FinFlow", "projectLogo": "💰",
+                "equityPercent": 0.5, "valueUSD": 15000, "vestedPercent": 25,
+                "vestingSchedule": {"years": 4, "cliffMonths": 12},
+                "grantDate": "2025-03-01",
+                "nextVest": {"date": "2026-09-01", "deltaPercent": 0.15},
+                "dilutionProtected": True,
+                "capTable": [
+                    {"label": "Founders", "percent": 70},
+                    {"label": "Collaborator pool", "percent": 10},
+                    {"label": "You", "percent": 0.5, "highlighted": True},
+                    {"label": "Investors", "percent": 17},
+                    {"label": "Treasury", "percent": 2.5},
+                ],
+            },
+            {
+                "projectId": "3", "projectName": "HealthTrack Pro", "projectLogo": "🏥",
+                "equityPercent": 0.3, "valueUSD": 9200, "vestedPercent": 0,
+                "vestingSchedule": {"years": 4, "cliffMonths": 12},
+                "grantDate": "2025-08-10",
+                "nextVest": {"date": "2026-08-10", "deltaPercent": 0.075},
+                "dilutionProtected": True,
+                "capTable": [
+                    {"label": "Founders", "percent": 72},
+                    {"label": "Collaborator pool", "percent": 8},
+                    {"label": "You", "percent": 0.3, "highlighted": True},
+                    {"label": "Investors", "percent": 17},
+                    {"label": "Treasury", "percent": 2.7},
+                ],
+            },
+        ]
+
+    @staticmethod
+    def _totals(holdings: List[Dict[str, Any]]) -> Dict[str, Any]:
+        total_value = sum(float(h["valueUSD"]) for h in holdings)
+        blended = round(sum(float(h["equityPercent"]) for h in holdings), 2)
+        vested_quarter = sum(
+            float(h["valueUSD"]) * (float(h["vestedPercent"]) / 100.0) * 0.25
+            for h in holdings
+        )
+        # Soonest upcoming vest across holdings.
+        upcoming = sorted(
+            [h for h in holdings if h.get("nextVest")],
+            key=lambda h: h["nextVest"]["date"],
+        )
+        next_vest = None
+        if upcoming:
+            nv = upcoming[0]
+            next_vest = {
+                "startup": nv["projectName"],
+                "date": nv["nextVest"]["date"],
+                "deltaPercent": nv["nextVest"]["deltaPercent"],
+            }
+        return {
+            "totalValueUSD": round(total_value, 2),
+            "blendedEquityPercent": blended,
+            "vestedThisQuarterUSD": round(vested_quarter, 2),
+            "nextVest": next_vest,
+        }
+
+    @staticmethod
+    def _vesting_series(holding: Dict[str, Any]) -> Dict[str, Any]:
+        """48 monthly points; linear vest after the cliff (mirrors frontend math)."""
+        sched = holding["vestingSchedule"]
+        cliff = int(sched["cliffMonths"])
+        total_months = int(sched["years"]) * 12
+        y, m = (int(p) for p in holding["grantDate"].split("-")[:2])
+        points = []
+        for i in range(48):
+            mm = m - 1 + i
+            yy = y + mm // 12
+            month = mm % 12 + 1
+            vested = min(100.0, (i / total_months) * 100.0) if i >= cliff else 0.0
+            points.append({"monthIso": f"{yy:04d}-{month:02d}",
+                           "vestedPercent": round(vested)})
+        return {
+            "projectId": holding["projectId"],
+            "projectName": holding["projectName"],
+            "points": points,
+        }
+
+
+# ============================================================================
 # DEMO
 # ============================================================================
 

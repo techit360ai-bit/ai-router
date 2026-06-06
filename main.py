@@ -44,6 +44,7 @@ from integration_guide import (
     DocumentGenerationService,
     IPProtectionService,
     AppScaffoldService,
+    EquityService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -478,6 +479,33 @@ async def investor_evi(
 ):
     """6-dimensional EVI-I investor execution signal. 2 credits, Investor+"""
     return await InvestorSectionService(brain).get_investor_evi(user, startup_data)
+
+
+# ============================================================================
+# COLLABORATOR — EQUITY & VESTING
+# ============================================================================
+
+@app.get("/api/v1/collaborator/equity", tags=["Collaborator"])
+async def collaborator_equity(user: UserContext = Depends(get_user_context)):
+    """
+    Collaborator equity holdings, totals, and vesting timeline. 0 credits, Free+.
+    Returns { holdings, totals, vestingTimeline } in camelCase (matches the
+    frontend EquityHolding / equityTotals / VestingTimelineSeries contracts).
+    """
+    return await EquityService(brain).get_collaborator_equity(user)
+
+
+@app.post("/api/v1/collaborator/equity/dilution", tags=["Collaborator"])
+async def collaborator_equity_dilution(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """
+    Apply a dilution event with protection. 0 credits, Free+.
+    Body: { projectId, newSharesPercent, consentGiven }
+    Already-vested equity is shielded unless consent is given.
+    """
+    return await EquityService(brain).record_dilution_event(user, body)
 
 
 # ============================================================================
