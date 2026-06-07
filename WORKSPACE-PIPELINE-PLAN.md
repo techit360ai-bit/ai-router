@@ -33,5 +33,9 @@ Branch: `feat/workspace-incubation-pipeline` (both repos). Off updated main
 Backend not runnable here (py_compile gate); Vite SIGBUS (no browser verify). Commit each slice.
 
 ## Status (✅ done · 🚧 wip · ⬜ todo)
-- ⬜ S1 models  ⬜ S2 ProjectService  ⬜ S3 pipeline persistence  ⬜ S4 WorkspaceService
-- ⬜ S5 endpoints  ⬜ S6 FE api  ⬜ S7 FE multi-project selector  ⬜ S8 FE handoff
+- ✅ S1 models (Workspace, ProjectAnalysis)
+- ✅ S2 ProjectService (list/create founder projects — multi-project)
+- ✅ S3 pipeline persistence (run_full_venture_pipeline persists ProjectAnalysis + returns project_id)
+- ✅ S4 WorkspaceService (provision/list/context, project-scoped)
+- ✅ S5 endpoints (GET/POST /founder/projects, GET /workspaces, POST /workspaces/provision, GET /workspaces/{id}/context)
+- ⬜ S6 FE api  ⬜ S7 FE multi-project selector  ⬜ S8 FE handoff

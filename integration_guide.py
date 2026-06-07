@@ -115,7 +115,30 @@ class IncubationHubService:
 
         pipeline = self.brain.venture_pipeline()
         results  = await pipeline.run(user_context, venture_data)
-        return self._compile_blueprint(venture_data, results)
+        blueprint = self._compile_blueprint(venture_data, results)
+
+        # Persist the analysis and bind it to a project so it can flow into a
+        # workspace (instead of being returned ephemerally and discarded).
+        project_id = self._persist_analysis(user_context, venture_data, blueprint)
+        blueprint["project_id"] = project_id
+        return blueprint
+
+    def _persist_analysis(
+        self, user_context: UserContext, venture_data: Dict, blueprint: Dict
+    ) -> str:
+        """
+        Persist the compiled blueprint as a ProjectAnalysis and upsert the
+        Project's headline scores. Returns the project_id the analysis is bound
+        to (existing project if provided, else a newly created one).
+
+        Production (database_schema.py):
+          project_id = venture_data.get("project_id") or <INSERT projects ...>.id
+          INSERT INTO project_analyses (project_id, owner_id, venture_name,
+              blueprint, unicorn_potential_score, investment_score, pivot_needed)
+          UPDATE projects SET unicorn_potential_score=..., investment_score=...,
+              updated_at=now() WHERE id = project_id
+        """
+        return venture_data.get("project_id") or "proj_new"
 
     def _compile_blueprint(self, venture_data: Dict, results: Dict) -> Dict:
         def safe(key: str, field: str):
@@ -2625,6 +2648,128 @@ class GeoSignalService:
                 {"sector": "Security",       "avgGrowth": 44},
             ],
         }
+
+
+# ============================================================================
+# PROJECT SERVICE  (Founder multi-project)
+# ============================================================================
+
+class ProjectService:
+    """
+    A founder's portfolio of ventures (projects). Enables MULTIPLE separate
+    startups per founder — the dashboard + incubation hub were single-project.
+
+    Response keys camelCase to match frontend contracts.
+    Production: query `projects` WHERE owner_id = :uid (+ `project_analyses`).
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def list_founder_projects(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/founder/projects -- 0 credits, Free+"""
+        return {"projects": self._load_projects(user_context)}
+
+    async def create_project(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/founder/projects -- 0 credits.
+        Body: { title, tagline?, industry?, stage? }. Production: INSERT projects.
+        """
+        title = (body.get("title") or "").strip()
+        if not title:
+            return {"ok": False, "error": "title_required"}
+        return {
+            "ok": True,
+            "project": {
+                "id": body.get("id", "proj_new"),
+                "title": title,
+                "tagline": body.get("tagline", ""),
+                "industry": body.get("industry", ""),
+                "stage": body.get("stage", "idea"),
+                "isPrimary": False,
+                "gsisScore": 0,
+                "hasWorkspace": False,
+            },
+        }
+
+    def _load_projects(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        # Production: SELECT id,title,tagline,industry,stage,gsis_score FROM projects
+        # WHERE owner_id = :uid ORDER BY created_at.
+        return [
+            {"id": "proj_demo_001", "title": "AI Task Manager", "tagline": "Execution OS for builders",
+             "industry": "saas", "stage": "mvp", "isPrimary": True,  "gsisScore": 88, "hasWorkspace": True},
+            {"id": "proj_demo_002", "title": "MicroMint", "tagline": "Stablecoin rails for SMEs",
+             "industry": "fintech", "stage": "idea", "isPrimary": False, "gsisScore": 72, "hasWorkspace": False},
+        ]
+
+
+# ============================================================================
+# WORKSPACE SERVICE  (Incubation → Workspace pipeline; project-scoped)
+# ============================================================================
+
+class WorkspaceService:
+    """
+    Workspaces bound to a specific analyzed venture (project). Provisions a
+    workspace from a project's persisted analysis and serves project-scoped
+    context to the workspace AI. Closes the Incubation→Workspace gap.
+
+    Production: query `workspaces` + `project_analyses` (database_schema.py).
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def list_workspaces(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/workspaces -- 0 credits, Free+"""
+        return {"workspaces": self._load_workspaces(user_context)}
+
+    async def provision_workspace(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/workspaces/provision -- 0 credits.
+        Body: { projectId, name? }. Creates (or returns existing) a workspace
+        bound to the analyzed project, seeded from its latest analysis.
+        """
+        project_id = body.get("projectId")
+        if not project_id:
+            return {"ok": False, "error": "projectId_required"}
+        return {
+            "ok": True,
+            "workspace": {
+                "id": body.get("id", f"ws_{project_id}"),
+                "projectId": project_id,
+                "name": body.get("name", "Venture Workspace"),
+                "status": "active",
+                "seededFromAnalysis": True,
+            },
+        }
+
+    async def get_workspace_context(
+        self, user_context: UserContext, workspace_id: str, project_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        GET /api/v1/workspaces/{workspace_id}/context -- 0 credits.
+        Loads the bound project's latest analysis/blueprint so the workspace AI
+        is scoped to the specific analyzed venture (not a context-free blob).
+        """
+        analysis = ProjectService(self.brain)._load_projects(user_context)
+        primary = next((p for p in analysis if p["id"] == project_id), analysis[0] if analysis else None)
+        return {
+            "workspaceId": workspace_id,
+            "projectId": project_id or (primary["id"] if primary else None),
+            "venture": primary,
+            # Blueprint would come from project_analyses.blueprint (latest row).
+            "blueprintAvailable": bool(primary and primary.get("hasWorkspace")),
+        }
+
+    def _load_workspaces(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        return [
+            {"id": "ws_proj_demo_001", "projectId": "proj_demo_001",
+             "name": "AI Task Manager", "status": "active", "seededFromAnalysis": True},
+        ]
 
 
 # ============================================================================

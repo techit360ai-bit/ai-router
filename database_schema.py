@@ -2172,6 +2172,60 @@ class InvestorReview(Base):
     __table_args__ = (Index("idx_inv_review", "investor_id", "review_date"),)
 
 
+# ============================================================================
+# WORKSPACES & PERSISTED ANALYSES  (Incubation → Workspace pipeline)
+# ============================================================================
+# Binds a founder's Workspace to a specific analyzed venture (project), and
+# persists Incubation Hub pipeline output so it can flow into that workspace.
+# Closes the gap where workspaces were a UI shell with no idea binding and the
+# pipeline returned an ephemeral, unsaved blueprint.
+
+class Workspace(Base):
+    """A founder workspace bound to one analyzed venture (project)."""
+    __tablename__ = "workspaces"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    name        = Column(String(255), nullable=False)
+    status      = Column(String(20), default="active")     # active | archived
+    # Snapshot of the analysis that seeded this workspace (denormalized for fast load).
+    seed_analysis_id = Column(UUID(as_uuid=True), ForeignKey("project_analyses.id"))
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at  = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_workspace_owner",   "owner_id", "status"),
+        Index("idx_workspace_project", "project_id"),
+    )
+
+
+class ProjectAnalysis(Base):
+    """
+    A persisted Incubation Hub pipeline result for a project. Each run of the
+    venture pipeline writes one row; the latest is what a workspace loads as
+    context. This is the durable record the ephemeral blueprint never had.
+    """
+    __tablename__ = "project_analyses"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
+    venture_name = Column(String(255))
+    # Full compiled blueprint (unicorn/market/feasibility/strategy/finance/plan/tech...).
+    blueprint   = Column(JSON, default={})
+    # Headline scores lifted out for indexing/sorting.
+    unicorn_potential_score = Column(Float, default=0.0)
+    investment_score        = Column(Float, default=0.0)
+    pivot_needed            = Column(Boolean, default=False)
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_analysis_project", "project_id", "created_at"),
+        Index("idx_analysis_owner",   "owner_id"),
+    )
+
+
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════╗
