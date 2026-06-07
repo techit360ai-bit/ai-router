@@ -2021,6 +2021,70 @@ class PoolMilestoneRelease(Base):
     __table_args__ = (Index("idx_release_pool", "pool_id", "released"),)
 
 
+# ============================================================================
+# INVESTOR — DEAL ROOMS  (cap table, term sheet, doc signing, negotiation)
+# ============================================================================
+# Backs the investor Deal Rooms list + detail: a secure per-deal workspace with
+# negotiation stage tracking, a term-sheet simulator, milestone-based tranches,
+# and document signing.
+
+class DealRoom(Base):
+    """A secure investor↔startup deal workspace with negotiation stage tracking."""
+    __tablename__ = "deal_rooms"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investor_id  = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
+    project_id   = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    status       = Column(String(20), default="pending")   # active | pending | closed
+    stage        = Column(String(60), default="Intro Call")
+    days_open    = Column(Integer, default=0)
+    messages     = Column(Integer, default=0)
+    docs         = Column(Integer, default=0)
+    last_activity = Column(String(40))                      # human "2h ago"
+    encrypted    = Column(Boolean, default=True)
+    created_at   = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at   = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_dealroom_investor", "investor_id", "status"),
+        Index("idx_dealroom_project",  "project_id"),
+    )
+
+
+class TermSheet(Base):
+    """Term-sheet simulator state for a deal room."""
+    __tablename__ = "term_sheets"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    deal_room_id  = Column(UUID(as_uuid=True), ForeignKey("deal_rooms.id"), nullable=False)
+    valuation_usd = Column(DECIMAL(16, 2))
+    investment_usd = Column(DECIMAL(16, 2))
+    equity_percent = Column(Float)
+    instrument    = Column(String(40), default="SAFE")      # SAFE | Equity | Convertible
+    discount_percent = Column(Float, default=0)
+    valuation_cap_usd = Column(DECIMAL(16, 2))
+    extra_terms   = Column(JSON)                            # e.g. {"rights": "Observer"}
+    updated_at    = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_termsheet_room", "deal_room_id"),)
+
+
+class DealDocument(Base):
+    """A document in a deal room (with signing status)."""
+    __tablename__ = "deal_documents"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    deal_room_id = Column(UUID(as_uuid=True), ForeignKey("deal_rooms.id"), nullable=False)
+    name         = Column(String(200), nullable=False)
+    status       = Column(String(20), default="draft")      # draft | ready | signed
+    signed_by    = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    signed_at    = Column(TIMESTAMP)
+    created_at   = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_dealdoc_room", "deal_room_id", "status"),)
+
+
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════╗

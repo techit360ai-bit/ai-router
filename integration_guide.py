@@ -2377,6 +2377,90 @@ class CapitalPoolService:
 
 
 # ============================================================================
+# DEAL ROOM SERVICE  (Investor cap table / term sheet / signing / negotiation)
+# ============================================================================
+
+class DealRoomService:
+    """
+    Secure investor↔startup deal rooms: negotiation stage tracking, term-sheet
+    simulator, milestone tranches, document signing. Backs the investor Deal
+    Rooms list + detail.
+
+    Production: query `deal_rooms`, `term_sheets`, `deal_documents`.
+    """
+
+    STAGE_ORDER = [
+        "Intro Call", "NDA Signed", "Due Diligence",
+        "Term Sheet", "Negotiation", "Deal Closed",
+    ]
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_deal_rooms(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/investor/deal-rooms -- 0 credits, Investor+"""
+        return {"dealMeta": self._load_deal_meta(), "stageOrder": self.STAGE_ORDER}
+
+    async def get_deal_room(
+        self, user_context: UserContext, project_id: str, startup: Dict[str, Any] | None = None
+    ) -> Dict[str, Any]:
+        """
+        GET /api/v1/investor/deal-rooms/{project_id} -- 0 credits, Investor+
+        Returns term-sheet defaults, valuation (ARR×8), milestone tranches,
+        documents, and the negotiation stepper.
+        """
+        mrr = float((startup or {}).get("mrr", 0) or 0)
+        valuation = mrr * 12 * 8  # ARR × 8 multiple (mirrors frontend)
+        meta = self._load_deal_meta().get(project_id, {
+            "status": "pending", "stage": "Intro Call", "daysOpen": 0,
+            "messages": 0, "docs": 0, "lastActivity": "just now",
+        })
+        return {
+            "projectId": project_id,
+            "meta": meta,
+            "valuationUSD": valuation,
+            "termSheet": {
+                "valuationUSD": valuation,
+                "investmentUSD": 250000,
+                "equityPercent": 5.2,
+                "instrument": "SAFE",
+                "discountPercent": 20,
+                "valuationCapUSD": valuation,
+                "extraTerms": {"rights": "Observer Rights"},
+            },
+            "milestones": [
+                {"milestone": "Initial Tranche",   "amount": 100000, "condition": "On signing",          "status": "pending"},
+                {"milestone": "Product Milestone", "amount": 75000,  "condition": "Ship v2 / 1k users",   "status": "pending"},
+                {"milestone": "Revenue Milestone", "amount": 75000,  "condition": "Reach $150K MRR",      "status": "pending"},
+            ],
+            "documents": [
+                {"name": "Simple Agreement for Future Equity (SAFE)", "status": "ready"},
+                {"name": "Subscription Agreement",                    "status": "ready"},
+                {"name": "Investor Rights Agreement",                 "status": "draft"},
+                {"name": "Right of First Refusal Agreement",          "status": "draft"},
+            ],
+            "negotiation": [
+                {"step": "Initial Discussion", "state": "completed"},
+                {"step": "Term Sheet Draft",   "state": "completed"},
+                {"step": "Due Diligence",      "state": "active"},
+                {"step": "Final Agreement",    "state": "todo"},
+                {"step": "Funds Transfer",     "state": "todo"},
+            ],
+            "stageOrder": self.STAGE_ORDER,
+        }
+
+    def _load_deal_meta(self) -> Dict[str, Any]:
+        return {
+            "1": {"status": "active",  "stage": "Term Sheet",     "daysOpen": 12, "messages": 34,  "docs": 7,  "lastActivity": "2h ago"},
+            "2": {"status": "active",  "stage": "Due Diligence",  "daysOpen": 8,  "messages": 52,  "docs": 11, "lastActivity": "45m ago"},
+            "3": {"status": "pending", "stage": "NDA Signed",     "daysOpen": 3,  "messages": 9,   "docs": 2,  "lastActivity": "1d ago"},
+            "4": {"status": "active",  "stage": "Negotiation",    "daysOpen": 21, "messages": 78,  "docs": 14, "lastActivity": "3h ago"},
+            "5": {"status": "closed",  "stage": "Deal Closed",    "daysOpen": 45, "messages": 120, "docs": 22, "lastActivity": "5d ago"},
+            "6": {"status": "pending", "stage": "Intro Call",     "daysOpen": 1,  "messages": 4,   "docs": 1,  "lastActivity": "6h ago"},
+        }
+
+
+# ============================================================================
 # DEMO
 # ============================================================================
 

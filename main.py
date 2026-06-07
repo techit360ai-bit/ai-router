@@ -47,6 +47,7 @@ from integration_guide import (
     EquityService,
     PayoutService,
     CapitalPoolService,
+    DealRoomService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -506,6 +507,25 @@ async def investor_pool_release(
 ):
     """Release escrowed capital on a hit milestone. 0 credits. Body: { projectId, milestone, amount }"""
     return await CapitalPoolService(brain).release_on_milestone(user, {**body, "poolId": pool_id})
+
+
+@app.get("/api/v1/investor/deal-rooms", tags=["Investor"])
+async def investor_deal_rooms(user: UserContext = Depends(get_user_context)):
+    """Deal-room list metadata (status/stage/activity per startup). 0 credits."""
+    return await DealRoomService(brain).get_deal_rooms(user)
+
+
+@app.post("/api/v1/investor/deal-rooms/{project_id}", tags=["Investor"])
+async def investor_deal_room(
+    project_id: str,
+    startup: Dict[str, Any] | None = None,
+    user: UserContext = Depends(get_user_context),
+):
+    """
+    Deal-room detail: term sheet (valuation ARR×8), milestone tranches, documents,
+    negotiation stepper. 0 credits. Optional body: startup data (for valuation).
+    """
+    return await DealRoomService(brain).get_deal_room(user, project_id, startup)
 
 
 # ============================================================================

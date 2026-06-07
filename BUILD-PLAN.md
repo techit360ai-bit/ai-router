@@ -28,7 +28,7 @@ Paired frontend branch: `feat/dashboard-intelligence` in the `techIT` clone.
 - ✅ A1 Collaborator Equity/vesting engine — EquityGrant/CapTableEntry/DilutionEvent models, EquityService (holdings/totals/vesting timeline/dilution protection), GET+POST /api/v1/collaborator/equity[/dilution]
 - ✅ A2 Collaborator Earnings/payouts — CollaboratorEarning/Payout models, PayoutService (earnings/payouts/totals + withdrawal w/ balance check), GET /collaborator/earnings + POST .../withdraw
 - ✅ A3 Investor Capital Pools — CapitalPool + PoolMilestoneRelease models, CapitalPoolService (list/create/release), GET+POST /investor/capital-pools + POST .../{id}/release
-- ⬜ A4 Investor Deal Rooms — cap table, term sheet, e-signature, negotiation workflow
+- ✅ A4 Investor Deal Rooms — DealRoom/TermSheet/DealDocument models, DealRoomService (list dealMeta+stageOrder; detail: term sheet ARR×8, milestone tranches, docs, negotiation stepper), GET /investor/deal-rooms + POST .../{project_id}
 - ⬜ A5 Investor Data Rooms — document vault container + access control + per-investor sharing
 - ⬜ A6 Investor Reputation — investor-side scoring, reviews, leaderboard
 - ⬜ A7 Investor Global Heatmap — geo/region aggregation signal
