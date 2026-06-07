@@ -563,6 +563,72 @@ async def investor_heatmap(user: UserContext = Depends(get_user_context)):
 
 
 # ============================================================================
+# WORKSPACE AI  (task suggestions, code review, sprint planning)
+# ============================================================================
+
+@app.post("/api/v1/workspace/tasks/suggest", tags=["Workspace"])
+async def workspace_suggest_tasks(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """AI task suggestions for the workspace. 0 credits."""
+    return await WorkspaceAIService(brain).suggest_tasks(user, body)
+
+
+@app.post("/api/v1/workspace/code/review", tags=["Workspace"])
+async def workspace_review_code(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """AI code review. 1 credit, Founder Pro+. Body: { code, language, context }"""
+    return await WorkspaceAIService(brain).review_code(user, body)
+
+
+@app.post("/api/v1/workspace/sprint/plan", tags=["Workspace"])
+async def workspace_plan_sprint(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """AI sprint planning. 0 credits."""
+    return await WorkspaceAIService(brain).plan_sprint(user, body)
+
+
+# ============================================================================
+# TOUR GUIDE  (momentum audio briefing)
+# ============================================================================
+
+@app.post("/api/v1/tour-guide/audio-briefing", tags=["Tour Guide"])
+async def tour_guide_audio_briefing(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Momentum audio briefing (TTS). 0 credits. Body: { text }"""
+    return await TourGuideService(brain).get_audio_briefing(user, body.get("text", ""))
+
+
+# ============================================================================
+# ADMIN MONITOR  (anomaly scan + stagnation roster)
+# ============================================================================
+
+@app.post("/api/v1/admin/monitor/scan", tags=["Admin"])
+async def admin_monitor_scan(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Anomaly scan over signals. 0 credits, Admin only. Body: { signals: [...] }"""
+    return await AdminMonitorService(brain).run_anomaly_scan(user, body.get("signals", []))
+
+
+@app.post("/api/v1/admin/stagnation-roster", tags=["Admin"])
+async def admin_stagnation_roster(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Stagnating-project roster (decay-based). 0 credits. Body: { projects: [...] }"""
+    return await AdminMonitorService(brain).check_stagnation_roster(user, body.get("projects", []))
+
+
+# ============================================================================
 # COLLABORATOR — EQUITY & VESTING
 # ============================================================================
 

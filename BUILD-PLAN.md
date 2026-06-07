@@ -34,12 +34,12 @@ Paired frontend branch: `feat/dashboard-intelligence` in the `techIT` clone.
 - ✅ A7 Investor Global Heatmap — GeoSignalService (per-region readiness/compliance + per-sector growth), GET /investor/heatmap
 
 ### Section B — backend exists, confirm/extend endpoints (frontend surfaces them)
-- ⬜ B1 EVI-I/IIS/WCRS deal-flow ranking — confirm endpoints feed Deal Intelligence
-- ⬜ B2 GSIS composite — confirm dashboard intelligence + gsis/compute feed founder dashboard
-- ⬜ B3 Adaptive Training — confirm curriculum endpoints
-- ⬜ B4 Anomaly scan / stagnation roster — ensure endpoints exist
-- ⬜ B5 Audio briefing — confirm get_audio_briefing endpoint
-- ⬜ B6 Workspace review_code / plan_sprint — confirm endpoints
+- ✅ B1 EVI-I/IIS/WCRS deal-flow ranking — endpoints already existed (GET /investor/deal-flow, POST /investor/evi/{id})
+- ✅ B2 GSIS composite — endpoints already existed (GET /dashboard/intelligence, POST /gsis/compute)
+- ✅ B3 Adaptive Training — endpoints already existed (/training/curriculum/generate|adapt, /training/progress/update)
+- ✅ B4 Anomaly scan / stagnation roster — ADDED endpoints POST /admin/monitor/scan + POST /admin/stagnation-roster
+- ✅ B5 Audio briefing — ADDED endpoint POST /tour-guide/audio-briefing
+- ✅ B6 Workspace review_code / plan_sprint — ADDED endpoints POST /workspace/{tasks/suggest,code/review,sprint/plan}
 
 ### Section C — LAST (per user)
 - ⬜ C Idea & Solution Hub — backend already exists; FE built last
