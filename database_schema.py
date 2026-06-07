@@ -2126,6 +2126,52 @@ class DataRoomAccess(Base):
     )
 
 
+# ============================================================================
+# INVESTOR — REPUTATION  (mutual accountability: founders score investors too)
+# ============================================================================
+# Backs the investor Reputation dashboard. The platform scores investors the way
+# it scores startups, creating balanced power dynamics: high-reputation investors
+# earn early access to top deals.
+
+class InvestorReputation(Base):
+    """Composite investor reputation + its component metrics + leaderboard rank."""
+    __tablename__ = "investor_reputation"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investor_id  = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    composite_score = Column(Integer, default=0)            # 0..100
+    month_change    = Column(Integer, default=0)
+    # component metrics (0..100)
+    response_speed       = Column(Integer, default=0)
+    founder_rating       = Column(Integer, default=0)
+    follow_through       = Column(Integer, default=0)
+    value_add            = Column(Integer, default=0)
+    portfolio_engagement = Column(Integer, default=0)
+    # leaderboard
+    rank             = Column(Integer)
+    total_investors  = Column(Integer)
+    percentile       = Column(Float)
+    updated_at   = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at   = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_inv_reputation", "investor_id"),)
+
+
+class InvestorReview(Base):
+    """A founder's review of an investor (feeds founder_rating)."""
+    __tablename__ = "investor_reviews"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investor_id  = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    founder_name = Column(String(160))
+    startup      = Column(String(160))
+    rating       = Column(Integer)                          # 1..5
+    comment      = Column(Text)
+    review_date  = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_inv_review", "investor_id", "review_date"),)
+
+
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════╗

@@ -49,6 +49,7 @@ from integration_guide import (
     CapitalPoolService,
     DealRoomService,
     DataRoomService,
+    InvestorReputationService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -543,6 +544,15 @@ async def investor_data_room_access(
 ):
     """Share a data room with an investor. 0 credits. Body: { investorId, canDownload }"""
     return await DataRoomService(brain).grant_access(user, {**body, "projectId": project_id})
+
+
+@app.get("/api/v1/investor/reputation", tags=["Investor"])
+async def investor_reputation(user: UserContext = Depends(get_user_context)):
+    """
+    Investor reputation: composite score, component metrics, founder reviews,
+    score progression, leaderboard position. 0 credits, Investor+.
+    """
+    return await InvestorReputationService(brain).get_reputation(user)
 
 
 # ============================================================================
