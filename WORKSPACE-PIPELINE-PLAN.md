@@ -38,4 +38,9 @@ Backend not runnable here (py_compile gate); Vite SIGBUS (no browser verify). Co
 - ✅ S3 pipeline persistence (run_full_venture_pipeline persists ProjectAnalysis + returns project_id)
 - ✅ S4 WorkspaceService (provision/list/context, project-scoped)
 - ✅ S5 endpoints (GET/POST /founder/projects, GET /workspaces, POST /workspaces/provision, GET /workspaces/{id}/context)
-- ⬜ S6 FE api  ⬜ S7 FE multi-project selector  ⬜ S8 FE handoff
+- ✅ S6 FE api (new-frontend: lib/api/projects.ts, workspaces.ts, incubation.ts)
+- ✅ S7 FE multi-project selector (founder Dashboard "Your ventures" portfolio)
+- ✅ S8 FE handoff (Incubation "Run Analysis"→pipeline persists project_id; "Create Workspace"→provisionWorkspace bound to it → navigate w/ ws+project params)
+
+ALL SLICES COMPLETE. Backend on feat/workspace-incubation-pipeline (ai-router);
+frontend on feat/workspace-incubation-pipeline (new-frontend). Not pushed yet.
