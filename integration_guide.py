@@ -2461,6 +2461,79 @@ class DealRoomService:
 
 
 # ============================================================================
+# DATA ROOM SERVICE  (Investor document vault + access control + sharing)
+# ============================================================================
+
+class DataRoomService:
+    """
+    Per-startup data rooms: structured 6-section document vaults with
+    compliance/governance verification and per-investor access grants. Backs
+    the investor Data Rooms list + detail.
+
+    Production: query `data_rooms` + `data_room_access`.
+    """
+
+    SECTIONS = [
+        "Metrics Dashboard", "Financials", "Testing Reports",
+        "Compliance", "Governance", "Execution History",
+    ]
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_data_rooms(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/investor/data-rooms -- 0 credits, Investor+"""
+        rooms = self._load_rooms(user_context)
+        verified = sum(1 for r in rooms if r["complianceVerified"])
+        return {
+            "rooms": rooms,
+            "sections": self.SECTIONS,
+            "totals": {
+                "activeRooms": len(rooms),
+                "totalDocs": len(rooms) * len(self.SECTIONS),
+                "complianceVerified": verified,
+                "aiSummaries": len(rooms),
+            },
+        }
+
+    async def grant_access(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/investor/data-rooms/{project_id}/access -- 0 credits.
+        Share a data room with an investor. Body: { investorId, canDownload }
+        Production: upsert data_room_access.
+        """
+        return {
+            "ok": True,
+            "projectId": body.get("projectId"),
+            "investorId": body.get("investorId"),
+            "canDownload": bool(body.get("canDownload", False)),
+            "granted": True,
+        }
+
+    def _load_rooms(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        # Production: SELECT data_rooms JOIN projects for this investor's pipeline.
+        # Returns per-startup vault metadata keyed by projectId.
+        seed = [
+            ("1", True,  True),  ("2", True,  False),
+            ("3", False, True),  ("4", True,  True),
+            ("5", True,  False), ("6", False, False),
+        ]
+        return [
+            {
+                "projectId": pid,
+                "sections": self.SECTIONS,
+                "docCount": len(self.SECTIONS),
+                "complianceVerified": comp,
+                "aiGovernanceVerified": gov,
+                "updatedLabel": "today",
+            }
+            for pid, comp, gov in seed
+        ]
+
+
+# ============================================================================
 # DEMO
 # ============================================================================
 

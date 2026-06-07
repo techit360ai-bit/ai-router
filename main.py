@@ -48,6 +48,7 @@ from integration_guide import (
     PayoutService,
     CapitalPoolService,
     DealRoomService,
+    DataRoomService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -526,6 +527,22 @@ async def investor_deal_room(
     negotiation stepper. 0 credits. Optional body: startup data (for valuation).
     """
     return await DealRoomService(brain).get_deal_room(user, project_id, startup)
+
+
+@app.get("/api/v1/investor/data-rooms", tags=["Investor"])
+async def investor_data_rooms(user: UserContext = Depends(get_user_context)):
+    """Per-startup data-room vault metadata + access. 0 credits, Investor+"""
+    return await DataRoomService(brain).get_data_rooms(user)
+
+
+@app.post("/api/v1/investor/data-rooms/{project_id}/access", tags=["Investor"])
+async def investor_data_room_access(
+    project_id: str,
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Share a data room with an investor. 0 credits. Body: { investorId, canDownload }"""
+    return await DataRoomService(brain).grant_access(user, {**body, "projectId": project_id})
 
 
 # ============================================================================

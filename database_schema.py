@@ -2085,6 +2085,47 @@ class DealDocument(Base):
     __table_args__ = (Index("idx_dealdoc_room", "deal_room_id", "status"),)
 
 
+# ============================================================================
+# INVESTOR — DATA ROOMS  (document vault container + access control + sharing)
+# ============================================================================
+# Backs the investor Data Rooms list + detail: per-startup structured document
+# repositories (6 sections), compliance/governance verification, and per-investor
+# access grants (sharing).
+
+class DataRoom(Base):
+    """A per-startup structured document vault."""
+    __tablename__ = "data_rooms"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id   = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    doc_count    = Column(Integer, default=0)
+    compliance_verified     = Column(Boolean, default=False)
+    ai_governance_verified  = Column(Boolean, default=False)
+    sections     = Column(JSON)                            # ["Metrics Dashboard", ...]
+    updated_label = Column(String(40), default="today")
+    created_at   = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at   = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_dataroom_project", "project_id"),)
+
+
+class DataRoomAccess(Base):
+    """Per-investor access grant to a data room (sharing + audit)."""
+    __tablename__ = "data_room_access"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    data_room_id = Column(UUID(as_uuid=True), ForeignKey("data_rooms.id"), nullable=False)
+    investor_id  = Column(UUID(as_uuid=True), ForeignKey("users.id"),      nullable=False)
+    can_download = Column(Boolean, default=False)
+    granted      = Column(Boolean, default=True)
+    granted_at   = Column(TIMESTAMP, default=datetime.utcnow)
+    revoked_at   = Column(TIMESTAMP)
+
+    __table_args__ = (
+        Index("idx_dataroom_access", "data_room_id", "investor_id"),
+    )
+
+
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════╗
