@@ -44,6 +44,13 @@ from integration_guide import (
     DocumentGenerationService,
     IPProtectionService,
     AppScaffoldService,
+    EquityService,
+    PayoutService,
+    CapitalPoolService,
+    DealRoomService,
+    DataRoomService,
+    InvestorReputationService,
+    GeoSignalService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -478,6 +485,197 @@ async def investor_evi(
 ):
     """6-dimensional EVI-I investor execution signal. 2 credits, Investor+"""
     return await InvestorSectionService(brain).get_investor_evi(user, startup_data)
+
+
+@app.get("/api/v1/investor/capital-pools", tags=["Investor"])
+async def investor_capital_pools(user: UserContext = Depends(get_user_context)):
+    """Investor micro-fund capital pools with deployment + milestone release. 0 credits."""
+    return await CapitalPoolService(brain).get_capital_pools(user)
+
+
+@app.post("/api/v1/investor/capital-pools", tags=["Investor"])
+async def investor_create_pool(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Create a new capital pool. 0 credits. Body: { name, totalCapital, rules }"""
+    return await CapitalPoolService(brain).create_pool(user, body)
+
+
+@app.post("/api/v1/investor/capital-pools/{pool_id}/release", tags=["Investor"])
+async def investor_pool_release(
+    pool_id: str,
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Release escrowed capital on a hit milestone. 0 credits. Body: { projectId, milestone, amount }"""
+    return await CapitalPoolService(brain).release_on_milestone(user, {**body, "poolId": pool_id})
+
+
+@app.get("/api/v1/investor/deal-rooms", tags=["Investor"])
+async def investor_deal_rooms(user: UserContext = Depends(get_user_context)):
+    """Deal-room list metadata (status/stage/activity per startup). 0 credits."""
+    return await DealRoomService(brain).get_deal_rooms(user)
+
+
+@app.post("/api/v1/investor/deal-rooms/{project_id}", tags=["Investor"])
+async def investor_deal_room(
+    project_id: str,
+    startup: Dict[str, Any] | None = None,
+    user: UserContext = Depends(get_user_context),
+):
+    """
+    Deal-room detail: term sheet (valuation ARR×8), milestone tranches, documents,
+    negotiation stepper. 0 credits. Optional body: startup data (for valuation).
+    """
+    return await DealRoomService(brain).get_deal_room(user, project_id, startup)
+
+
+@app.get("/api/v1/investor/data-rooms", tags=["Investor"])
+async def investor_data_rooms(user: UserContext = Depends(get_user_context)):
+    """Per-startup data-room vault metadata + access. 0 credits, Investor+"""
+    return await DataRoomService(brain).get_data_rooms(user)
+
+
+@app.post("/api/v1/investor/data-rooms/{project_id}/access", tags=["Investor"])
+async def investor_data_room_access(
+    project_id: str,
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Share a data room with an investor. 0 credits. Body: { investorId, canDownload }"""
+    return await DataRoomService(brain).grant_access(user, {**body, "projectId": project_id})
+
+
+@app.get("/api/v1/investor/reputation", tags=["Investor"])
+async def investor_reputation(user: UserContext = Depends(get_user_context)):
+    """
+    Investor reputation: composite score, component metrics, founder reviews,
+    score progression, leaderboard position. 0 credits, Investor+.
+    """
+    return await InvestorReputationService(brain).get_reputation(user)
+
+
+@app.get("/api/v1/investor/heatmap", tags=["Investor"])
+async def investor_heatmap(user: UserContext = Depends(get_user_context)):
+    """Geographic signal: per-region readiness/compliance + per-sector growth. 0 credits."""
+    return await GeoSignalService(brain).get_heatmap(user)
+
+
+# ============================================================================
+# WORKSPACE AI  (task suggestions, code review, sprint planning)
+# ============================================================================
+
+@app.post("/api/v1/workspace/tasks/suggest", tags=["Workspace"])
+async def workspace_suggest_tasks(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """AI task suggestions for the workspace. 0 credits."""
+    return await WorkspaceAIService(brain).suggest_tasks(user, body)
+
+
+@app.post("/api/v1/workspace/code/review", tags=["Workspace"])
+async def workspace_review_code(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """AI code review. 1 credit, Founder Pro+. Body: { code, language, context }"""
+    return await WorkspaceAIService(brain).review_code(user, body)
+
+
+@app.post("/api/v1/workspace/sprint/plan", tags=["Workspace"])
+async def workspace_plan_sprint(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """AI sprint planning. 0 credits."""
+    return await WorkspaceAIService(brain).plan_sprint(user, body)
+
+
+# ============================================================================
+# TOUR GUIDE  (momentum audio briefing)
+# ============================================================================
+
+@app.post("/api/v1/tour-guide/audio-briefing", tags=["Tour Guide"])
+async def tour_guide_audio_briefing(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Momentum audio briefing (TTS). 0 credits. Body: { text }"""
+    return await TourGuideService(brain).get_audio_briefing(user, body.get("text", ""))
+
+
+# ============================================================================
+# ADMIN MONITOR  (anomaly scan + stagnation roster)
+# ============================================================================
+
+@app.post("/api/v1/admin/monitor/scan", tags=["Admin"])
+async def admin_monitor_scan(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Anomaly scan over signals. 0 credits, Admin only. Body: { signals: [...] }"""
+    return await AdminMonitorService(brain).run_anomaly_scan(user, body.get("signals", []))
+
+
+@app.post("/api/v1/admin/stagnation-roster", tags=["Admin"])
+async def admin_stagnation_roster(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Stagnating-project roster (decay-based). 0 credits. Body: { projects: [...] }"""
+    return await AdminMonitorService(brain).check_stagnation_roster(user, body.get("projects", []))
+
+
+# ============================================================================
+# COLLABORATOR — EQUITY & VESTING
+# ============================================================================
+
+@app.get("/api/v1/collaborator/equity", tags=["Collaborator"])
+async def collaborator_equity(user: UserContext = Depends(get_user_context)):
+    """
+    Collaborator equity holdings, totals, and vesting timeline. 0 credits, Free+.
+    Returns { holdings, totals, vestingTimeline } in camelCase (matches the
+    frontend EquityHolding / equityTotals / VestingTimelineSeries contracts).
+    """
+    return await EquityService(brain).get_collaborator_equity(user)
+
+
+@app.post("/api/v1/collaborator/equity/dilution", tags=["Collaborator"])
+async def collaborator_equity_dilution(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """
+    Apply a dilution event with protection. 0 credits, Free+.
+    Body: { projectId, newSharesPercent, consentGiven }
+    Already-vested equity is shielded unless consent is given.
+    """
+    return await EquityService(brain).record_dilution_event(user, body)
+
+
+# ============================================================================
+# COLLABORATOR — EARNINGS & PAYOUTS
+# ============================================================================
+
+@app.get("/api/v1/collaborator/earnings", tags=["Collaborator"])
+async def collaborator_earnings(user: UserContext = Depends(get_user_context)):
+    """
+    Collaborator cash earnings, payout ledger, and totals. 0 credits, Free+.
+    Returns { cashEarnings, payouts, totals } in camelCase (matches frontend
+    CashEarning / Payout / cashTotals contracts).
+    """
+    return await PayoutService(brain).get_collaborator_earnings(user)
+
+
+@app.post("/api/v1/collaborator/earnings/withdraw", tags=["Collaborator"])
+async def collaborator_withdraw(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Request a withdrawal of pending funds. 0 credits. Body: { amount, destination? }"""
+    return await PayoutService(brain).request_withdrawal(user, body)
 
 
 # ============================================================================
