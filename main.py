@@ -50,6 +50,7 @@ from integration_guide import (
     DealRoomService,
     DataRoomService,
     InvestorReputationService,
+    GeoSignalService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -553,6 +554,12 @@ async def investor_reputation(user: UserContext = Depends(get_user_context)):
     score progression, leaderboard position. 0 credits, Investor+.
     """
     return await InvestorReputationService(brain).get_reputation(user)
+
+
+@app.get("/api/v1/investor/heatmap", tags=["Investor"])
+async def investor_heatmap(user: UserContext = Depends(get_user_context)):
+    """Geographic signal: per-region readiness/compliance + per-sector growth. 0 credits."""
+    return await GeoSignalService(brain).get_heatmap(user)
 
 
 # ============================================================================

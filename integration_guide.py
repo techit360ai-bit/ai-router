@@ -2593,6 +2593,41 @@ class InvestorReputationService:
 
 
 # ============================================================================
+# GEO SIGNAL SERVICE  (Investor Global Heatmap — region/sector aggregation)
+# ============================================================================
+
+class GeoSignalService:
+    """
+    Geographic aggregation for the investor Global Heatmap: per-region startup
+    counts + average readiness + compliance rate, and per-sector growth. The
+    engine previously had no geo signal; this aggregates it.
+
+    Production: GROUP BY region/sector over `projects` + latest `score_snapshots`.
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_heatmap(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/investor/heatmap -- 0 credits, Investor+"""
+        return {
+            "regions": [
+                {"name": "North America", "avgReadiness": 84, "complianceRate": 78, "color": "text-emerald-400"},
+                {"name": "Europe",        "avgReadiness": 86, "complianceRate": 82, "color": "text-blue-400"},
+                {"name": "Asia",          "avgReadiness": 78, "complianceRate": 64, "color": "text-purple-400"},
+            ],
+            "sectors": [
+                {"sector": "SaaS",           "avgGrowth": 42},
+                {"sector": "AI/ML",          "avgGrowth": 58},
+                {"sector": "FinTech",        "avgGrowth": 47},
+                {"sector": "BioTech",        "avgGrowth": 31},
+                {"sector": "Infrastructure", "avgGrowth": 38},
+                {"sector": "Security",       "avgGrowth": 44},
+            ],
+        }
+
+
+# ============================================================================
 # DEMO
 # ============================================================================
 
