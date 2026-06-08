@@ -51,6 +51,8 @@ from integration_guide import (
     DataRoomService,
     InvestorReputationService,
     GeoSignalService,
+    ProjectService,
+    WorkspaceService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -591,6 +593,57 @@ async def workspace_plan_sprint(
 ):
     """AI sprint planning. 0 credits."""
     return await WorkspaceAIService(brain).plan_sprint(user, body)
+
+
+# ============================================================================
+# FOUNDER PROJECTS  (multi-project portfolio)
+# ============================================================================
+
+@app.get("/api/v1/founder/projects", tags=["Founder"])
+async def founder_projects(user: UserContext = Depends(get_user_context)):
+    """A founder's portfolio of ventures (multiple separate startups). 0 credits."""
+    return await ProjectService(brain).list_founder_projects(user)
+
+
+@app.post("/api/v1/founder/projects", tags=["Founder"])
+async def founder_create_project(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Create a new venture. 0 credits. Body: { title, tagline?, industry?, stage? }"""
+    return await ProjectService(brain).create_project(user, body)
+
+
+# ============================================================================
+# WORKSPACES  (bound to an analyzed venture; Incubation → Workspace pipeline)
+# ============================================================================
+
+@app.get("/api/v1/workspaces", tags=["Workspace"])
+async def list_workspaces(user: UserContext = Depends(get_user_context)):
+    """List the founder's workspaces (each bound to a project). 0 credits."""
+    return await WorkspaceService(brain).list_workspaces(user)
+
+
+@app.post("/api/v1/workspaces/provision", tags=["Workspace"])
+async def provision_workspace(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """
+    Provision (or fetch) a workspace bound to an analyzed project, seeded from
+    its latest Incubation Hub analysis. 0 credits. Body: { projectId, name? }
+    """
+    return await WorkspaceService(brain).provision_workspace(user, body)
+
+
+@app.get("/api/v1/workspaces/{workspace_id}/context", tags=["Workspace"])
+async def workspace_context(
+    workspace_id: str,
+    project_id: Optional[str] = None,
+    user: UserContext = Depends(get_user_context),
+):
+    """Project-scoped workspace context (loads the bound venture's blueprint). 0 credits."""
+    return await WorkspaceService(brain).get_workspace_context(user, workspace_id, project_id)
 
 
 # ============================================================================
