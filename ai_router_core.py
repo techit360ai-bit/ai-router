@@ -902,6 +902,8 @@ class ModelConfig:
     max_context_length: int
     strengths:          List[str]
     use_cases:          List[TaskType]
+    api_key_env:        str  = ""      # env var required for this provider to be "available"; "" = always available
+    is_free:            bool = False   # reporting only
 
 
 @dataclass
