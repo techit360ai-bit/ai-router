@@ -48,4 +48,8 @@ Backend py_compile gate (deps absent); Vite SIGBUS (no browser verify). Commit e
 - ✅ H3 team service (register, submit_brief w/ composite score, log_check_in, get_team_status)
 - ✅ H3b workspace pipe (provision_team_workspace via WorkspaceService)
 - ✅ H4 endpoints (GET /hackathons[/{id}/overview|velocity|leaderboard|pipeline|teams/{tid}/status]; POST .../register|brief|checkin|teams/{tid}/workspace)
-- ⬜ H5 FE api ⬜ H6 FE org ⬜ H7 FE founder
+- ✅ H5 FE api (lib/api/hackathon.ts — org + team fetchers)
+- ✅ H6 FE org (HackathonDetail: velocity heatmap from real check-ins (no Math.random), live overview/registration stats, polled)
+- ✅ H7 FE founder (BriefStage→POST /brief; BuildStage→POST /checkin — feeds org heatmap; team→org loop closed)
+
+ALL SLICES COMPLETE. Not pushed yet.
