@@ -934,68 +934,6 @@ class ComplexityTier(Enum):
 class ModelRouter:
     """Routes each task to the optimal LLM. No feature is locked to one vendor."""
 
-    TASK_MAP: Dict[TaskType, ModelProvider] = {
-        # Deep reasoning -> GPT-4
-        TaskType.IDEA_EVALUATION:          ModelProvider.OPENAI_GPT4,
-        TaskType.UNICORN_ANALYSIS:         ModelProvider.OPENAI_GPT4,
-        TaskType.CODE_REVIEW:              ModelProvider.OPENAI_GPT4,
-        TaskType.RISK_ANALYSIS:            ModelProvider.OPENAI_GPT4,
-        TaskType.STARTUP_STRATEGY:         ModelProvider.OPENAI_GPT4,
-        TaskType.PIVOT_INTELLIGENCE:       ModelProvider.OPENAI_GPT4,
-        TaskType.PRODUCT_FEASIBILITY:      ModelProvider.OPENAI_GPT4,
-        TaskType.TECH_STACK_DESIGN:        ModelProvider.OPENAI_GPT4,
-        TaskType.INVESTOR_EVI:             ModelProvider.OPENAI_GPT4,
-        # Long-form generation -> Claude Sonnet
-        TaskType.BUSINESS_PLAN:            ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.EXECUTIVE_SUMMARY:        ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.MARKET_INTELLIGENCE:      ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.FINANCE_STRATEGY:         ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.INVESTOR_READINESS:       ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.INVESTOR_SIGNAL:          ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.TRAINING_GENERATION:      ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.SUMMARY:                  ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.MARKET_SURVEY_SIMULATION: ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.EXECUTION_ROADMAP:        ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.ORG_SPHERE:               ModelProvider.ANTHROPIC_CLAUDE,
-        # Lightweight ops -> GPT-4o-mini
-        TaskType.CHAT:                     ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.TOUR_GUIDE:               ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.WORKSPACE_ASSISTANT:      ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.DASHBOARD_INTELLIGENCE:   ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.FEED_INTELLIGENCE:        ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.RECOMMENDATION_ENGINE:    ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.GSIS_COMPUTE:             ModelProvider.OPENAI_GPT4_MINI,
-        # Idea & Solution Hub -- GPT-4 for analysis; Claude for synthesis/grants
-        TaskType.PROBLEM_ANALYSIS:         ModelProvider.OPENAI_GPT4,
-        TaskType.SOLUTION_SYNTHESIS:       ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.IMPACT_PREDICTION:        ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.FEASIBILITY_ESTIMATE:     ModelProvider.OPENAI_GPT4,
-        TaskType.PROBLEM_DISCOVERY:        ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.SOLUTION_MATCHING:        ModelProvider.ANTHROPIC_HAIKU,
-        TaskType.DEPLOYMENT_PLANNING:      ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.GRANT_MATCHING:           ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DISCUSSION_MODERATION:    ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.FIELD_FEEDBACK_ANALYSIS:  ModelProvider.OPENAI_GPT4_MINI,
-        # Document Generation -- all long-form -> Claude Sonnet
-        TaskType.DOCUMENT_EXECUTIVE_SUMMARY:    ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_BUSINESS_PLAN:        ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_PITCH_DECK:           ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_INVESTOR_REPORT:      ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_UNICORN_REPORT:       ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_PRODUCT_ROADMAP:      ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_FINANCIAL_PROJECTION: ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_MARKET_RESEARCH:      ModelProvider.ANTHROPIC_CLAUDE,
-        # Fast classification -> Haiku
-        TaskType.MATCHING:                 ModelProvider.ANTHROPIC_HAIKU,
-        TaskType.PROFILE_ANALYSIS:         ModelProvider.ANTHROPIC_HAIKU,
-        TaskType.ADMIN_MONITOR:            ModelProvider.ANTHROPIC_HAIKU,
-        # Prompt -> Live App -- Claude Sonnet for structured code scaffolds
-        TaskType.APP_SCAFFOLD_GENERATION:  ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.APP_DEPLOY_CONFIG:        ModelProvider.OPENAI_GPT4_MINI,
-        # Embeddings -> Cohere
-        TaskType.EMBEDDINGS:               ModelProvider.COHERE_EMBED,
-    }
-
     TASK_COMPLEXITY: Dict[TaskType, ComplexityTier] = {
         # HEAVY — deep reasoning / coding / scoring
         TaskType.IDEA_EVALUATION:     ComplexityTier.HEAVY,
@@ -1159,6 +1097,7 @@ class ModelRouter:
         }
 
     def select_model(self, request: AIRequest) -> ModelConfig:
+        """Convenience: the first (preferred) model in the request's fallback chain."""
         return self.select_chain(request)[0]
 
 

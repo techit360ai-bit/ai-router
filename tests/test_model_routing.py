@@ -74,6 +74,30 @@ def test_select_model_is_chain_head():
     assert r.select_model(req).provider == r.select_chain(req)[0].provider
 
 
+def test_ineligible_providers_appended_not_dropped():
+    # With no keys set, TRIVIAL chain must still contain ALL four providers
+    # (eligible-first ordering must never DROP a provider).
+    for var in ("OPENROUTER_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        os.environ.pop(var, None)
+    r = ModelRouter()
+    chain = r.select_chain(_req(TaskType.MATCHING))  # TRIVIAL
+    providers = [c.provider for c in chain]
+    assert ModelProvider.OPENROUTER_FREE in providers
+    assert ModelProvider.GEMINI_FLASH_LITE in providers
+    assert ModelProvider.ANTHROPIC_HAIKU in providers
+    assert ModelProvider.OPENAI_GPT4_MINI in providers
+    assert len(providers) == len(set(providers)), "chain must be deduped"
+
+
+def test_heavy_tier_prefers_gpt4_head():
+    # A HEAVY task for a paid user heads the chain with the strongest model.
+    for var in ("OPENROUTER_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        os.environ.pop(var, None)
+    r = ModelRouter()
+    chain = r.select_chain(_req(TaskType.UNICORN_ANALYSIS))  # HEAVY, FOUNDER_PRO
+    assert chain[0].provider == ModelProvider.OPENAI_GPT4, chain[0].provider
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:
