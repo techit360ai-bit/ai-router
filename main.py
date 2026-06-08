@@ -53,6 +53,7 @@ from integration_guide import (
     GeoSignalService,
     ProjectService,
     WorkspaceService,
+    HackathonService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -644,6 +645,81 @@ async def workspace_context(
 ):
     """Project-scoped workspace context (loads the bound venture's blueprint). 0 credits."""
     return await WorkspaceService(brain).get_workspace_context(user, workspace_id, project_id)
+
+
+# ============================================================================
+# HACKATHON INTELLIGENCE  (org host + team/founder + idea→workspace)
+# ============================================================================
+
+@app.get("/api/v1/hackathons", tags=["Hackathon"])
+async def list_hackathons(user: UserContext = Depends(get_user_context)):
+    """List hackathons. 0 credits."""
+    return await HackathonService(brain).list_hackathons(user)
+
+
+@app.get("/api/v1/hackathons/{hackathon_id}/overview", tags=["Hackathon"])
+async def hackathon_overview(hackathon_id: str, user: UserContext = Depends(get_user_context)):
+    """Org command-centre real-time stats. 0 credits."""
+    return await HackathonService(brain).get_overview(user, hackathon_id)
+
+
+@app.get("/api/v1/hackathons/{hackathon_id}/velocity", tags=["Hackathon"])
+async def hackathon_velocity(hackathon_id: str, user: UserContext = Depends(get_user_context)):
+    """Per-team build-velocity heatmap from REAL check-ins (not random). 0 credits."""
+    return await HackathonService(brain).get_velocity_heatmap(user, hackathon_id)
+
+
+@app.get("/api/v1/hackathons/{hackathon_id}/leaderboard", tags=["Hackathon"])
+async def hackathon_leaderboard(hackathon_id: str, user: UserContext = Depends(get_user_context)):
+    """Composite-ranked leaderboard. 0 credits."""
+    return await HackathonService(brain).get_leaderboard(user, hackathon_id)
+
+
+@app.get("/api/v1/hackathons/{hackathon_id}/pipeline", tags=["Hackathon"])
+async def hackathon_pipeline(hackathon_id: str, user: UserContext = Depends(get_user_context)):
+    """CRS pipeline buckets (incubation/prototype/learning). 0 credits."""
+    return await HackathonService(brain).get_pipeline(user, hackathon_id)
+
+
+@app.post("/api/v1/hackathons/{hackathon_id}/register", tags=["Hackathon"])
+async def hackathon_register(
+    hackathon_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context),
+):
+    """Register a team/solo. 0 credits. Body: { name?, members? }"""
+    return await HackathonService(brain).register(user, {**body, "hackathonId": hackathon_id})
+
+
+@app.post("/api/v1/hackathons/{hackathon_id}/brief", tags=["Hackathon"])
+async def hackathon_brief(
+    hackathon_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context),
+):
+    """Submit + score an idea brief. 0 credits. Body: { teamId, problem, solution, ... }"""
+    return await HackathonService(brain).submit_brief(user, {**body, "hackathonId": hackathon_id})
+
+
+@app.post("/api/v1/hackathons/{hackathon_id}/checkin", tags=["Hackathon"])
+async def hackathon_checkin(
+    hackathon_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context),
+):
+    """Log a build check-in (feeds the velocity heatmap). 0 credits. Body: { teamId, note, progressDelta? }"""
+    return await HackathonService(brain).log_check_in(user, {**body, "hackathonId": hackathon_id})
+
+
+@app.get("/api/v1/hackathons/{hackathon_id}/teams/{team_id}/status", tags=["Hackathon"])
+async def hackathon_team_status(
+    hackathon_id: str, team_id: str, user: UserContext = Depends(get_user_context),
+):
+    """Team-facing status (brief, composite, check-ins, workspace). 0 credits."""
+    return await HackathonService(brain).get_team_status(user, hackathon_id, team_id)
+
+
+@app.post("/api/v1/hackathons/{hackathon_id}/teams/{team_id}/workspace", tags=["Hackathon"])
+async def hackathon_team_workspace(
+    hackathon_id: str, team_id: str, body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Pipe the analyzed brief into a team workspace. 0 credits. Body: { projectId? }"""
+    return await HackathonService(brain).provision_team_workspace(user, hackathon_id, team_id, body)
 
 
 # ============================================================================

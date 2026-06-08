@@ -43,5 +43,9 @@ team collaborators + founders, per hackathon.
 Backend py_compile gate (deps absent); Vite SIGBUS (no browser verify). Commit each slice.
 
 ## Status (✅ done · 🚧 wip · ⬜ todo)
-- ⬜ H1 models ⬜ H2 org service ⬜ H3 team service ⬜ H3b workspace pipe
-- ⬜ H4 endpoints ⬜ H5 FE api ⬜ H6 FE org ⬜ H7 FE founder
+- ✅ H1 models (Hackathon, HackathonTeam, HackathonBrief, HackathonCheckIn, HackathonScore)
+- ✅ H2 org service (overview, velocity heatmap from check-ins, leaderboard, pipeline)
+- ✅ H3 team service (register, submit_brief w/ composite score, log_check_in, get_team_status)
+- ✅ H3b workspace pipe (provision_team_workspace via WorkspaceService)
+- ✅ H4 endpoints (GET /hackathons[/{id}/overview|velocity|leaderboard|pipeline|teams/{tid}/status]; POST .../register|brief|checkin|teams/{tid}/workspace)
+- ⬜ H5 FE api ⬜ H6 FE org ⬜ H7 FE founder

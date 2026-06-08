@@ -2226,6 +2226,107 @@ class ProjectAnalysis(Base):
     )
 
 
+# ============================================================================
+# HACKATHON INTELLIGENCE  (org host + team/founder real-time + idea→workspace)
+# ============================================================================
+# Backs hackathon tracking the engine never had: registrations, scored briefs,
+# build check-ins (the REAL source for velocity, not Math.random), composite
+# scoring, and a brief→workspace pipe. Serves org host + teams/founders.
+
+class Hackathon(Base):
+    """A hackathon event hosted by an organization."""
+    __tablename__ = "hackathons"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    org_id        = Column(UUID(as_uuid=True), ForeignKey("organizations.id"))
+    name          = Column(String(255), nullable=False)
+    theme         = Column(String(255))
+    status        = Column(String(20), default="upcoming")  # upcoming|live|judging|completed
+    starts_at     = Column(TIMESTAMP)
+    ends_at       = Column(TIMESTAMP)
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at    = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_hackathon_org", "org_id", "status"),)
+
+
+class HackathonTeam(Base):
+    """A registered team (or solo) in a hackathon."""
+    __tablename__ = "hackathon_teams"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"), nullable=False)
+    name          = Column(String(255))
+    captain_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    members       = Column(JSON, default=[])               # [{user_id, name, role}]
+    is_solo       = Column(Boolean, default=True)
+    project_id    = Column(UUID(as_uuid=True), ForeignKey("projects.id"))   # set when piped to a venture
+    workspace_id  = Column(UUID(as_uuid=True), ForeignKey("workspaces.id")) # team workspace
+    status        = Column(String(20), default="registered")  # registered|building|submitted
+    registered_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_hteam_hackathon", "hackathon_id", "status"),
+        Index("idx_hteam_captain", "captain_id"),
+    )
+
+
+class HackathonBrief(Base):
+    """A team's scored idea brief (the analyzed hackathon idea)."""
+    __tablename__ = "hackathon_briefs"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id       = Column(UUID(as_uuid=True), ForeignKey("hackathon_teams.id"), nullable=False)
+    hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"),      nullable=False)
+    problem       = Column(Text)
+    solution      = Column(Text)
+    fields        = Column(JSON, default={})               # full 7-field brief
+    # platform sub-scores (0..100) + composite
+    problem_clarity_score = Column(Float, default=0)
+    team_momentum_score   = Column(Float, default=0)
+    demo_readiness_hours  = Column(Float, default=0)
+    composite_score       = Column(Float, default=0)
+    critiques     = Column(JSON, default=[])
+    submitted_at  = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_hbrief_team", "team_id", "submitted_at"),)
+
+
+class HackathonCheckIn(Base):
+    """
+    A team build check-in. THIS is the real source of build-velocity intelligence
+    (the org heatmap), replacing the frontend's Math.random() placeholder.
+    """
+    __tablename__ = "hackathon_check_ins"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id       = Column(UUID(as_uuid=True), ForeignKey("hackathon_teams.id"), nullable=False)
+    hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"),      nullable=False)
+    note          = Column(Text)
+    progress_delta = Column(Float, default=0)              # self-reported progress
+    activity_score = Column(Float, default=0)              # derived 0..100 for heatmap
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_hcheckin_team", "team_id", "created_at"),)
+
+
+class HackathonScore(Base):
+    """Composite hackathon score = judge panel + platform signals."""
+    __tablename__ = "hackathon_scores"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id       = Column(UUID(as_uuid=True), ForeignKey("hackathon_teams.id"), nullable=False)
+    hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"),      nullable=False)
+    judge_scores  = Column(JSON, default={})               # {problem_clarity, ...} 0..10
+    platform_avg  = Column(Float, default=0)
+    judge_avg_pct = Column(Float, default=0)
+    composite     = Column(Float, default=0)
+    crs_band      = Column(String(8))                      # >7 | 4-6 | <4
+    updated_at    = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_hscore_hackathon", "hackathon_id", "composite"),)
+
+
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════╗
