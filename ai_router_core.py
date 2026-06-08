@@ -1474,18 +1474,18 @@ class AICommandLayer:
         prompt       = await self.prompt_engine.build_prompt(
             request.task_type, context, request.user_context.role
         )
-        model_config = self.model_router.select_model(request)
-        response     = await self._execute_with_retry(model_config, prompt, request)
+        chain    = self.model_router.select_chain(request)
+        response = await self._execute_with_retry(chain, prompt, request)
 
         response.credits_consumed = CreditCost.cost_for(request.task_type)
         elapsed = (datetime.now() - start).total_seconds() * 1000
         await self._log(request, response, elapsed)
         return response
 
-    async def _execute_with_retry(self, model_config: ModelConfig,
-                                   prompt: str, request: AIRequest,
-                                   max_retries: int = 2) -> AIResponse:
-        for attempt in range(max_retries + 1):
+    async def _execute_with_retry(self, chain: List[ModelConfig],
+                                  prompt: str, request: AIRequest) -> AIResponse:
+        last_exc: Optional[Exception] = None
+        for attempt, model_config in enumerate(chain):
             try:
                 output = await self._call_llm(model_config, prompt, request)
                 return AIResponse(
@@ -1496,15 +1496,13 @@ class AICommandLayer:
                     cost=round((output["tokens"] / 1000) * model_config.cost_per_1k_tokens, 6),
                     confidence_score=output.get("confidence", 1.0),
                     execution_time_ms=output["duration_ms"],
-                    metadata={"attempt": attempt + 1},
+                    metadata={"attempt": attempt + 1,
+                              "provider": model_config.provider.value},
                 )
-            except Exception as exc:
-                if attempt < max_retries:
-                    fb = self.model_router.get_fallback_model(model_config.provider)
-                    if fb:
-                        model_config = fb
-                        continue
-                raise exc
+            except Exception as exc:  # noqa: BLE001 — try next model in chain
+                last_exc = exc
+                continue
+        raise last_exc if last_exc else RuntimeError("empty model chain")
 
     async def _call_llm(self, model_config: ModelConfig, prompt: str,
                          request: AIRequest) -> Dict:
