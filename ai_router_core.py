@@ -48,6 +48,7 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -136,12 +137,15 @@ class TaskType(Enum):
 
 
 class ModelProvider(Enum):
-    OPENAI_GPT4      = "openai_gpt4"
-    OPENAI_GPT4_MINI = "openai_gpt4_mini"
-    ANTHROPIC_CLAUDE = "anthropic_claude"
-    ANTHROPIC_HAIKU  = "anthropic_claude_haiku"
-    LOCAL_LLAMA      = "local_llama"
-    COHERE_EMBED     = "cohere_embed"
+    OPENAI_GPT4       = "openai_gpt4"
+    OPENAI_GPT4_MINI  = "openai_gpt4_mini"
+    ANTHROPIC_CLAUDE  = "anthropic_claude"
+    ANTHROPIC_HAIKU   = "anthropic_claude_haiku"
+    LOCAL_LLAMA       = "local_llama"
+    COHERE_EMBED      = "cohere_embed"
+    GEMINI_FLASH      = "gemini_flash"
+    GEMINI_FLASH_LITE = "gemini_flash_lite"
+    OPENROUTER_FREE   = "openrouter_free"
 
 
 # ============================================================================
