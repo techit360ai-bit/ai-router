@@ -924,6 +924,13 @@ class AIResponse:
 # MODEL ROUTER
 # ============================================================================
 
+class ComplexityTier(Enum):
+    HEAVY    = "heavy"      # deep reasoning, coding, scoring
+    STANDARD = "standard"   # long-form generation
+    LIGHT    = "light"      # chat, summaries, dashboard glue
+    TRIVIAL  = "trivial"    # classification, moderation, notifications
+
+
 class ModelRouter:
     """Routes each task to the optimal LLM. No feature is locked to one vendor."""
 
