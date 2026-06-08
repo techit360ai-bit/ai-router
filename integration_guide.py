@@ -2776,6 +2776,26 @@ class WorkspaceService:
 # HACKATHON SERVICE  (org host intelligence + team/founder + idea→workspace)
 # ============================================================================
 
+# Process-level store: hackathon_id -> { team_id -> team dict }. This makes the
+# org↔team loop functionally LIVE in-process: a brief or check-in posted by a
+# team immediately surfaces in the org overview / velocity / leaderboard.
+# Caveat: ephemeral (resets on restart) and NOT shared across multiple workers —
+# the durable layer is the hackathon_* tables in database_schema.py.
+_HACKATHON_STORE: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+# Seed teams so the org command-centre renders before any live activity arrives.
+_SEED_TEAMS: List[Dict[str, Any]] = [
+    {"id": "team_001", "name": "Loom Health", "isSolo": False, "status": "building",
+     "hasBrief": True, "composite": 88, "checkIns": 5, "hasWorkspace": True},
+    {"id": "team_002", "name": "Solaris", "isSolo": False, "status": "building",
+     "hasBrief": True, "composite": 76, "checkIns": 3, "hasWorkspace": True},
+    {"id": "team_003", "name": "Verdant", "isSolo": True, "status": "registered",
+     "hasBrief": False, "composite": 41, "checkIns": 1, "hasWorkspace": False},
+    {"id": "team_004", "name": "Northwind", "isSolo": False, "status": "submitted",
+     "hasBrief": True, "composite": 91, "checkIns": 7, "hasWorkspace": True},
+]
+
+
 class HackathonService:
     """
     Hackathon intelligence: real-time reporting to the ORG host (registrations,
@@ -2786,8 +2806,9 @@ class HackathonService:
     Composite scoring mirrors the frontend formula:
       platformAvg = avg(problem_clarity, team_momentum, min(100, demo_hours*6))
       composite   = judgePct*0.5 + platformAvg*0.5
-    Production: query hackathons / hackathon_teams / hackathon_briefs /
-    hackathon_check_ins / hackathon_scores (database_schema.py).
+    Reads/writes go through an in-process store (_HACKATHON_STORE) so the loop is
+    live; production swaps that for queries over hackathons / hackathon_teams /
+    hackathon_briefs / hackathon_check_ins / hackathon_scores (database_schema.py).
     """
 
     def __init__(self, brain: TechITAIBrain) -> None:
@@ -2804,17 +2825,18 @@ class HackathonService:
     async def get_overview(self, user_context: UserContext, hackathon_id: str) -> Dict[str, Any]:
         """
         GET /api/v1/hackathons/{id}/overview -- 0 credits.
-        Real-time org command-centre stats. Production: COUNT/aggregate over
-        hackathon_teams + hackathon_briefs + hackathon_check_ins.
+        Real-time org command-centre stats, derived live from the store.
+        Production: COUNT/aggregate over hackathon_teams + hackathon_briefs +
+        hackathon_check_ins.
         """
-        teams = self._load_teams(hackathon_id)
+        teams = self._teams(hackathon_id)
         solo = sum(1 for t in teams if t["isSolo"])
         briefs_in = sum(1 for t in teams if t["hasBrief"])
         return {
             "hackathonId": hackathon_id,
             "status": "live",
-            "registrants": 420,
-            "teamsFormed": len([t for t in teams if not t["isSolo"]]) or 87,
+            "registrants": 420 + max(0, len(teams) - len(_SEED_TEAMS)),
+            "teamsFormed": sum(1 for t in teams if not t["isSolo"]),
             "stillSolo": solo,
             "ideaSubmissions": briefs_in,
             "totalTeams": len(teams),
@@ -2836,7 +2858,7 @@ class HackathonService:
         self, user_context: UserContext, hackathon_id: str
     ) -> Dict[str, Any]:
         """GET /api/v1/hackathons/{id}/leaderboard -- 0 credits. Composite-ranked."""
-        teams = self._load_teams(hackathon_id)
+        teams = self._teams(hackathon_id)
         ranked = sorted(
             [{"teamId": t["id"], "name": t["name"], "composite": t["composite"],
               "crsBand": self._crs_band(t["composite"] / 10.0)} for t in teams],
@@ -2848,7 +2870,7 @@ class HackathonService:
         self, user_context: UserContext, hackathon_id: str
     ) -> Dict[str, Any]:
         """GET /api/v1/hackathons/{id}/pipeline -- 0 credits. CRS bucket counts."""
-        teams = self._load_teams(hackathon_id)
+        teams = self._teams(hackathon_id)
         crs = [t["composite"] / 10.0 for t in teams]
         return {
             "hackathonId": hackathon_id,
@@ -2863,20 +2885,26 @@ class HackathonService:
     async def register(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
         """POST /api/v1/hackathons/{id}/register -- 0 credits. Body: { name?, members? }"""
         members = body.get("members", [])
+        is_solo = len(members) <= 1
+        team_id = body.get("teamId", "team_new")
+        store = self._store(body.get("hackathonId"))
+        team = store.get(team_id) or self._new_team(team_id, body.get("name", "Solo"))
+        team.update({"name": body.get("name", team["name"]), "isSolo": is_solo,
+                     "status": "registered"})
+        store[team_id] = team
         return {
             "ok": True,
             "team": {
-                "id": body.get("teamId", "team_new"),
-                "name": body.get("name", "Solo"),
-                "isSolo": len(members) <= 1,
-                "status": "registered",
+                "id": team["id"], "name": team["name"],
+                "isSolo": team["isSolo"], "status": team["status"],
             },
         }
 
     async def submit_brief(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
         """
         POST /api/v1/hackathons/{id}/brief -- 0 credits.
-        Scores the idea brief (platform composite) and persists it.
+        Scores the idea brief (platform composite) and persists it to the store
+        so the org command-centre sees the submission live.
         Body: { teamId, problem, solution, fields, demoReadinessHours?,
                 judgeScores? }
         """
@@ -2889,6 +2917,15 @@ class HackathonService:
         judge_scores = body.get("judgeScores") or {}
         judge_pct = (sum(judge_scores.values()) / len(judge_scores) / 10.0 * 100.0) if judge_scores else platform_avg
         composite = round(judge_pct * 0.5 + platform_avg * 0.5)
+
+        team_id = body.get("teamId")
+        if team_id:
+            store = self._store(body.get("hackathonId"))
+            team = store.get(team_id) or self._new_team(team_id)
+            team.update({"hasBrief": True, "composite": composite,
+                         "status": "building" if team["status"] == "registered" else team["status"]})
+            store[team_id] = team
+
         return {
             "ok": True,
             "score": {
@@ -2906,21 +2943,34 @@ class HackathonService:
     async def log_check_in(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
         """
         POST /api/v1/hackathons/{id}/checkin -- 0 credits.
-        Records a build check-in; its activity_score feeds the org velocity heatmap.
+        Records a build check-in; its activity_score updates the team's running
+        velocity in the store, which feeds the org heatmap live.
         Body: { teamId, note, progressDelta? }
         """
         progress = float(body.get("progressDelta", 10))
         activity = min(100.0, max(0.0, progress * 5))
+
+        team_id = body.get("teamId")
+        if team_id:
+            store = self._store(body.get("hackathonId"))
+            team = store.get(team_id) or self._new_team(team_id)
+            n = team["checkIns"]
+            team["activity"] = round((team["activity"] * n + activity) / (n + 1), 1)
+            team["checkIns"] = n + 1
+            if team["status"] == "registered":
+                team["status"] = "building"
+            store[team_id] = team
+
         return {"ok": True, "checkIn": {
-            "teamId": body.get("teamId"), "note": body.get("note", ""),
+            "teamId": team_id, "note": body.get("note", ""),
             "activityScore": round(activity)}}
 
     async def get_team_status(
         self, user_context: UserContext, hackathon_id: str, team_id: str
     ) -> Dict[str, Any]:
         """GET /api/v1/hackathons/{id}/teams/{tid}/status -- 0 credits."""
-        team = next((t for t in self._load_teams(hackathon_id) if t["id"] == team_id),
-                    self._load_teams(hackathon_id)[0])
+        teams = self._teams(hackathon_id)
+        team = next((t for t in teams if t["id"] == team_id), teams[0])
         return {
             "hackathonId": hackathon_id, "teamId": team["id"], "name": team["name"],
             "status": team["status"], "hasBrief": team["hasBrief"],
@@ -2934,15 +2984,47 @@ class HackathonService:
         """
         POST /api/v1/hackathons/{id}/teams/{tid}/workspace -- 0 credits.
         Pipe the analyzed hackathon brief into a team workspace (reuses
-        WorkspaceService). Body: { projectId? }.
+        WorkspaceService) and mark the team's workspace live in the store.
+        Body: { projectId? }.
         """
         project_id = body.get("projectId") or f"proj_hack_{team_id}"
         ws = await WorkspaceService(self.brain).provision_workspace(
             user_context, {"projectId": project_id, "name": body.get("name", "Hackathon Team")},
         )
+        store = self._store(hackathon_id)
+        team = store.get(team_id) or self._new_team(team_id)
+        team.update({"hasWorkspace": True, "projectId": project_id})
+        store[team_id] = team
         return {"ok": True, "hackathonId": hackathon_id, "teamId": team_id, **ws}
 
     # ── helpers ───────────────────────────────────────────────────────────
+    @staticmethod
+    def _store(hackathon_id: Optional[str]) -> Dict[str, Dict[str, Any]]:
+        """Return (seeding on first touch) the team store for a hackathon."""
+        key = hackathon_id or "_default"
+        store = _HACKATHON_STORE.get(key)
+        if store is None:
+            store = {}
+            for seed in _SEED_TEAMS:
+                team = dict(seed)
+                # Seed a deterministic baseline activity (never random); real
+                # check-ins blend into this running mean via log_check_in.
+                team["activity"] = float(
+                    min(100, 30 + team["checkIns"] * 12 + int(team["composite"]) % 25)
+                )
+                store[team["id"]] = team
+            _HACKATHON_STORE[key] = store
+        return store
+
+    @staticmethod
+    def _new_team(team_id: str, name: str = "Team") -> Dict[str, Any]:
+        return {"id": team_id, "name": name, "isSolo": True, "status": "registered",
+                "hasBrief": False, "composite": 0, "checkIns": 0,
+                "hasWorkspace": False, "activity": 0.0}
+
+    def _teams(self, hackathon_id: str) -> List[Dict[str, Any]]:
+        return list(self._store(hackathon_id).values())
+
     @staticmethod
     def _clarity_score(text: str) -> float:
         n = len(text.strip())
@@ -2974,25 +3056,11 @@ class HackathonService:
         return sum(c["activity"] for c in cells) / len(cells) if cells else 0.0
 
     def _velocity_cells(self, hackathon_id: str) -> List[Dict[str, Any]]:
-        # Production: SELECT team_id, AVG(activity_score) FROM hackathon_check_ins
-        # WHERE hackathon_id=:id AND created_at > now()-interval '1 hour' GROUP BY team_id.
-        # Deterministic seed (NOT random) derived from team index — real data when DB-wired.
-        teams = self._load_teams(hackathon_id)
-        return [{"teamId": t["id"], "name": t["name"],
-                 "activity": min(100, 30 + t["checkIns"] * 12 + int(t["composite"]) % 25)}
-                for t in teams]
-
-    def _load_teams(self, hackathon_id: str) -> List[Dict[str, Any]]:
-        return [
-            {"id": "team_001", "name": "Loom Health", "isSolo": False, "status": "building",
-             "hasBrief": True, "composite": 88, "checkIns": 5, "hasWorkspace": True},
-            {"id": "team_002", "name": "Solaris", "isSolo": False, "status": "building",
-             "hasBrief": True, "composite": 76, "checkIns": 3, "hasWorkspace": True},
-            {"id": "team_003", "name": "Verdant", "isSolo": True, "status": "registered",
-             "hasBrief": False, "composite": 41, "checkIns": 1, "hasWorkspace": False},
-            {"id": "team_004", "name": "Northwind", "isSolo": False, "status": "submitted",
-             "hasBrief": True, "composite": 91, "checkIns": 7, "hasWorkspace": True},
-        ]
+        # Live: per-team running-mean activity from posted check-ins (maintained
+        # in log_check_in). Seeded from a deterministic baseline (never random)
+        # in _store so the heatmap renders before any check-in arrives.
+        return [{"teamId": t["id"], "name": t["name"], "activity": round(t["activity"])}
+                for t in self._teams(hackathon_id)]
 
 
 # ============================================================================
