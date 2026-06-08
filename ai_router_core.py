@@ -996,9 +996,114 @@ class ModelRouter:
         TaskType.EMBEDDINGS:               ModelProvider.COHERE_EMBED,
     }
 
+    TASK_COMPLEXITY: Dict[TaskType, ComplexityTier] = {
+        # HEAVY — deep reasoning / coding / scoring
+        TaskType.IDEA_EVALUATION:     ComplexityTier.HEAVY,
+        TaskType.UNICORN_ANALYSIS:    ComplexityTier.HEAVY,
+        TaskType.CODE_REVIEW:         ComplexityTier.HEAVY,
+        TaskType.RISK_ANALYSIS:       ComplexityTier.HEAVY,
+        TaskType.STARTUP_STRATEGY:    ComplexityTier.HEAVY,
+        TaskType.PIVOT_INTELLIGENCE:  ComplexityTier.HEAVY,
+        TaskType.PRODUCT_FEASIBILITY: ComplexityTier.HEAVY,
+        TaskType.TECH_STACK_DESIGN:   ComplexityTier.HEAVY,
+        TaskType.INVESTOR_EVI:        ComplexityTier.HEAVY,
+        TaskType.PROBLEM_ANALYSIS:    ComplexityTier.HEAVY,
+        TaskType.FEASIBILITY_ESTIMATE: ComplexityTier.HEAVY,
+        TaskType.APP_SCAFFOLD_GENERATION: ComplexityTier.HEAVY,
+        # STANDARD — long-form generation
+        TaskType.BUSINESS_PLAN:            ComplexityTier.STANDARD,
+        TaskType.EXECUTIVE_SUMMARY:        ComplexityTier.STANDARD,
+        TaskType.MARKET_INTELLIGENCE:      ComplexityTier.STANDARD,
+        TaskType.FINANCE_STRATEGY:         ComplexityTier.STANDARD,
+        TaskType.INVESTOR_READINESS:       ComplexityTier.STANDARD,
+        TaskType.INVESTOR_SIGNAL:          ComplexityTier.STANDARD,
+        TaskType.TRAINING_GENERATION:      ComplexityTier.STANDARD,
+        TaskType.SUMMARY:                  ComplexityTier.STANDARD,
+        TaskType.MARKET_SURVEY_SIMULATION: ComplexityTier.STANDARD,
+        TaskType.EXECUTION_ROADMAP:        ComplexityTier.STANDARD,
+        TaskType.ORG_SPHERE:               ComplexityTier.STANDARD,
+        TaskType.SOLUTION_SYNTHESIS:       ComplexityTier.STANDARD,
+        TaskType.DEPLOYMENT_PLANNING:      ComplexityTier.STANDARD,
+        TaskType.GRANT_MATCHING:           ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_EXECUTIVE_SUMMARY:    ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_BUSINESS_PLAN:        ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_PITCH_DECK:           ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_INVESTOR_REPORT:      ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_UNICORN_REPORT:       ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_PRODUCT_ROADMAP:      ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_FINANCIAL_PROJECTION: ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_MARKET_RESEARCH:      ComplexityTier.STANDARD,
+        # LIGHT — chat / glue / light reasoning
+        TaskType.CHAT:                   ComplexityTier.LIGHT,
+        TaskType.TOUR_GUIDE:             ComplexityTier.LIGHT,
+        TaskType.WORKSPACE_ASSISTANT:    ComplexityTier.LIGHT,
+        TaskType.DASHBOARD_INTELLIGENCE: ComplexityTier.LIGHT,
+        TaskType.FEED_INTELLIGENCE:      ComplexityTier.LIGHT,
+        TaskType.RECOMMENDATION_ENGINE:  ComplexityTier.LIGHT,
+        TaskType.GSIS_COMPUTE:           ComplexityTier.LIGHT,
+        TaskType.IMPACT_PREDICTION:      ComplexityTier.LIGHT,
+        TaskType.PROBLEM_DISCOVERY:      ComplexityTier.LIGHT,
+        TaskType.APP_DEPLOY_CONFIG:      ComplexityTier.LIGHT,
+        # TRIVIAL — classification / moderation
+        TaskType.MATCHING:                ComplexityTier.TRIVIAL,
+        TaskType.PROFILE_ANALYSIS:        ComplexityTier.TRIVIAL,
+        TaskType.ADMIN_MONITOR:           ComplexityTier.TRIVIAL,
+        TaskType.SOLUTION_MATCHING:       ComplexityTier.TRIVIAL,
+        TaskType.DISCUSSION_MODERATION:   ComplexityTier.TRIVIAL,
+        TaskType.FIELD_FEEDBACK_ANALYSIS: ComplexityTier.TRIVIAL,
+        # EMBEDDINGS intentionally omitted — special-cased to Cohere in select_chain.
+    }
+
+    TIER_MODELS: Dict[ComplexityTier, List[ModelProvider]] = {
+        ComplexityTier.HEAVY:    [ModelProvider.OPENAI_GPT4, ModelProvider.ANTHROPIC_CLAUDE,
+                                  ModelProvider.OPENAI_GPT4_MINI],
+        ComplexityTier.STANDARD: [ModelProvider.ANTHROPIC_CLAUDE, ModelProvider.OPENAI_GPT4,
+                                  ModelProvider.ANTHROPIC_HAIKU],
+        ComplexityTier.LIGHT:    [ModelProvider.GEMINI_FLASH, ModelProvider.OPENAI_GPT4_MINI,
+                                  ModelProvider.ANTHROPIC_HAIKU],
+        ComplexityTier.TRIVIAL:  [ModelProvider.OPENROUTER_FREE, ModelProvider.GEMINI_FLASH_LITE,
+                                  ModelProvider.ANTHROPIC_HAIKU, ModelProvider.OPENAI_GPT4_MINI],
+    }
+
     def __init__(self) -> None:
-        self.model_configs  = self._init_models()
-        self.fallback_chain = self._init_fallbacks()
+        self.model_configs = self._init_models()
+        self._validate_coverage()
+
+    def _validate_coverage(self) -> None:
+        for task in TaskType:
+            if task is TaskType.EMBEDDINGS:
+                continue
+            if task not in self.TASK_COMPLEXITY:
+                raise ValueError(f"TASK_COMPLEXITY missing tier for {task}")
+        for tier, providers in self.TIER_MODELS.items():
+            for prov in providers:
+                if prov not in self.model_configs:
+                    raise ValueError(f"TIER_MODELS[{tier}] references unknown provider {prov}")
+
+    @staticmethod
+    def _is_available(cfg: ModelConfig) -> bool:
+        return not cfg.api_key_env or bool(os.environ.get(cfg.api_key_env))
+
+    def _ordered_configs(self, providers: List[ModelProvider]) -> List[ModelConfig]:
+        """Map providers -> configs, eligible (key present) first, none dropped."""
+        configs = [self.model_configs[p] for p in providers if p in self.model_configs]
+        eligible   = [c for c in configs if self._is_available(c)]
+        ineligible = [c for c in configs if not self._is_available(c)]
+        ordered, seen = [], set()
+        for c in eligible + ineligible:
+            if c.provider not in seen:
+                ordered.append(c)
+                seen.add(c.provider)
+        return ordered
+
+    def select_chain(self, request: AIRequest) -> List[ModelConfig]:
+        """Ordered fallback chain of models for a request (never empty)."""
+        if request.task_type is TaskType.EMBEDDINGS:
+            return [self.model_configs[ModelProvider.COHERE_EMBED]]
+        if request.user_context.subscription_tier == SubscriptionTier.FREE:
+            return self._ordered_configs(self.TIER_MODELS[ComplexityTier.TRIVIAL])
+        tier = self.TASK_COMPLEXITY.get(request.task_type, ComplexityTier.LIGHT)
+        return self._ordered_configs(self.TIER_MODELS[tier])
 
     def _init_models(self) -> Dict[ModelProvider, ModelConfig]:
         return {
@@ -1053,26 +1158,8 @@ class ModelRouter:
             ),
         }
 
-    def _init_fallbacks(self) -> Dict[ModelProvider, List[ModelProvider]]:
-        return {
-            ModelProvider.OPENAI_GPT4:      [ModelProvider.ANTHROPIC_CLAUDE, ModelProvider.OPENAI_GPT4_MINI],
-            ModelProvider.ANTHROPIC_CLAUDE: [ModelProvider.OPENAI_GPT4, ModelProvider.ANTHROPIC_HAIKU],
-            ModelProvider.OPENAI_GPT4_MINI: [ModelProvider.ANTHROPIC_HAIKU],
-            ModelProvider.ANTHROPIC_HAIKU:  [ModelProvider.OPENAI_GPT4_MINI],
-        }
-
     def select_model(self, request: AIRequest) -> ModelConfig:
-        if request.user_context.subscription_tier == SubscriptionTier.FREE:
-            cheap = {TaskType.CHAT: ModelProvider.OPENAI_GPT4_MINI,
-                     TaskType.TOUR_GUIDE: ModelProvider.OPENAI_GPT4_MINI,
-                     TaskType.EMBEDDINGS: ModelProvider.COHERE_EMBED}
-            return self.model_configs[cheap.get(request.task_type, ModelProvider.ANTHROPIC_HAIKU)]
-        provider = self.TASK_MAP.get(request.task_type, ModelProvider.OPENAI_GPT4_MINI)
-        return self.model_configs[provider]
-
-    def get_fallback_model(self, failed: ModelProvider) -> Optional[ModelConfig]:
-        fallbacks = self.fallback_chain.get(failed, [])
-        return self.model_configs.get(fallbacks[0]) if fallbacks else None
+        return self.select_chain(request)[0]
 
 
 # ============================================================================
