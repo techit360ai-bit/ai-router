@@ -1006,26 +1006,50 @@ class ModelRouter:
                 ModelProvider.OPENAI_GPT4, "gpt-4-turbo", 0.01, 128_000,
                 ["deep reasoning", "unicorn scoring", "code"],
                 [TaskType.IDEA_EVALUATION, TaskType.UNICORN_ANALYSIS],
+                api_key_env="OPENAI_API_KEY",
             ),
             ModelProvider.OPENAI_GPT4_MINI: ModelConfig(
                 ModelProvider.OPENAI_GPT4_MINI, "gpt-4o-mini", 0.0002, 128_000,
                 ["speed", "low cost", "chat"],
                 [TaskType.CHAT, TaskType.TOUR_GUIDE],
+                api_key_env="OPENAI_API_KEY",
             ),
             ModelProvider.ANTHROPIC_CLAUDE: ModelConfig(
                 ModelProvider.ANTHROPIC_CLAUDE, "claude-sonnet-4-6", 0.003, 200_000,
                 ["long context", "business plans", "strategy"],
                 [TaskType.BUSINESS_PLAN, TaskType.SUMMARY],
+                api_key_env="ANTHROPIC_API_KEY",
             ),
             ModelProvider.ANTHROPIC_HAIKU: ModelConfig(
                 ModelProvider.ANTHROPIC_HAIKU, "claude-haiku-4-5-20251001", 0.00025, 200_000,
                 ["speed", "classification", "matching"],
                 [TaskType.MATCHING, TaskType.PROFILE_ANALYSIS],
+                api_key_env="ANTHROPIC_API_KEY",
             ),
             ModelProvider.COHERE_EMBED: ModelConfig(
                 ModelProvider.COHERE_EMBED, "embed-english-v3.0", 0.0001, 512,
                 ["embeddings", "semantic search"],
                 [TaskType.EMBEDDINGS],
+                api_key_env="COHERE_API_KEY",
+            ),
+            ModelProvider.GEMINI_FLASH: ModelConfig(
+                ModelProvider.GEMINI_FLASH, "gemini-2.0-flash", 0.0001, 1_000_000,
+                ["speed", "low cost", "light reasoning"],
+                [TaskType.CHAT, TaskType.FEED_INTELLIGENCE],
+                api_key_env="GEMINI_API_KEY",
+            ),
+            ModelProvider.GEMINI_FLASH_LITE: ModelConfig(
+                ModelProvider.GEMINI_FLASH_LITE, "gemini-2.0-flash-lite", 0.00004, 1_000_000,
+                ["cheapest", "classification", "notifications"],
+                [TaskType.MATCHING, TaskType.DISCUSSION_MODERATION],
+                api_key_env="GEMINI_API_KEY",
+            ),
+            ModelProvider.OPENROUTER_FREE: ModelConfig(
+                ModelProvider.OPENROUTER_FREE, "meta-llama/llama-3.3-70b-instruct:free",
+                0.0, 128_000,
+                ["free", "light reasoning", "high volume"],
+                [TaskType.MATCHING, TaskType.FIELD_FEEDBACK_ANALYSIS],
+                api_key_env="OPENROUTER_API_KEY", is_free=True,
             ),
         }
 
