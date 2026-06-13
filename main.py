@@ -1366,22 +1366,78 @@ async def check_paywall(
 @app.post("/api/v1/webhooks/stripe", tags=["Billing"])
 async def stripe_webhook(request: Request):
     """
-    Stripe webhook handler.
-    Production: verify signature, handle checkout.session.completed,
-    update credit_purchases + credit_ledger tables.
+    Stripe webhook handler with signature verification.
+
+    Verifies the `stripe-signature` header against STRIPE_WEBHOOK_SECRET, then
+    dispatches on event type. `checkout.session.completed` records a PAYG credit
+    purchase (idempotent on the Stripe id).
     """
-    # Production:
-    # import stripe
-    # payload = await request.body()
-    # sig_header = request.headers.get("stripe-signature")
-    # try:
-    #     event = stripe.Webhook.construct_event(
-    #         payload, sig_header, os.getenv("STRIPE_WEBHOOK_SECRET")
-    #     )
-    # except stripe.error.SignatureVerificationError:
-    #     raise HTTPException(status_code=400, detail="Invalid signature")
-    # Handle event.type ...
-    return {"received": True}
+    import stripe
+
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+    if not webhook_secret:
+        logger.error("stripe_webhook_misconfigured", reason="STRIPE_WEBHOOK_SECRET not set")
+        raise HTTPException(status_code=500, detail="Stripe webhook is not configured")
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except ValueError:
+        # Malformed payload
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    event_type = event.get("type", "")
+    obj = event.get("data", {}).get("object", {}) or {}
+
+    # Process known events. Failures here are logged but still return 200 so
+    # Stripe doesn't retry indefinitely once the signature is verified.
+    try:
+        if event_type == "checkout.session.completed":
+            _record_credit_purchase(obj)
+        else:
+            logger.info("stripe_webhook_ignored", event_type=event_type)
+    except Exception as e:  # noqa: BLE001
+        logger.error("stripe_webhook_processing_failed", event_type=event_type, error=str(e))
+
+    return {"received": True, "event_type": event_type}
+
+
+def _record_credit_purchase(session_obj: Dict[str, Any]) -> None:
+    """Idempotently record a PAYG credit purchase from a completed checkout session."""
+    from database_schema import CreditPurchase
+
+    stripe_id = session_obj.get("id")
+    metadata = session_obj.get("metadata", {}) or {}
+    user_id = metadata.get("user_id")
+    credits_qty = int(metadata.get("credits", 0) or 0)
+    amount_usd = (session_obj.get("amount_total", 0) or 0) / 100.0  # cents -> USD
+
+    if not (stripe_id and user_id and credits_qty > 0):
+        logger.warning("stripe_checkout_missing_fields", stripe_id=stripe_id, user_id=user_id)
+        return
+
+    Session = _db_session_factory()
+    db = Session()
+    try:
+        exists = db.query(CreditPurchase).filter(CreditPurchase.stripe_id == stripe_id).first()
+        if exists:
+            logger.info("stripe_checkout_already_recorded", stripe_id=stripe_id)
+            return
+        db.add(CreditPurchase(
+            user_id=user_id,
+            credits_qty=credits_qty,
+            amount_usd=amount_usd,
+            stripe_id=stripe_id,
+            status="completed",
+        ))
+        db.commit()
+        logger.info("stripe_credit_purchase_recorded", user_id=user_id, credits=credits_qty)
+    finally:
+        db.close()
 
 
 # ============================================================================
