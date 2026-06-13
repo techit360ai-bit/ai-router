@@ -126,39 +126,47 @@ app.add_middleware(
 # AUTHENTICATION DEPENDENCY
 # ============================================================================
 
-async def get_user_context(request: Request) -> UserContext:
-    """
-    Extract and validate the current user from the request.
+# Auth config (env-driven).
+#   SECRET_KEY       -- HS256 signing key shared with the token issuer (Node backend).
+#   JWT_ALGORITHM    -- defaults to HS256.
+#   ALLOW_DEMO_AUTH  -- when true (default) requests WITHOUT a token fall back to the
+#                       demo context so local dev keeps working. Set to "false" in
+#                       production so anonymous requests are rejected. A request WITH a
+#                       token is ALWAYS validated regardless of this flag.
+SECRET_KEY = os.getenv("SECRET_KEY")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
 
-    Production implementation:
-      1. Read Authorization header -> "Bearer <jwt_token>"
-      2. Decode JWT using python-jose + SECRET_KEY
-      3. Extract user_id from payload
-      4. Query users + billing tables from PostgreSQL
-      5. Build and return UserContext
+# Tolerant aliases so tokens minted by the Node backend map onto our enums.
+_ROLE_ALIASES = {
+    "founder": UserRole.FOUNDER,
+    "collaborator": UserRole.BUILDER,
+    "builder": UserRole.BUILDER,
+    "investor": UserRole.INVESTOR,
+    "organisation": UserRole.ACCELERATOR_MGR,
+    "organization": UserRole.ACCELERATOR_MGR,
+    "accelerator_manager": UserRole.ACCELERATOR_MGR,
+    "admin": UserRole.ADMIN,
+}
 
-    Current implementation:
-      Returns a demo Founder Pro context so every endpoint works
-      immediately without auth infrastructure. Replace this before
-      going to production.
 
-    To add real auth, install python-jose:
-      pip install python-jose[cryptography] passlib[bcrypt]
-    """
-    # ── Production: uncomment and complete ────────────────────────────────
-    # from jose import JWTError, jwt
-    # token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    # if not token:
-    #     raise HTTPException(status_code=401, detail="Missing authentication token")
-    # try:
-    #     payload = jwt.decode(token, os.getenv("SECRET_KEY"), algorithms=["HS256"])
-    #     user_id = payload.get("sub")
-    # except JWTError:
-    #     raise HTTPException(status_code=401, detail="Invalid token")
-    # user = await fetch_user_from_db(user_id)
-    # return build_user_context(user)
-    # ── End production block ──────────────────────────────────────────────
+def _role_from_claim(value: Any) -> UserRole:
+    if isinstance(value, str):
+        return _ROLE_ALIASES.get(value.strip().lower(), UserRole.FOUNDER)
+    return UserRole.FOUNDER
 
+
+def _tier_from_claim(value: Any) -> SubscriptionTier:
+    if isinstance(value, str):
+        try:
+            return SubscriptionTier(value.strip().lower())
+        except ValueError:
+            pass
+    return SubscriptionTier.FREE
+
+
+def _demo_user_context() -> UserContext:
+    """Demo Founder Pro context for local dev / anonymous requests (ALLOW_DEMO_AUTH)."""
     return UserContext(
         user_id="demo_user_001",
         role=UserRole.FOUNDER,
@@ -176,6 +184,74 @@ async def get_user_context(request: Request) -> UserContext:
         team_size=2,
         has_revenue=False,
         beta_users_count=0,
+    )
+
+
+async def get_user_context(request: Request) -> UserContext:
+    """
+    Extract and validate the current user from the request.
+
+      1. Read Authorization header -> "Bearer <jwt_token>"
+      2. Decode + verify the JWT (HS256) with SECRET_KEY (python-jose)
+      3. Build a UserContext from the token claims
+
+    A request WITH a token is always validated (401 on missing/invalid).
+    A request WITHOUT a token falls back to the demo context only when
+    ALLOW_DEMO_AUTH is enabled (set it to "false" in production).
+
+    NOTE: operational fields (credits, team_size, ...) are read from the token
+    claims here. A fuller implementation would hydrate them from the users +
+    billing tables in PostgreSQL keyed by `sub`; see database_schema.py.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:].strip() if auth_header[:7].lower() == "bearer " else ""
+
+    if not token:
+        if ALLOW_DEMO_AUTH:
+            logger.warning("auth_demo_fallback", reason="no_token")
+            return _demo_user_context()
+        raise HTTPException(status_code=401, detail="Missing authentication token")
+
+    if not SECRET_KEY:
+        # A token was supplied but the server can't verify it.
+        logger.error("auth_misconfigured", reason="SECRET_KEY not set")
+        raise HTTPException(status_code=500, detail="Authentication is not configured")
+
+    try:
+        from jose import JWTError, jwt
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user_id = payload.get("sub") or payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token missing subject claim")
+
+    def _int(key: str, default: int) -> int:
+        try:
+            return int(payload.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    return UserContext(
+        user_id=str(user_id),
+        role=_role_from_claim(payload.get("role")),
+        subscription_tier=_tier_from_claim(
+            payload.get("subscription_tier") or payload.get("tier")
+        ),
+        credits_remaining=_int("credits_remaining", _int("credits", 0)),
+        project_id=payload.get("project_id"),
+        project_stage=payload.get("project_stage"),
+        industry=payload.get("industry"),
+        tech_stack=payload.get("tech_stack") or [],
+        past_feedback=[],
+        training_progress=payload.get("training_progress") or {"completion_percentage": 0},
+        time_logged_today=_int("time_logged_today", 0),
+        tasks_completed_week=_int("tasks_completed_week", 0),
+        days_since_update=_int("days_since_update", 0),
+        team_size=_int("team_size", 1),
+        has_revenue=bool(payload.get("has_revenue", False)),
+        beta_users_count=_int("beta_users_count", 0),
     )
 
 
