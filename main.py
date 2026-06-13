@@ -256,6 +256,42 @@ async def get_user_context(request: Request) -> UserContext:
 
 
 # ============================================================================
+# DATABASE DEPENDENCY
+# ============================================================================
+
+# Lazily-created engine + session factory (shared across requests). The engine
+# is only constructed on first DB use so the app still imports without a DB.
+_db_engine = None
+_DBSession = None
+
+
+def _db_session_factory():
+    global _db_engine, _DBSession
+    if _DBSession is None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        _db_engine = create_engine(
+            os.getenv("DATABASE_URL", "postgresql://techit:password@postgres:5432/techit_db"),
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=5,
+        )
+        _DBSession = sessionmaker(bind=_db_engine, expire_on_commit=False)
+    return _DBSession
+
+
+def get_db():
+    """FastAPI dependency yielding a SQLAlchemy session (closed after the request)."""
+    Session = _db_session_factory()
+    db = Session()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ============================================================================
 # HEALTH & STATUS
 # ============================================================================
 
@@ -910,13 +946,45 @@ async def submit_problem(
 async def get_problems_board(
     limit: int = 20,
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
-    """Global Problems Board -- ranked by priority score. 0 credits, Free+"""
-    # Production: SELECT * FROM problem_nodes ORDER BY priority_score DESC LIMIT :limit
+    """Global Problems Board -- verified problems ranked by priority score. 0 credits, Free+"""
+    from database_schema import ProblemNode
+
+    capped = min(max(limit, 1), 100)
+    try:
+        rows = (
+            db.query(ProblemNode)
+            .filter(ProblemNode.verified.is_(True))
+            .order_by(ProblemNode.priority_score.desc())
+            .limit(capped)
+            .all()
+        )
+    except Exception as e:  # noqa: BLE001 -- degrade rather than 500 the board
+        logger.error("problems_board_query_failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Problems board temporarily unavailable")
+
     return {
-        "message": "Global Problems Board -- query problem_nodes ordered by priority_score DESC",
-        "limit": limit,
-        "query": "SELECT * FROM problem_nodes WHERE verified=true ORDER BY priority_score DESC",
+        "problems": [
+            {
+                "id": str(p.id),
+                "title": p.title,
+                "description": p.description,
+                "category": p.category,
+                "urgency": p.urgency,
+                "location": p.location,
+                "priority_score": float(p.priority_score or 0),
+                "impact_score": float(p.impact_score or 0),
+                "engagement_count": p.engagement_count or 0,
+                "sdg_alignment": p.sdg_alignment or [],
+                "tags": p.tags or [],
+                "is_ai_discovered": bool(p.is_ai_discovered),
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in rows
+        ],
+        "count": len(rows),
+        "limit": capped,
     }
 
 
@@ -1024,12 +1092,47 @@ async def generate_grant(
 
 
 @app.get("/api/v1/solutions/impact/global", tags=["Idea & Solution Hub"])
-async def global_impact(user: UserContext = Depends(get_user_context)):
-    """Global Impact Dashboard -- live metrics. 0 credits, Free+"""
-    # Production: query impact_snapshots + solution_deployments aggregates
+async def global_impact(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Global Impact Dashboard -- live aggregates over deployments + impact snapshots. 0 credits, Free+"""
+    from sqlalchemy import func
+    from database_schema import (
+        ProblemNode, SolutionProject, SolutionDeployment, ImpactSnapshot,
+    )
+
+    try:
+        active_problems = db.query(func.count(ProblemNode.id)).filter(
+            ProblemNode.verified.is_(True)
+        ).scalar() or 0
+        active_solutions = db.query(func.count(SolutionProject.id)).scalar() or 0
+        active_deployments = db.query(func.count(SolutionDeployment.id)).filter(
+            SolutionDeployment.status == "active"
+        ).scalar() or 0
+        total_beneficiaries = db.query(
+            func.coalesce(func.sum(SolutionDeployment.beneficiaries_reached), 0)
+        ).scalar() or 0
+        # Distinct deployment regions (drop NULLs) → country/region list.
+        countries = [
+            r[0] for r in db.query(SolutionDeployment.region)
+            .filter(SolutionDeployment.region.isnot(None))
+            .distinct().all()
+        ]
+        funds_deployed_usd = db.query(
+            func.coalesce(func.sum(ImpactSnapshot.funds_deployed_usd), 0)
+        ).scalar() or 0
+    except Exception as e:  # noqa: BLE001
+        logger.error("global_impact_query_failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Global impact data temporarily unavailable")
+
     return IdeaSolutionHubService(brain).get_global_impact_dashboard(
-        active_problems=0, active_solutions=0, active_deployments=0,
-        total_beneficiaries=0, countries=[], funds_deployed_usd=0.0,
+        active_problems=int(active_problems),
+        active_solutions=int(active_solutions),
+        active_deployments=int(active_deployments),
+        total_beneficiaries=int(total_beneficiaries),
+        countries=countries,
+        funds_deployed_usd=float(funds_deployed_usd),
     )
 
 
@@ -1167,20 +1270,71 @@ async def embed_idea(
 # ============================================================================
 
 @app.get("/api/v1/credits/summary", tags=["Billing"])
-async def credits_summary(user: UserContext = Depends(get_user_context)):
+async def credits_summary(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
     """
-    Current credit balance and usage summary. 0 credits, Free+
+    Current credit balance and usage summary from credit_ledger + credit_purchases.
+    0 credits, Free+
+    """
+    from sqlalchemy import func
+    from database_schema import CreditLedger, CreditPurchase
 
-    Production: fetch UserBillingState from billing DB tables.
-    """
+    try:
+        latest = (
+            db.query(CreditLedger)
+            .filter(CreditLedger.user_id == user.user_id)
+            .order_by(CreditLedger.created_at.desc())
+            .first()
+        )
+        balance = latest.credits_after if latest else user.credits_remaining
+
+        spent = db.query(func.coalesce(func.sum(CreditLedger.credits_delta), 0)).filter(
+            CreditLedger.user_id == user.user_id,
+            CreditLedger.credits_delta < 0,
+        ).scalar() or 0
+
+        credits_purchased = db.query(func.coalesce(func.sum(CreditPurchase.credits_qty), 0)).filter(
+            CreditPurchase.user_id == user.user_id,
+            CreditPurchase.status == "completed",
+        ).scalar() or 0
+
+        usd_spent = db.query(func.coalesce(func.sum(CreditPurchase.amount_usd), 0)).filter(
+            CreditPurchase.user_id == user.user_id,
+            CreditPurchase.status == "completed",
+        ).scalar() or 0
+
+        recent = (
+            db.query(CreditLedger)
+            .filter(CreditLedger.user_id == user.user_id)
+            .order_by(CreditLedger.created_at.desc())
+            .limit(10)
+            .all()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error("credits_summary_query_failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Credit summary temporarily unavailable")
+
     return {
-        "user_id":             user.user_id,
-        "credits_remaining":   user.credits_remaining,
-        "subscription_tier":   user.subscription_tier.value,
-        "message": (
-            "Production: query credit_ledger + credit_purchases tables. "
-            "See billing_system.py HybridCreditEngine."
-        ),
+        "user_id":            user.user_id,
+        "subscription_tier":  user.subscription_tier.value,
+        "balance":            int(balance or 0),
+        "credits_purchased":  int(credits_purchased),
+        "credits_spent":      abs(int(spent)),
+        "usd_spent":          float(usd_spent),
+        "recent_transactions": [
+            {
+                "id":            str(t.id),
+                "event_type":    t.event_type.value if hasattr(t.event_type, "value") else str(t.event_type),
+                "credits_delta": t.credits_delta,
+                "credits_after": t.credits_after,
+                "task_type":     t.task_type,
+                "description":   t.description,
+                "created_at":    t.created_at.isoformat() if t.created_at else None,
+            }
+            for t in recent
+        ],
     }
 
 
