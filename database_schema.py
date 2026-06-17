@@ -1853,6 +1853,480 @@ def setup_extensions(engine) -> None:
         print("✅ Extensions: vector, uuid-ossp, pg_trgm")
 
 
+# ============================================================================
+# EQUITY & VESTING  (Collaborator value layer)
+# ============================================================================
+# Backs the collaborator Equity dashboard: per-startup grants, vesting schedules
+# with cliffs, dilution protection, and cap-table snapshots. Money-as-ownership,
+# distinct from cash payouts (see Payouts section below) and from billing credits.
+
+class EquityGrant(Base):
+    """
+    A collaborator's equity grant in one project. Vesting is schedule-driven
+    (years + cliff); vested_percent is snapshotted and also recomputable from
+    grant_date + schedule. dilution_protected freezes already-vested equity.
+    """
+    __tablename__ = "equity_grants"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id      = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
+    project_id   = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+
+    equity_percent          = Column(Float, nullable=False)          # e.g. 0.8 (% of cap table)
+    value_usd               = Column(DECIMAL(14, 2), default=0)      # current paper value
+    vested_percent          = Column(Float, default=0)              # 0..100
+    vesting_years           = Column(Integer, default=4)
+    vesting_cliff_months    = Column(Integer, default=12)
+    grant_date              = Column(TIMESTAMP, nullable=False, default=datetime.utcnow)
+    next_vest_date          = Column(TIMESTAMP)
+    next_vest_delta_percent = Column(Float)                          # equity unlocked at next vest
+    dilution_protected      = Column(Boolean, default=True)          # vested cannot be diluted w/o consent
+    role_at_grant           = Column(String(120))
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_equity_user",    "user_id"),
+        Index("idx_equity_project", "project_id"),
+        Index("idx_equity_user_project", "user_id", "project_id"),
+    )
+
+
+class CapTableEntry(Base):
+    """One row of a project's cap table (Founders / Collaborator pool / You / ...)."""
+    __tablename__ = "cap_table_entries"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    label       = Column(String(120), nullable=False)   # "Founders", "Investors", "You", ...
+    percent     = Column(Float, nullable=False)
+    holder_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))  # set when row is a specific user
+    sort_order  = Column(Integer, default=0)
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_captable_project", "project_id", "sort_order"),)
+
+
+class DilutionEvent(Base):
+    """
+    Audit trail of cap-table dilution events. Honors dilution protection: a
+    collaborator's already-vested equity is shielded unless they consented.
+    """
+    __tablename__ = "dilution_events"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id    = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    description   = Column(Text)                       # "Series A new shares", etc.
+    new_shares_percent = Column(Float, default=0)
+    affected_user_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    consent_given      = Column(Boolean, default=False)
+    protected_applied  = Column(Boolean, default=True) # vested equity shielded
+    event_date    = Column(TIMESTAMP, default=datetime.utcnow)
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_dilution_project", "project_id", "event_date"),)
+
+
+# ============================================================================
+# PAYOUTS & EARNINGS  (Collaborator cash layer — money going OUT)
+# ============================================================================
+# Distinct from billing credits (money coming in). Backs the collaborator
+# Earnings dashboard: per-project cash earned + pending, revenue share, and the
+# payout ledger with withdrawals.
+
+class CollaboratorEarning(Base):
+    """Per-project cash earnings for a collaborator (earned + pending + rev share)."""
+    __tablename__ = "collaborator_earnings"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id      = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
+    project_id   = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    earned_usd            = Column(DECIMAL(14, 2), default=0)
+    pending_usd           = Column(DECIMAL(14, 2), default=0)
+    revenue_share_percent = Column(Float, default=0)
+    contribution_note     = Column(Text)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_earning_user", "user_id"),
+        Index("idx_earning_user_project", "user_id", "project_id"),
+    )
+
+
+class Payout(Base):
+    """
+    A single payout in the collaborator ledger. `status`:
+      processing -> in flight to the destination account
+      paid       -> settled
+    """
+    __tablename__ = "payouts"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id     = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    month_iso   = Column(String(7), nullable=False)        # "2026-05"
+    amount_usd  = Column(DECIMAL(14, 2), nullable=False)
+    status      = Column(String(20), default="processing") # processing | paid
+    destination = Column(String(120))                      # masked acct, e.g. "•••1234"
+    initiated_at = Column(TIMESTAMP, default=datetime.utcnow)
+    settled_at   = Column(TIMESTAMP)
+
+    __table_args__ = (Index("idx_payout_user", "user_id", "month_iso"),)
+
+
+# ============================================================================
+# INVESTOR — CAPITAL POOLS  (micro-funds, escrow, milestone-based release)
+# ============================================================================
+# Backs the investor Capital Pools dashboard: an investor funds a pool, capital
+# is deployed across startups above a readiness threshold, and funds are released
+# from escrow automatically as milestones are hit.
+
+class CapitalPool(Base):
+    """An investor micro-fund with deployment + milestone-release rules."""
+    __tablename__ = "capital_pools"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investor_id   = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    name          = Column(String(160), nullable=False)
+    total_capital_usd = Column(DECIMAL(16, 2), nullable=False)
+    deployed_usd      = Column(DECIMAL(16, 2), default=0)
+    funds_released_usd = Column(DECIMAL(16, 2), default=0)  # escrow released on milestones
+    startups_count    = Column(Integer, default=0)
+    milestones_hit    = Column(Integer, default=0)
+    roi_simulation    = Column(Float, default=0)            # projected multiple, e.g. 3.2x
+    # rules
+    min_readiness     = Column(Integer, default=80)
+    max_per_startup_percent = Column(Float, default=20)
+    milestone_trigger = Column(Boolean, default=True)
+    status        = Column(String(20), default="active")    # active | closed
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at    = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_pool_investor", "investor_id", "status"),)
+
+
+class PoolMilestoneRelease(Base):
+    """An escrow release event: capital paid out of a pool when a startup hits a milestone."""
+    __tablename__ = "pool_milestone_releases"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pool_id     = Column(UUID(as_uuid=True), ForeignKey("capital_pools.id"), nullable=False)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"),     nullable=False)
+    milestone   = Column(String(200))
+    amount_usd  = Column(DECIMAL(16, 2), nullable=False)
+    released     = Column(Boolean, default=False)           # False = held in escrow
+    triggered_at = Column(TIMESTAMP)
+    created_at   = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_release_pool", "pool_id", "released"),)
+
+
+# ============================================================================
+# INVESTOR — DEAL ROOMS  (cap table, term sheet, doc signing, negotiation)
+# ============================================================================
+# Backs the investor Deal Rooms list + detail: a secure per-deal workspace with
+# negotiation stage tracking, a term-sheet simulator, milestone-based tranches,
+# and document signing.
+
+class DealRoom(Base):
+    """A secure investor↔startup deal workspace with negotiation stage tracking."""
+    __tablename__ = "deal_rooms"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investor_id  = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
+    project_id   = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    status       = Column(String(20), default="pending")   # active | pending | closed
+    stage        = Column(String(60), default="Intro Call")
+    days_open    = Column(Integer, default=0)
+    messages     = Column(Integer, default=0)
+    docs         = Column(Integer, default=0)
+    last_activity = Column(String(40))                      # human "2h ago"
+    encrypted    = Column(Boolean, default=True)
+    created_at   = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at   = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_dealroom_investor", "investor_id", "status"),
+        Index("idx_dealroom_project",  "project_id"),
+    )
+
+
+class TermSheet(Base):
+    """Term-sheet simulator state for a deal room."""
+    __tablename__ = "term_sheets"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    deal_room_id  = Column(UUID(as_uuid=True), ForeignKey("deal_rooms.id"), nullable=False)
+    valuation_usd = Column(DECIMAL(16, 2))
+    investment_usd = Column(DECIMAL(16, 2))
+    equity_percent = Column(Float)
+    instrument    = Column(String(40), default="SAFE")      # SAFE | Equity | Convertible
+    discount_percent = Column(Float, default=0)
+    valuation_cap_usd = Column(DECIMAL(16, 2))
+    extra_terms   = Column(JSON)                            # e.g. {"rights": "Observer"}
+    updated_at    = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_termsheet_room", "deal_room_id"),)
+
+
+class DealDocument(Base):
+    """A document in a deal room (with signing status)."""
+    __tablename__ = "deal_documents"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    deal_room_id = Column(UUID(as_uuid=True), ForeignKey("deal_rooms.id"), nullable=False)
+    name         = Column(String(200), nullable=False)
+    status       = Column(String(20), default="draft")      # draft | ready | signed
+    signed_by    = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    signed_at    = Column(TIMESTAMP)
+    created_at   = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_dealdoc_room", "deal_room_id", "status"),)
+
+
+# ============================================================================
+# INVESTOR — DATA ROOMS  (document vault container + access control + sharing)
+# ============================================================================
+# Backs the investor Data Rooms list + detail: per-startup structured document
+# repositories (6 sections), compliance/governance verification, and per-investor
+# access grants (sharing).
+
+class DataRoom(Base):
+    """A per-startup structured document vault."""
+    __tablename__ = "data_rooms"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id   = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    doc_count    = Column(Integer, default=0)
+    compliance_verified     = Column(Boolean, default=False)
+    ai_governance_verified  = Column(Boolean, default=False)
+    sections     = Column(JSON)                            # ["Metrics Dashboard", ...]
+    updated_label = Column(String(40), default="today")
+    created_at   = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at   = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_dataroom_project", "project_id"),)
+
+
+class DataRoomAccess(Base):
+    """Per-investor access grant to a data room (sharing + audit)."""
+    __tablename__ = "data_room_access"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    data_room_id = Column(UUID(as_uuid=True), ForeignKey("data_rooms.id"), nullable=False)
+    investor_id  = Column(UUID(as_uuid=True), ForeignKey("users.id"),      nullable=False)
+    can_download = Column(Boolean, default=False)
+    granted      = Column(Boolean, default=True)
+    granted_at   = Column(TIMESTAMP, default=datetime.utcnow)
+    revoked_at   = Column(TIMESTAMP)
+
+    __table_args__ = (
+        Index("idx_dataroom_access", "data_room_id", "investor_id"),
+    )
+
+
+# ============================================================================
+# INVESTOR — REPUTATION  (mutual accountability: founders score investors too)
+# ============================================================================
+# Backs the investor Reputation dashboard. The platform scores investors the way
+# it scores startups, creating balanced power dynamics: high-reputation investors
+# earn early access to top deals.
+
+class InvestorReputation(Base):
+    """Composite investor reputation + its component metrics + leaderboard rank."""
+    __tablename__ = "investor_reputation"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investor_id  = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    composite_score = Column(Integer, default=0)            # 0..100
+    month_change    = Column(Integer, default=0)
+    # component metrics (0..100)
+    response_speed       = Column(Integer, default=0)
+    founder_rating       = Column(Integer, default=0)
+    follow_through       = Column(Integer, default=0)
+    value_add            = Column(Integer, default=0)
+    portfolio_engagement = Column(Integer, default=0)
+    # leaderboard
+    rank             = Column(Integer)
+    total_investors  = Column(Integer)
+    percentile       = Column(Float)
+    updated_at   = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at   = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_inv_reputation", "investor_id"),)
+
+
+class InvestorReview(Base):
+    """A founder's review of an investor (feeds founder_rating)."""
+    __tablename__ = "investor_reviews"
+
+    id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investor_id  = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    founder_name = Column(String(160))
+    startup      = Column(String(160))
+    rating       = Column(Integer)                          # 1..5
+    comment      = Column(Text)
+    review_date  = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_inv_review", "investor_id", "review_date"),)
+
+
+# ============================================================================
+# WORKSPACES & PERSISTED ANALYSES  (Incubation → Workspace pipeline)
+# ============================================================================
+# Binds a founder's Workspace to a specific analyzed venture (project), and
+# persists Incubation Hub pipeline output so it can flow into that workspace.
+# Closes the gap where workspaces were a UI shell with no idea binding and the
+# pipeline returned an ephemeral, unsaved blueprint.
+
+class Workspace(Base):
+    """A founder workspace bound to one analyzed venture (project)."""
+    __tablename__ = "workspaces"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    name        = Column(String(255), nullable=False)
+    status      = Column(String(20), default="active")     # active | archived
+    # Snapshot of the analysis that seeded this workspace (denormalized for fast load).
+    seed_analysis_id = Column(UUID(as_uuid=True), ForeignKey("project_analyses.id"))
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at  = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_workspace_owner",   "owner_id", "status"),
+        Index("idx_workspace_project", "project_id"),
+    )
+
+
+class ProjectAnalysis(Base):
+    """
+    A persisted Incubation Hub pipeline result for a project. Each run of the
+    venture pipeline writes one row; the latest is what a workspace loads as
+    context. This is the durable record the ephemeral blueprint never had.
+    """
+    __tablename__ = "project_analyses"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
+    venture_name = Column(String(255))
+    # Full compiled blueprint (unicorn/market/feasibility/strategy/finance/plan/tech...).
+    blueprint   = Column(JSON, default={})
+    # Headline scores lifted out for indexing/sorting.
+    unicorn_potential_score = Column(Float, default=0.0)
+    investment_score        = Column(Float, default=0.0)
+    pivot_needed            = Column(Boolean, default=False)
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_analysis_project", "project_id", "created_at"),
+        Index("idx_analysis_owner",   "owner_id"),
+    )
+
+
+# ============================================================================
+# HACKATHON INTELLIGENCE  (org host + team/founder real-time + idea→workspace)
+# ============================================================================
+# Backs hackathon tracking the engine never had: registrations, scored briefs,
+# build check-ins (the REAL source for velocity, not Math.random), composite
+# scoring, and a brief→workspace pipe. Serves org host + teams/founders.
+
+class Hackathon(Base):
+    """A hackathon event hosted by an organization."""
+    __tablename__ = "hackathons"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    org_id        = Column(UUID(as_uuid=True), ForeignKey("organizations.id"))
+    name          = Column(String(255), nullable=False)
+    theme         = Column(String(255))
+    status        = Column(String(20), default="upcoming")  # upcoming|live|judging|completed
+    starts_at     = Column(TIMESTAMP)
+    ends_at       = Column(TIMESTAMP)
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at    = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_hackathon_org", "org_id", "status"),)
+
+
+class HackathonTeam(Base):
+    """A registered team (or solo) in a hackathon."""
+    __tablename__ = "hackathon_teams"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"), nullable=False)
+    name          = Column(String(255))
+    captain_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    members       = Column(JSON, default=[])               # [{user_id, name, role}]
+    is_solo       = Column(Boolean, default=True)
+    project_id    = Column(UUID(as_uuid=True), ForeignKey("projects.id"))   # set when piped to a venture
+    workspace_id  = Column(UUID(as_uuid=True), ForeignKey("workspaces.id")) # team workspace
+    status        = Column(String(20), default="registered")  # registered|building|submitted
+    registered_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_hteam_hackathon", "hackathon_id", "status"),
+        Index("idx_hteam_captain", "captain_id"),
+    )
+
+
+class HackathonBrief(Base):
+    """A team's scored idea brief (the analyzed hackathon idea)."""
+    __tablename__ = "hackathon_briefs"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id       = Column(UUID(as_uuid=True), ForeignKey("hackathon_teams.id"), nullable=False)
+    hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"),      nullable=False)
+    problem       = Column(Text)
+    solution      = Column(Text)
+    fields        = Column(JSON, default={})               # full 7-field brief
+    # platform sub-scores (0..100) + composite
+    problem_clarity_score = Column(Float, default=0)
+    team_momentum_score   = Column(Float, default=0)
+    demo_readiness_hours  = Column(Float, default=0)
+    composite_score       = Column(Float, default=0)
+    critiques     = Column(JSON, default=[])
+    submitted_at  = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_hbrief_team", "team_id", "submitted_at"),)
+
+
+class HackathonCheckIn(Base):
+    """
+    A team build check-in. THIS is the real source of build-velocity intelligence
+    (the org heatmap), replacing the frontend's Math.random() placeholder.
+    """
+    __tablename__ = "hackathon_check_ins"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id       = Column(UUID(as_uuid=True), ForeignKey("hackathon_teams.id"), nullable=False)
+    hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"),      nullable=False)
+    note          = Column(Text)
+    progress_delta = Column(Float, default=0)              # self-reported progress
+    activity_score = Column(Float, default=0)              # derived 0..100 for heatmap
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_hcheckin_team", "team_id", "created_at"),)
+
+
+class HackathonScore(Base):
+    """Composite hackathon score = judge panel + platform signals."""
+    __tablename__ = "hackathon_scores"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id       = Column(UUID(as_uuid=True), ForeignKey("hackathon_teams.id"), nullable=False)
+    hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"),      nullable=False)
+    judge_scores  = Column(JSON, default={})               # {problem_clarity, ...} 0..10
+    platform_avg  = Column(Float, default=0)
+    judge_avg_pct = Column(Float, default=0)
+    composite     = Column(Float, default=0)
+    crs_band      = Column(String(8))                      # >7 | 4-6 | <4
+    updated_at    = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_hscore_hackathon", "hackathon_id", "composite"),)
+
+
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════╗

@@ -44,6 +44,16 @@ from integration_guide import (
     DocumentGenerationService,
     IPProtectionService,
     AppScaffoldService,
+    EquityService,
+    PayoutService,
+    CapitalPoolService,
+    DealRoomService,
+    DataRoomService,
+    InvestorReputationService,
+    GeoSignalService,
+    ProjectService,
+    WorkspaceService,
+    HackathonService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
 
@@ -478,6 +488,323 @@ async def investor_evi(
 ):
     """6-dimensional EVI-I investor execution signal. 2 credits, Investor+"""
     return await InvestorSectionService(brain).get_investor_evi(user, startup_data)
+
+
+@app.get("/api/v1/investor/capital-pools", tags=["Investor"])
+async def investor_capital_pools(user: UserContext = Depends(get_user_context)):
+    """Investor micro-fund capital pools with deployment + milestone release. 0 credits."""
+    return await CapitalPoolService(brain).get_capital_pools(user)
+
+
+@app.post("/api/v1/investor/capital-pools", tags=["Investor"])
+async def investor_create_pool(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Create a new capital pool. 0 credits. Body: { name, totalCapital, rules }"""
+    return await CapitalPoolService(brain).create_pool(user, body)
+
+
+@app.post("/api/v1/investor/capital-pools/{pool_id}/release", tags=["Investor"])
+async def investor_pool_release(
+    pool_id: str,
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Release escrowed capital on a hit milestone. 0 credits. Body: { projectId, milestone, amount }"""
+    return await CapitalPoolService(brain).release_on_milestone(user, {**body, "poolId": pool_id})
+
+
+@app.get("/api/v1/investor/deal-rooms", tags=["Investor"])
+async def investor_deal_rooms(user: UserContext = Depends(get_user_context)):
+    """Deal-room list metadata (status/stage/activity per startup). 0 credits."""
+    return await DealRoomService(brain).get_deal_rooms(user)
+
+
+@app.post("/api/v1/investor/deal-rooms/{project_id}", tags=["Investor"])
+async def investor_deal_room(
+    project_id: str,
+    startup: Dict[str, Any] | None = None,
+    user: UserContext = Depends(get_user_context),
+):
+    """
+    Deal-room detail: term sheet (valuation ARR×8), milestone tranches, documents,
+    negotiation stepper. 0 credits. Optional body: startup data (for valuation).
+    """
+    return await DealRoomService(brain).get_deal_room(user, project_id, startup)
+
+
+@app.get("/api/v1/investor/data-rooms", tags=["Investor"])
+async def investor_data_rooms(user: UserContext = Depends(get_user_context)):
+    """Per-startup data-room vault metadata + access. 0 credits, Investor+"""
+    return await DataRoomService(brain).get_data_rooms(user)
+
+
+@app.post("/api/v1/investor/data-rooms/{project_id}/access", tags=["Investor"])
+async def investor_data_room_access(
+    project_id: str,
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Share a data room with an investor. 0 credits. Body: { investorId, canDownload }"""
+    return await DataRoomService(brain).grant_access(user, {**body, "projectId": project_id})
+
+
+@app.get("/api/v1/investor/reputation", tags=["Investor"])
+async def investor_reputation(user: UserContext = Depends(get_user_context)):
+    """
+    Investor reputation: composite score, component metrics, founder reviews,
+    score progression, leaderboard position. 0 credits, Investor+.
+    """
+    return await InvestorReputationService(brain).get_reputation(user)
+
+
+@app.get("/api/v1/investor/heatmap", tags=["Investor"])
+async def investor_heatmap(user: UserContext = Depends(get_user_context)):
+    """Geographic signal: per-region readiness/compliance + per-sector growth. 0 credits."""
+    return await GeoSignalService(brain).get_heatmap(user)
+
+
+# ============================================================================
+# WORKSPACE AI  (task suggestions, code review, sprint planning)
+# ============================================================================
+
+@app.post("/api/v1/workspace/tasks/suggest", tags=["Workspace"])
+async def workspace_suggest_tasks(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """AI task suggestions for the workspace. 0 credits."""
+    return await WorkspaceAIService(brain).suggest_tasks(user, body)
+
+
+@app.post("/api/v1/workspace/code/review", tags=["Workspace"])
+async def workspace_review_code(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """AI code review. 1 credit, Founder Pro+. Body: { code, language, context }"""
+    return await WorkspaceAIService(brain).review_code(user, body)
+
+
+@app.post("/api/v1/workspace/sprint/plan", tags=["Workspace"])
+async def workspace_plan_sprint(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """AI sprint planning. 0 credits."""
+    return await WorkspaceAIService(brain).plan_sprint(user, body)
+
+
+# ============================================================================
+# FOUNDER PROJECTS  (multi-project portfolio)
+# ============================================================================
+
+@app.get("/api/v1/founder/projects", tags=["Founder"])
+async def founder_projects(user: UserContext = Depends(get_user_context)):
+    """A founder's portfolio of ventures (multiple separate startups). 0 credits."""
+    return await ProjectService(brain).list_founder_projects(user)
+
+
+@app.post("/api/v1/founder/projects", tags=["Founder"])
+async def founder_create_project(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Create a new venture. 0 credits. Body: { title, tagline?, industry?, stage? }"""
+    return await ProjectService(brain).create_project(user, body)
+
+
+# ============================================================================
+# WORKSPACES  (bound to an analyzed venture; Incubation → Workspace pipeline)
+# ============================================================================
+
+@app.get("/api/v1/workspaces", tags=["Workspace"])
+async def list_workspaces(user: UserContext = Depends(get_user_context)):
+    """List the founder's workspaces (each bound to a project). 0 credits."""
+    return await WorkspaceService(brain).list_workspaces(user)
+
+
+@app.post("/api/v1/workspaces/provision", tags=["Workspace"])
+async def provision_workspace(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """
+    Provision (or fetch) a workspace bound to an analyzed project, seeded from
+    its latest Incubation Hub analysis. 0 credits. Body: { projectId, name? }
+    """
+    return await WorkspaceService(brain).provision_workspace(user, body)
+
+
+@app.get("/api/v1/workspaces/{workspace_id}/context", tags=["Workspace"])
+async def workspace_context(
+    workspace_id: str,
+    project_id: Optional[str] = None,
+    user: UserContext = Depends(get_user_context),
+):
+    """Project-scoped workspace context (loads the bound venture's blueprint). 0 credits."""
+    return await WorkspaceService(brain).get_workspace_context(user, workspace_id, project_id)
+
+
+# ============================================================================
+# HACKATHON INTELLIGENCE  (org host + team/founder + idea→workspace)
+# ============================================================================
+
+@app.get("/api/v1/hackathons", tags=["Hackathon"])
+async def list_hackathons(user: UserContext = Depends(get_user_context)):
+    """List hackathons. 0 credits."""
+    return await HackathonService(brain).list_hackathons(user)
+
+
+@app.get("/api/v1/hackathons/{hackathon_id}/overview", tags=["Hackathon"])
+async def hackathon_overview(hackathon_id: str, user: UserContext = Depends(get_user_context)):
+    """Org command-centre real-time stats. 0 credits."""
+    return await HackathonService(brain).get_overview(user, hackathon_id)
+
+
+@app.get("/api/v1/hackathons/{hackathon_id}/velocity", tags=["Hackathon"])
+async def hackathon_velocity(hackathon_id: str, user: UserContext = Depends(get_user_context)):
+    """Per-team build-velocity heatmap from REAL check-ins (not random). 0 credits."""
+    return await HackathonService(brain).get_velocity_heatmap(user, hackathon_id)
+
+
+@app.get("/api/v1/hackathons/{hackathon_id}/leaderboard", tags=["Hackathon"])
+async def hackathon_leaderboard(hackathon_id: str, user: UserContext = Depends(get_user_context)):
+    """Composite-ranked leaderboard. 0 credits."""
+    return await HackathonService(brain).get_leaderboard(user, hackathon_id)
+
+
+@app.get("/api/v1/hackathons/{hackathon_id}/pipeline", tags=["Hackathon"])
+async def hackathon_pipeline(hackathon_id: str, user: UserContext = Depends(get_user_context)):
+    """CRS pipeline buckets (incubation/prototype/learning). 0 credits."""
+    return await HackathonService(brain).get_pipeline(user, hackathon_id)
+
+
+@app.post("/api/v1/hackathons/{hackathon_id}/register", tags=["Hackathon"])
+async def hackathon_register(
+    hackathon_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context),
+):
+    """Register a team/solo. 0 credits. Body: { name?, members? }"""
+    return await HackathonService(brain).register(user, {**body, "hackathonId": hackathon_id})
+
+
+@app.post("/api/v1/hackathons/{hackathon_id}/brief", tags=["Hackathon"])
+async def hackathon_brief(
+    hackathon_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context),
+):
+    """Submit + score an idea brief. 0 credits. Body: { teamId, problem, solution, ... }"""
+    return await HackathonService(brain).submit_brief(user, {**body, "hackathonId": hackathon_id})
+
+
+@app.post("/api/v1/hackathons/{hackathon_id}/checkin", tags=["Hackathon"])
+async def hackathon_checkin(
+    hackathon_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context),
+):
+    """Log a build check-in (feeds the velocity heatmap). 0 credits. Body: { teamId, note, progressDelta? }"""
+    return await HackathonService(brain).log_check_in(user, {**body, "hackathonId": hackathon_id})
+
+
+@app.get("/api/v1/hackathons/{hackathon_id}/teams/{team_id}/status", tags=["Hackathon"])
+async def hackathon_team_status(
+    hackathon_id: str, team_id: str, user: UserContext = Depends(get_user_context),
+):
+    """Team-facing status (brief, composite, check-ins, workspace). 0 credits."""
+    return await HackathonService(brain).get_team_status(user, hackathon_id, team_id)
+
+
+@app.post("/api/v1/hackathons/{hackathon_id}/teams/{team_id}/workspace", tags=["Hackathon"])
+async def hackathon_team_workspace(
+    hackathon_id: str, team_id: str, body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Pipe the analyzed brief into a team workspace. 0 credits. Body: { projectId? }"""
+    return await HackathonService(brain).provision_team_workspace(user, hackathon_id, team_id, body)
+
+
+# ============================================================================
+# TOUR GUIDE  (momentum audio briefing)
+# ============================================================================
+
+@app.post("/api/v1/tour-guide/audio-briefing", tags=["Tour Guide"])
+async def tour_guide_audio_briefing(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Momentum audio briefing (TTS). 0 credits. Body: { text }"""
+    return await TourGuideService(brain).get_audio_briefing(user, body.get("text", ""))
+
+
+# ============================================================================
+# ADMIN MONITOR  (anomaly scan + stagnation roster)
+# ============================================================================
+
+@app.post("/api/v1/admin/monitor/scan", tags=["Admin"])
+async def admin_monitor_scan(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Anomaly scan over signals. 0 credits, Admin only. Body: { signals: [...] }"""
+    return await AdminMonitorService(brain).run_anomaly_scan(user, body.get("signals", []))
+
+
+@app.post("/api/v1/admin/stagnation-roster", tags=["Admin"])
+async def admin_stagnation_roster(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Stagnating-project roster (decay-based). 0 credits. Body: { projects: [...] }"""
+    return await AdminMonitorService(brain).check_stagnation_roster(user, body.get("projects", []))
+
+
+# ============================================================================
+# COLLABORATOR — EQUITY & VESTING
+# ============================================================================
+
+@app.get("/api/v1/collaborator/equity", tags=["Collaborator"])
+async def collaborator_equity(user: UserContext = Depends(get_user_context)):
+    """
+    Collaborator equity holdings, totals, and vesting timeline. 0 credits, Free+.
+    Returns { holdings, totals, vestingTimeline } in camelCase (matches the
+    frontend EquityHolding / equityTotals / VestingTimelineSeries contracts).
+    """
+    return await EquityService(brain).get_collaborator_equity(user)
+
+
+@app.post("/api/v1/collaborator/equity/dilution", tags=["Collaborator"])
+async def collaborator_equity_dilution(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """
+    Apply a dilution event with protection. 0 credits, Free+.
+    Body: { projectId, newSharesPercent, consentGiven }
+    Already-vested equity is shielded unless consent is given.
+    """
+    return await EquityService(brain).record_dilution_event(user, body)
+
+
+# ============================================================================
+# COLLABORATOR — EARNINGS & PAYOUTS
+# ============================================================================
+
+@app.get("/api/v1/collaborator/earnings", tags=["Collaborator"])
+async def collaborator_earnings(user: UserContext = Depends(get_user_context)):
+    """
+    Collaborator cash earnings, payout ledger, and totals. 0 credits, Free+.
+    Returns { cashEarnings, payouts, totals } in camelCase (matches frontend
+    CashEarning / Payout / cashTotals contracts).
+    """
+    return await PayoutService(brain).get_collaborator_earnings(user)
+
+
+@app.post("/api/v1/collaborator/earnings/withdraw", tags=["Collaborator"])
+async def collaborator_withdraw(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Request a withdrawal of pending funds. 0 credits. Body: { amount, destination? }"""
+    return await PayoutService(brain).request_withdrawal(user, body)
 
 
 # ============================================================================

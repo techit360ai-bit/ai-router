@@ -115,7 +115,30 @@ class IncubationHubService:
 
         pipeline = self.brain.venture_pipeline()
         results  = await pipeline.run(user_context, venture_data)
-        return self._compile_blueprint(venture_data, results)
+        blueprint = self._compile_blueprint(venture_data, results)
+
+        # Persist the analysis and bind it to a project so it can flow into a
+        # workspace (instead of being returned ephemerally and discarded).
+        project_id = self._persist_analysis(user_context, venture_data, blueprint)
+        blueprint["project_id"] = project_id
+        return blueprint
+
+    def _persist_analysis(
+        self, user_context: UserContext, venture_data: Dict, blueprint: Dict
+    ) -> str:
+        """
+        Persist the compiled blueprint as a ProjectAnalysis and upsert the
+        Project's headline scores. Returns the project_id the analysis is bound
+        to (existing project if provided, else a newly created one).
+
+        Production (database_schema.py):
+          project_id = venture_data.get("project_id") or <INSERT projects ...>.id
+          INSERT INTO project_analyses (project_id, owner_id, venture_name,
+              blueprint, unicorn_potential_score, investment_score, pivot_needed)
+          UPDATE projects SET unicorn_potential_score=..., investment_score=...,
+              updated_at=now() WHERE id = project_id
+        """
+        return venture_data.get("project_id") or "proj_new"
 
     def _compile_blueprint(self, venture_data: Dict, results: Dict) -> Dict:
         def safe(key: str, field: str):
@@ -2038,6 +2061,1006 @@ deployment_status_refresh      */15 * * * *        Refresh deployment status and
 document_cleanup_weekly        0 3 * * 0           Archive expired document share links
 impact_snapshot_daily          0 1 * * *           Snapshot impact scores for active deployments
 """
+
+
+# ============================================================================
+# EQUITY SERVICE  (Collaborator value layer)
+# ============================================================================
+
+class EquityService:
+    """
+    Collaborator equity: per-startup grants, vesting (years + cliff), dilution
+    protection, and cap tables. Backs the collaborator Equity dashboard.
+
+    Response keys are camelCase to match the frontend TS contracts
+    (EquityHolding / equityTotals / VestingTimelineSeries) directly.
+
+    Production: query `equity_grants`, `cap_table_entries`, `dilution_events`
+    (database_schema.py). Below returns correctly-shaped data so the endpoint
+    works before DB wiring — same house style as other pre-DB endpoints.
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    # ── public API ────────────────────────────────────────────────────────
+    async def get_collaborator_equity(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/collaborator/equity -- 0 credits, Free+"""
+        holdings = self._load_holdings(user_context)
+        return {
+            "holdings": holdings,
+            "totals":   self._totals(holdings),
+            "vestingTimeline": [self._vesting_series(h) for h in holdings],
+        }
+
+    async def record_dilution_event(
+        self, user_context: UserContext, event: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/collaborator/equity/dilution -- 0 credits.
+        Honors dilution protection: already-vested equity is shielded unless the
+        collaborator consented. Returns the protected/effective dilution.
+        """
+        holding = next(
+            (h for h in self._load_holdings(user_context)
+             if h["projectId"] == event.get("projectId")),
+            None,
+        )
+        new_shares = float(event.get("newSharesPercent", 0) or 0)
+        consent    = bool(event.get("consentGiven", False))
+        vested_pct = float(holding["vestedPercent"]) if holding else 0.0
+        equity     = float(holding["equityPercent"]) if holding else 0.0
+
+        # Protected portion of the grant = the vested fraction (cannot be diluted
+        # without consent). Unvested equity dilutes normally.
+        vested_equity   = equity * (vested_pct / 100.0)
+        unvested_equity = equity - vested_equity
+        if consent:
+            diluted = equity * (new_shares / 100.0)
+            protected = False
+        else:
+            diluted = unvested_equity * (new_shares / 100.0)  # vested shielded
+            protected = True
+        return {
+            "projectId":        event.get("projectId"),
+            "newSharesPercent": new_shares,
+            "consentGiven":     consent,
+            "protectedApplied": protected,
+            "equityBefore":     round(equity, 4),
+            "equityAfter":      round(max(0.0, equity - diluted), 4),
+            "shieldedEquity":   round(vested_equity, 4),
+        }
+
+    # ── helpers ───────────────────────────────────────────────────────────
+    def _load_holdings(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        # Production: SELECT * FROM equity_grants JOIN projects WHERE user_id = :uid
+        return [
+            {
+                "projectId": "1", "projectName": "NeuralSync AI", "projectLogo": "🧠",
+                "equityPercent": 0.8, "valueUSD": 24000, "vestedPercent": 50,
+                "vestingSchedule": {"years": 4, "cliffMonths": 12},
+                "grantDate": "2025-01-15",
+                "nextVest": {"date": "2026-06-12", "deltaPercent": 0.2},
+                "dilutionProtected": True,
+                "capTable": [
+                    {"label": "Founders", "percent": 65},
+                    {"label": "Collaborator pool", "percent": 12},
+                    {"label": "You", "percent": 0.8, "highlighted": True},
+                    {"label": "Investors", "percent": 18},
+                    {"label": "Treasury", "percent": 4.2},
+                ],
+            },
+            {
+                "projectId": "2", "projectName": "FinFlow", "projectLogo": "💰",
+                "equityPercent": 0.5, "valueUSD": 15000, "vestedPercent": 25,
+                "vestingSchedule": {"years": 4, "cliffMonths": 12},
+                "grantDate": "2025-03-01",
+                "nextVest": {"date": "2026-09-01", "deltaPercent": 0.15},
+                "dilutionProtected": True,
+                "capTable": [
+                    {"label": "Founders", "percent": 70},
+                    {"label": "Collaborator pool", "percent": 10},
+                    {"label": "You", "percent": 0.5, "highlighted": True},
+                    {"label": "Investors", "percent": 17},
+                    {"label": "Treasury", "percent": 2.5},
+                ],
+            },
+            {
+                "projectId": "3", "projectName": "HealthTrack Pro", "projectLogo": "🏥",
+                "equityPercent": 0.3, "valueUSD": 9200, "vestedPercent": 0,
+                "vestingSchedule": {"years": 4, "cliffMonths": 12},
+                "grantDate": "2025-08-10",
+                "nextVest": {"date": "2026-08-10", "deltaPercent": 0.075},
+                "dilutionProtected": True,
+                "capTable": [
+                    {"label": "Founders", "percent": 72},
+                    {"label": "Collaborator pool", "percent": 8},
+                    {"label": "You", "percent": 0.3, "highlighted": True},
+                    {"label": "Investors", "percent": 17},
+                    {"label": "Treasury", "percent": 2.7},
+                ],
+            },
+        ]
+
+    @staticmethod
+    def _totals(holdings: List[Dict[str, Any]]) -> Dict[str, Any]:
+        total_value = sum(float(h["valueUSD"]) for h in holdings)
+        blended = round(sum(float(h["equityPercent"]) for h in holdings), 2)
+        vested_quarter = sum(
+            float(h["valueUSD"]) * (float(h["vestedPercent"]) / 100.0) * 0.25
+            for h in holdings
+        )
+        # Soonest upcoming vest across holdings.
+        upcoming = sorted(
+            [h for h in holdings if h.get("nextVest")],
+            key=lambda h: h["nextVest"]["date"],
+        )
+        next_vest = None
+        if upcoming:
+            nv = upcoming[0]
+            next_vest = {
+                "startup": nv["projectName"],
+                "date": nv["nextVest"]["date"],
+                "deltaPercent": nv["nextVest"]["deltaPercent"],
+            }
+        return {
+            "totalValueUSD": round(total_value, 2),
+            "blendedEquityPercent": blended,
+            "vestedThisQuarterUSD": round(vested_quarter, 2),
+            "nextVest": next_vest,
+        }
+
+    @staticmethod
+    def _vesting_series(holding: Dict[str, Any]) -> Dict[str, Any]:
+        """48 monthly points; linear vest after the cliff (mirrors frontend math)."""
+        sched = holding["vestingSchedule"]
+        cliff = int(sched["cliffMonths"])
+        total_months = int(sched["years"]) * 12
+        y, m = (int(p) for p in holding["grantDate"].split("-")[:2])
+        points = []
+        for i in range(48):
+            mm = m - 1 + i
+            yy = y + mm // 12
+            month = mm % 12 + 1
+            vested = min(100.0, (i / total_months) * 100.0) if i >= cliff else 0.0
+            points.append({"monthIso": f"{yy:04d}-{month:02d}",
+                           "vestedPercent": round(vested)})
+        return {
+            "projectId": holding["projectId"],
+            "projectName": holding["projectName"],
+            "points": points,
+        }
+
+
+# ============================================================================
+# PAYOUT SERVICE  (Collaborator cash layer — money going OUT)
+# ============================================================================
+
+class PayoutService:
+    """
+    Collaborator cash earnings + payout ledger + withdrawals. Distinct from the
+    billing credit engine (money coming in). Backs the Earnings dashboard.
+
+    Response keys camelCase to match frontend CashEarning / Payout / cashTotals.
+    Production: query `collaborator_earnings` and `payouts` (database_schema.py).
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_collaborator_earnings(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/collaborator/earnings -- 0 credits, Free+"""
+        earnings = self._load_earnings(user_context)
+        payouts  = self._load_payouts(user_context)
+        return {
+            "cashEarnings": earnings,
+            "payouts":      payouts,
+            "totals":       self._totals(earnings, payouts),
+        }
+
+    async def request_withdrawal(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/collaborator/earnings/withdraw -- 0 credits.
+        Body: { amount, destination? }. Creates a 'processing' payout.
+        Production: INSERT payouts; debit pending balance atomically.
+        """
+        amount = float(body.get("amount", 0) or 0)
+        totals = self._totals(self._load_earnings(user_context),
+                              self._load_payouts(user_context))
+        if amount <= 0 or amount > float(totals["pendingUSD"]):
+            return {"ok": False, "error": "invalid_amount",
+                    "available": totals["pendingUSD"]}
+        # month/id are stamped by caller/DB in production (no clock in this layer).
+        return {
+            "ok": True,
+            "payout": {
+                "id": body.get("idemKey", "pending"),
+                "monthIso": body.get("monthIso", ""),
+                "amount": amount,
+                "status": "processing",
+            },
+            "destination": body.get("destination", "•••1234"),
+            "newPendingUSD": round(float(totals["pendingUSD"]) - amount, 2),
+        }
+
+    # ── helpers ───────────────────────────────────────────────────────────
+    def _load_earnings(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        return [
+            {"projectId": "1", "projectName": "NeuralSync AI",  "earned": 45000,
+             "pending": 5000, "revenueSharePercent": 2.5,
+             "contributionNote": "Dashboard feature increased user retention by 18%"},
+            {"projectId": "2", "projectName": "FinFlow", "earned": 38000,
+             "pending": 4500, "revenueSharePercent": 1.8,
+             "contributionNote": "Payment integration enabled $500K in transactions"},
+            {"projectId": "3", "projectName": "HealthTrack Pro", "earned": 22000,
+             "pending": 2850, "revenueSharePercent": 1.2,
+             "contributionNote": "ML model improved prediction accuracy by 12%"},
+        ]
+
+    def _load_payouts(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        rows = [
+            ("p12", "2025-06", 8200), ("p11", "2025-07", 9100),
+            ("p10", "2025-08", 10400), ("p9", "2025-09", 11200),
+            ("p8", "2025-10", 10800), ("p7", "2025-11", 12400),
+            ("p6", "2025-12", 11900), ("p5", "2026-01", 13200),
+            ("p4", "2026-02", 13800), ("p3", "2026-03", 14100),
+            ("p2", "2026-04", 14600), ("p1", "2026-05", 12350),
+        ]
+        out = [{"id": i, "monthIso": m, "amount": a, "status": "paid"} for i, m, a in rows]
+        out[-1]["status"] = "processing"
+        return out
+
+    @staticmethod
+    def _totals(earnings: List[Dict[str, Any]],
+                payouts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        lifetime = sum(float(e["earned"]) for e in earnings)
+        pending  = sum(float(e["pending"]) for e in earnings)
+        # Trailing-12 revenue-share approximation from the payout ledger tail.
+        ttm = sum(float(p["amount"]) for p in payouts[-12:]) * 0.1
+        return {
+            "lifetimeUSD": round(lifetime, 2),
+            "pendingUSD": round(pending, 2),
+            "revenueShareTTMUsd": round(ttm, 2),
+        }
+
+
+# ============================================================================
+# CAPITAL POOL SERVICE  (Investor micro-funds + escrow milestone release)
+# ============================================================================
+
+class CapitalPoolService:
+    """
+    Investor micro-funds: pooled capital deployed across startups with automated,
+    milestone-based escrow release. Backs the investor Capital Pools dashboard.
+
+    Response keys camelCase to match the frontend CapitalPool contract.
+    Production: query `capital_pools` + `pool_milestone_releases`.
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_capital_pools(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/investor/capital-pools -- 0 credits, Investor+"""
+        return {"pools": self._load_pools(user_context)}
+
+    async def create_pool(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """POST /api/v1/investor/capital-pools -- 0 credits. Body: pool definition."""
+        rules = body.get("rules", {})
+        pool = {
+            "id": body.get("id", "new"),
+            "name": body.get("name", "Untitled Pool"),
+            "totalCapital": float(body.get("totalCapital", 0) or 0),
+            "deployed": 0,
+            "startups": 0,
+            "milestonesHit": 0,
+            "fundsReleased": 0,
+            "roiSimulation": 0,
+            "rules": {
+                "minReadiness": int(rules.get("minReadiness", 80)),
+                "maxPerStartup": float(rules.get("maxPerStartup", 20)),
+                "milestoneTrigger": bool(rules.get("milestoneTrigger", True)),
+            },
+        }
+        return {"ok": True, "pool": pool}
+
+    async def release_on_milestone(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/investor/capital-pools/{pool_id}/release -- 0 credits.
+        Release escrowed capital for a startup that hit a milestone.
+        Body: { projectId, milestone, amount }
+        """
+        amount = float(body.get("amount", 0) or 0)
+        return {
+            "ok": amount > 0,
+            "poolId": body.get("poolId"),
+            "projectId": body.get("projectId"),
+            "milestone": body.get("milestone"),
+            "amountReleased": amount,
+            "released": amount > 0,
+        }
+
+    def _load_pools(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        return [
+            {"id": "1", "name": "TechIT Micro Fund Alpha", "totalCapital": 500000,
+             "deployed": 380000, "startups": 8, "milestonesHit": 24,
+             "fundsReleased": 280000, "roiSimulation": 3.2,
+             "rules": {"minReadiness": 85, "maxPerStartup": 20, "milestoneTrigger": True}},
+            {"id": "2", "name": "AI Governance Fund", "totalCapital": 750000,
+             "deployed": 520000, "startups": 10, "milestonesHit": 31,
+             "fundsReleased": 420000, "roiSimulation": 4.1,
+             "rules": {"minReadiness": 80, "maxPerStartup": 15, "milestoneTrigger": True}},
+        ]
+
+
+# ============================================================================
+# DEAL ROOM SERVICE  (Investor cap table / term sheet / signing / negotiation)
+# ============================================================================
+
+class DealRoomService:
+    """
+    Secure investor↔startup deal rooms: negotiation stage tracking, term-sheet
+    simulator, milestone tranches, document signing. Backs the investor Deal
+    Rooms list + detail.
+
+    Production: query `deal_rooms`, `term_sheets`, `deal_documents`.
+    """
+
+    STAGE_ORDER = [
+        "Intro Call", "NDA Signed", "Due Diligence",
+        "Term Sheet", "Negotiation", "Deal Closed",
+    ]
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_deal_rooms(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/investor/deal-rooms -- 0 credits, Investor+"""
+        return {"dealMeta": self._load_deal_meta(), "stageOrder": self.STAGE_ORDER}
+
+    async def get_deal_room(
+        self, user_context: UserContext, project_id: str, startup: Dict[str, Any] | None = None
+    ) -> Dict[str, Any]:
+        """
+        GET /api/v1/investor/deal-rooms/{project_id} -- 0 credits, Investor+
+        Returns term-sheet defaults, valuation (ARR×8), milestone tranches,
+        documents, and the negotiation stepper.
+        """
+        mrr = float((startup or {}).get("mrr", 0) or 0)
+        valuation = mrr * 12 * 8  # ARR × 8 multiple (mirrors frontend)
+        meta = self._load_deal_meta().get(project_id, {
+            "status": "pending", "stage": "Intro Call", "daysOpen": 0,
+            "messages": 0, "docs": 0, "lastActivity": "just now",
+        })
+        return {
+            "projectId": project_id,
+            "meta": meta,
+            "valuationUSD": valuation,
+            "termSheet": {
+                "valuationUSD": valuation,
+                "investmentUSD": 250000,
+                "equityPercent": 5.2,
+                "instrument": "SAFE",
+                "discountPercent": 20,
+                "valuationCapUSD": valuation,
+                "extraTerms": {"rights": "Observer Rights"},
+            },
+            "milestones": [
+                {"milestone": "Initial Tranche",   "amount": 100000, "condition": "On signing",          "status": "pending"},
+                {"milestone": "Product Milestone", "amount": 75000,  "condition": "Ship v2 / 1k users",   "status": "pending"},
+                {"milestone": "Revenue Milestone", "amount": 75000,  "condition": "Reach $150K MRR",      "status": "pending"},
+            ],
+            "documents": [
+                {"name": "Simple Agreement for Future Equity (SAFE)", "status": "ready"},
+                {"name": "Subscription Agreement",                    "status": "ready"},
+                {"name": "Investor Rights Agreement",                 "status": "draft"},
+                {"name": "Right of First Refusal Agreement",          "status": "draft"},
+            ],
+            "negotiation": [
+                {"step": "Initial Discussion", "state": "completed"},
+                {"step": "Term Sheet Draft",   "state": "completed"},
+                {"step": "Due Diligence",      "state": "active"},
+                {"step": "Final Agreement",    "state": "todo"},
+                {"step": "Funds Transfer",     "state": "todo"},
+            ],
+            "stageOrder": self.STAGE_ORDER,
+        }
+
+    def _load_deal_meta(self) -> Dict[str, Any]:
+        return {
+            "1": {"status": "active",  "stage": "Term Sheet",     "daysOpen": 12, "messages": 34,  "docs": 7,  "lastActivity": "2h ago"},
+            "2": {"status": "active",  "stage": "Due Diligence",  "daysOpen": 8,  "messages": 52,  "docs": 11, "lastActivity": "45m ago"},
+            "3": {"status": "pending", "stage": "NDA Signed",     "daysOpen": 3,  "messages": 9,   "docs": 2,  "lastActivity": "1d ago"},
+            "4": {"status": "active",  "stage": "Negotiation",    "daysOpen": 21, "messages": 78,  "docs": 14, "lastActivity": "3h ago"},
+            "5": {"status": "closed",  "stage": "Deal Closed",    "daysOpen": 45, "messages": 120, "docs": 22, "lastActivity": "5d ago"},
+            "6": {"status": "pending", "stage": "Intro Call",     "daysOpen": 1,  "messages": 4,   "docs": 1,  "lastActivity": "6h ago"},
+        }
+
+
+# ============================================================================
+# DATA ROOM SERVICE  (Investor document vault + access control + sharing)
+# ============================================================================
+
+class DataRoomService:
+    """
+    Per-startup data rooms: structured 6-section document vaults with
+    compliance/governance verification and per-investor access grants. Backs
+    the investor Data Rooms list + detail.
+
+    Production: query `data_rooms` + `data_room_access`.
+    """
+
+    SECTIONS = [
+        "Metrics Dashboard", "Financials", "Testing Reports",
+        "Compliance", "Governance", "Execution History",
+    ]
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_data_rooms(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/investor/data-rooms -- 0 credits, Investor+"""
+        rooms = self._load_rooms(user_context)
+        verified = sum(1 for r in rooms if r["complianceVerified"])
+        return {
+            "rooms": rooms,
+            "sections": self.SECTIONS,
+            "totals": {
+                "activeRooms": len(rooms),
+                "totalDocs": len(rooms) * len(self.SECTIONS),
+                "complianceVerified": verified,
+                "aiSummaries": len(rooms),
+            },
+        }
+
+    async def grant_access(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/investor/data-rooms/{project_id}/access -- 0 credits.
+        Share a data room with an investor. Body: { investorId, canDownload }
+        Production: upsert data_room_access.
+        """
+        return {
+            "ok": True,
+            "projectId": body.get("projectId"),
+            "investorId": body.get("investorId"),
+            "canDownload": bool(body.get("canDownload", False)),
+            "granted": True,
+        }
+
+    def _load_rooms(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        # Production: SELECT data_rooms JOIN projects for this investor's pipeline.
+        # Returns per-startup vault metadata keyed by projectId.
+        seed = [
+            ("1", True,  True),  ("2", True,  False),
+            ("3", False, True),  ("4", True,  True),
+            ("5", True,  False), ("6", False, False),
+        ]
+        return [
+            {
+                "projectId": pid,
+                "sections": self.SECTIONS,
+                "docCount": len(self.SECTIONS),
+                "complianceVerified": comp,
+                "aiGovernanceVerified": gov,
+                "updatedLabel": "today",
+            }
+            for pid, comp, gov in seed
+        ]
+
+
+# ============================================================================
+# INVESTOR REPUTATION SERVICE  (mutual accountability)
+# ============================================================================
+
+class InvestorReputationService:
+    """
+    Investor-side reputation: composite score from 5 weighted metrics, founder
+    reviews, score progression, and leaderboard position. Backs the investor
+    Reputation dashboard.
+
+    Production: query `investor_reputation` + `investor_reviews`.
+    """
+
+    # weights sum to 1.0
+    WEIGHTS = {
+        "responseSpeed": 0.22, "founderRating": 0.26, "followThrough": 0.20,
+        "valueAdd": 0.16, "portfolioEngagement": 0.16,
+    }
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_reputation(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/investor/reputation -- 0 credits, Investor+"""
+        metrics = self._metrics(user_context)
+        score = round(sum(m["score"] * self.WEIGHTS[m["key"]] for m in metrics))
+        level = "Elite" if score >= 85 else "Established" if score >= 70 else "Building"
+        return {
+            "score": score,
+            "level": level,
+            "monthChange": 3,
+            "metrics": metrics,
+            "reviews": self._reviews(user_context),
+            "progression": [
+                {"month": "Feb 2026", "score": 87, "change": 3},
+                {"month": "Jan 2026", "score": 84, "change": 2},
+                {"month": "Dec 2025", "score": 82, "change": 4},
+                {"month": "Nov 2025", "score": 78, "change": 1},
+            ],
+            "leaderboard": {"rank": 12, "total": 284, "percentile": 4.2},
+        }
+
+    def _metrics(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        return [
+            {"key": "responseSpeed",       "label": "Response Speed",            "score": 92, "description": "Average response time: 4.2 hours"},
+            {"key": "founderRating",       "label": "Founder Rating",            "score": 88, "description": "Based on 12 founder reviews"},
+            {"key": "followThrough",       "label": "Follow-Through Consistency", "score": 85, "description": "Commitments kept: 94%"},
+            {"key": "valueAdd",            "label": "Value-Add Contributions",   "score": 81, "description": "Active portfolio support"},
+            {"key": "portfolioEngagement", "label": "Portfolio Engagement",      "score": 90, "description": "Monthly check-ins: 100%"},
+        ]
+
+    def _reviews(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        return [
+            {"founderName": "Sarah Chen",      "startup": "QuantumAPI",   "rating": 5, "comment": "Incredibly responsive and provided valuable strategic guidance. Made the funding process smooth and transparent.", "date": "Feb 8, 2026"},
+            {"founderName": "Marcus Rodriguez", "startup": "NeuralEdge AI", "rating": 5, "comment": "Goes beyond capital. Opened doors to key partnerships and actively helps with hiring. True value-add investor.", "date": "Feb 1, 2026"},
+            {"founderName": "Aisha Patel",     "startup": "CloudMesh",    "rating": 4, "comment": "Professional and fair terms. Would have appreciated faster turnaround on due diligence.", "date": "Jan 24, 2026"},
+        ]
+
+
+# ============================================================================
+# GEO SIGNAL SERVICE  (Investor Global Heatmap — region/sector aggregation)
+# ============================================================================
+
+class GeoSignalService:
+    """
+    Geographic aggregation for the investor Global Heatmap: per-region startup
+    counts + average readiness + compliance rate, and per-sector growth. The
+    engine previously had no geo signal; this aggregates it.
+
+    Production: GROUP BY region/sector over `projects` + latest `score_snapshots`.
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def get_heatmap(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/investor/heatmap -- 0 credits, Investor+"""
+        return {
+            "regions": [
+                {"name": "North America", "avgReadiness": 84, "complianceRate": 78, "color": "text-emerald-400"},
+                {"name": "Europe",        "avgReadiness": 86, "complianceRate": 82, "color": "text-blue-400"},
+                {"name": "Asia",          "avgReadiness": 78, "complianceRate": 64, "color": "text-purple-400"},
+            ],
+            "sectors": [
+                {"sector": "SaaS",           "avgGrowth": 42},
+                {"sector": "AI/ML",          "avgGrowth": 58},
+                {"sector": "FinTech",        "avgGrowth": 47},
+                {"sector": "BioTech",        "avgGrowth": 31},
+                {"sector": "Infrastructure", "avgGrowth": 38},
+                {"sector": "Security",       "avgGrowth": 44},
+            ],
+        }
+
+
+# ============================================================================
+# PROJECT SERVICE  (Founder multi-project)
+# ============================================================================
+
+class ProjectService:
+    """
+    A founder's portfolio of ventures (projects). Enables MULTIPLE separate
+    startups per founder — the dashboard + incubation hub were single-project.
+
+    Response keys camelCase to match frontend contracts.
+    Production: query `projects` WHERE owner_id = :uid (+ `project_analyses`).
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def list_founder_projects(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/founder/projects -- 0 credits, Free+"""
+        return {"projects": self._load_projects(user_context)}
+
+    async def create_project(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/founder/projects -- 0 credits.
+        Body: { title, tagline?, industry?, stage? }. Production: INSERT projects.
+        """
+        title = (body.get("title") or "").strip()
+        if not title:
+            return {"ok": False, "error": "title_required"}
+        return {
+            "ok": True,
+            "project": {
+                "id": body.get("id", "proj_new"),
+                "title": title,
+                "tagline": body.get("tagline", ""),
+                "industry": body.get("industry", ""),
+                "stage": body.get("stage", "idea"),
+                "isPrimary": False,
+                "gsisScore": 0,
+                "hasWorkspace": False,
+            },
+        }
+
+    def _load_projects(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        # Production: SELECT id,title,tagline,industry,stage,gsis_score FROM projects
+        # WHERE owner_id = :uid ORDER BY created_at.
+        return [
+            {"id": "proj_demo_001", "title": "AI Task Manager", "tagline": "Execution OS for builders",
+             "industry": "saas", "stage": "mvp", "isPrimary": True,  "gsisScore": 88, "hasWorkspace": True},
+            {"id": "proj_demo_002", "title": "MicroMint", "tagline": "Stablecoin rails for SMEs",
+             "industry": "fintech", "stage": "idea", "isPrimary": False, "gsisScore": 72, "hasWorkspace": False},
+        ]
+
+
+# ============================================================================
+# WORKSPACE SERVICE  (Incubation → Workspace pipeline; project-scoped)
+# ============================================================================
+
+class WorkspaceService:
+    """
+    Workspaces bound to a specific analyzed venture (project). Provisions a
+    workspace from a project's persisted analysis and serves project-scoped
+    context to the workspace AI. Closes the Incubation→Workspace gap.
+
+    Production: query `workspaces` + `project_analyses` (database_schema.py).
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    async def list_workspaces(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/workspaces -- 0 credits, Free+"""
+        return {"workspaces": self._load_workspaces(user_context)}
+
+    async def provision_workspace(
+        self, user_context: UserContext, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/workspaces/provision -- 0 credits.
+        Body: { projectId, name? }. Creates (or returns existing) a workspace
+        bound to the analyzed project, seeded from its latest analysis.
+        """
+        project_id = body.get("projectId")
+        if not project_id:
+            return {"ok": False, "error": "projectId_required"}
+        return {
+            "ok": True,
+            "workspace": {
+                "id": body.get("id", f"ws_{project_id}"),
+                "projectId": project_id,
+                "name": body.get("name", "Venture Workspace"),
+                "status": "active",
+                "seededFromAnalysis": True,
+            },
+        }
+
+    async def get_workspace_context(
+        self, user_context: UserContext, workspace_id: str, project_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        GET /api/v1/workspaces/{workspace_id}/context -- 0 credits.
+        Loads the bound project's latest analysis/blueprint so the workspace AI
+        is scoped to the specific analyzed venture (not a context-free blob).
+        """
+        analysis = ProjectService(self.brain)._load_projects(user_context)
+        primary = next((p for p in analysis if p["id"] == project_id), analysis[0] if analysis else None)
+        return {
+            "workspaceId": workspace_id,
+            "projectId": project_id or (primary["id"] if primary else None),
+            "venture": primary,
+            # Blueprint would come from project_analyses.blueprint (latest row).
+            "blueprintAvailable": bool(primary and primary.get("hasWorkspace")),
+        }
+
+    def _load_workspaces(self, user_context: UserContext) -> List[Dict[str, Any]]:
+        return [
+            {"id": "ws_proj_demo_001", "projectId": "proj_demo_001",
+             "name": "AI Task Manager", "status": "active", "seededFromAnalysis": True},
+        ]
+
+
+# ============================================================================
+# HACKATHON SERVICE  (org host intelligence + team/founder + idea→workspace)
+# ============================================================================
+
+# Process-level store: hackathon_id -> { team_id -> team dict }. This makes the
+# org↔team loop functionally LIVE in-process: a brief or check-in posted by a
+# team immediately surfaces in the org overview / velocity / leaderboard.
+# Caveat: ephemeral (resets on restart) and NOT shared across multiple workers —
+# the durable layer is the hackathon_* tables in database_schema.py.
+_HACKATHON_STORE: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+# Seed teams so the org command-centre renders before any live activity arrives.
+_SEED_TEAMS: List[Dict[str, Any]] = [
+    {"id": "team_001", "name": "Loom Health", "isSolo": False, "status": "building",
+     "hasBrief": True, "composite": 88, "checkIns": 5, "hasWorkspace": True},
+    {"id": "team_002", "name": "Solaris", "isSolo": False, "status": "building",
+     "hasBrief": True, "composite": 76, "checkIns": 3, "hasWorkspace": True},
+    {"id": "team_003", "name": "Verdant", "isSolo": True, "status": "registered",
+     "hasBrief": False, "composite": 41, "checkIns": 1, "hasWorkspace": False},
+    {"id": "team_004", "name": "Northwind", "isSolo": False, "status": "submitted",
+     "hasBrief": True, "composite": 91, "checkIns": 7, "hasWorkspace": True},
+]
+
+
+class HackathonService:
+    """
+    Hackathon intelligence: real-time reporting to the ORG host (registrations,
+    build-velocity heatmap aggregated from REAL check-ins, composite leaderboard,
+    CRS pipeline) and to TEAMS/founders (scored briefs, team status), plus a
+    brief→workspace pipe so analyzed hackathon ideas flow into a team workspace.
+
+    Composite scoring mirrors the frontend formula:
+      platformAvg = avg(problem_clarity, team_momentum, min(100, demo_hours*6))
+      composite   = judgePct*0.5 + platformAvg*0.5
+    Reads/writes go through an in-process store (_HACKATHON_STORE) so the loop is
+    live; production swaps that for queries over hackathons / hackathon_teams /
+    hackathon_briefs / hackathon_check_ins / hackathon_scores (database_schema.py).
+    """
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    # ── org host facing ───────────────────────────────────────────────────
+    async def list_hackathons(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/hackathons -- 0 credits."""
+        return {"hackathons": [
+            {"id": "hack_001", "name": "TechIT Global AI Hackathon", "theme": "AI for Good",
+             "status": "live", "registrants": 420, "teamsFormed": 87},
+        ]}
+
+    async def get_overview(self, user_context: UserContext, hackathon_id: str) -> Dict[str, Any]:
+        """
+        GET /api/v1/hackathons/{id}/overview -- 0 credits.
+        Real-time org command-centre stats, derived live from the store.
+        Production: COUNT/aggregate over hackathon_teams + hackathon_briefs +
+        hackathon_check_ins.
+        """
+        teams = self._teams(hackathon_id)
+        solo = sum(1 for t in teams if t["isSolo"])
+        briefs_in = sum(1 for t in teams if t["hasBrief"])
+        return {
+            "hackathonId": hackathon_id,
+            "status": "live",
+            "registrants": 420 + max(0, len(teams) - len(_SEED_TEAMS)),
+            "teamsFormed": sum(1 for t in teams if not t["isSolo"]),
+            "stillSolo": solo,
+            "ideaSubmissions": briefs_in,
+            "totalTeams": len(teams),
+            "avgBuildVelocity": round(self._avg_velocity(hackathon_id), 1),
+        }
+
+    async def get_velocity_heatmap(
+        self, user_context: UserContext, hackathon_id: str
+    ) -> Dict[str, Any]:
+        """
+        GET /api/v1/hackathons/{id}/velocity -- 0 credits.
+        REAL per-team build velocity from check-ins (replaces Math.random()).
+        Production: aggregate activity_score from hackathon_check_ins per team
+        over the recent window.
+        """
+        return {"hackathonId": hackathon_id, "teams": self._velocity_cells(hackathon_id)}
+
+    async def get_leaderboard(
+        self, user_context: UserContext, hackathon_id: str
+    ) -> Dict[str, Any]:
+        """GET /api/v1/hackathons/{id}/leaderboard -- 0 credits. Composite-ranked."""
+        teams = self._teams(hackathon_id)
+        ranked = sorted(
+            [{"teamId": t["id"], "name": t["name"], "composite": t["composite"],
+              "crsBand": self._crs_band(t["composite"] / 10.0)} for t in teams],
+            key=lambda x: x["composite"], reverse=True,
+        )
+        return {"hackathonId": hackathon_id, "leaderboard": ranked}
+
+    async def get_pipeline(
+        self, user_context: UserContext, hackathon_id: str
+    ) -> Dict[str, Any]:
+        """GET /api/v1/hackathons/{id}/pipeline -- 0 credits. CRS bucket counts."""
+        teams = self._teams(hackathon_id)
+        crs = [t["composite"] / 10.0 for t in teams]
+        return {
+            "hackathonId": hackathon_id,
+            "buckets": {
+                "incubationInvites": sum(1 for c in crs if c > 7),    # CRS > 7
+                "prototypeTrack":    sum(1 for c in crs if 4 <= c <= 6),
+                "backToLearning":    sum(1 for c in crs if c < 4),
+            },
+        }
+
+    # ── team / founder facing ─────────────────────────────────────────────
+    async def register(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/v1/hackathons/{id}/register -- 0 credits. Body: { name?, members? }"""
+        members = body.get("members", [])
+        is_solo = len(members) <= 1
+        team_id = body.get("teamId", "team_new")
+        store = self._store(body.get("hackathonId"))
+        team = store.get(team_id) or self._new_team(team_id, body.get("name", "Solo"))
+        team.update({"name": body.get("name", team["name"]), "isSolo": is_solo,
+                     "status": "registered"})
+        store[team_id] = team
+        return {
+            "ok": True,
+            "team": {
+                "id": team["id"], "name": team["name"],
+                "isSolo": team["isSolo"], "status": team["status"],
+            },
+        }
+
+    async def submit_brief(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        POST /api/v1/hackathons/{id}/brief -- 0 credits.
+        Scores the idea brief (platform composite) and persists it to the store
+        so the org command-centre sees the submission live.
+        Body: { teamId, problem, solution, fields, demoReadinessHours?,
+                judgeScores? }
+        """
+        problem = body.get("problem", "") or ""
+        solution = body.get("solution", "") or ""
+        problem_clarity = self._clarity_score(problem)
+        team_momentum   = float(body.get("teamMomentum", 70))
+        demo_hours      = float(body.get("demoReadinessHours", 6))
+        platform_avg = (problem_clarity + team_momentum + min(100.0, demo_hours * 6)) / 3.0
+        judge_scores = body.get("judgeScores") or {}
+        judge_pct = (sum(judge_scores.values()) / len(judge_scores) / 10.0 * 100.0) if judge_scores else platform_avg
+        composite = round(judge_pct * 0.5 + platform_avg * 0.5)
+
+        team_id = body.get("teamId")
+        if team_id:
+            store = self._store(body.get("hackathonId"))
+            team = store.get(team_id) or self._new_team(team_id)
+            team.update({"hasBrief": True, "composite": composite,
+                         "status": "building" if team["status"] == "registered" else team["status"]})
+            store[team_id] = team
+
+        return {
+            "ok": True,
+            "score": {
+                "problemClarityScore": round(problem_clarity),
+                "teamMomentumScore": round(team_momentum),
+                "demoReadinessHours": demo_hours,
+                "platformAvg": round(platform_avg),
+                "judgePct": round(judge_pct),
+                "composite": composite,
+                "crsBand": self._crs_band(composite / 10.0),
+            },
+            "critiques": self._critiques(problem, solution),
+        }
+
+    async def log_check_in(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        POST /api/v1/hackathons/{id}/checkin -- 0 credits.
+        Records a build check-in; its activity_score updates the team's running
+        velocity in the store, which feeds the org heatmap live.
+        Body: { teamId, note, progressDelta? }
+        """
+        progress = float(body.get("progressDelta", 10))
+        activity = min(100.0, max(0.0, progress * 5))
+
+        team_id = body.get("teamId")
+        if team_id:
+            store = self._store(body.get("hackathonId"))
+            team = store.get(team_id) or self._new_team(team_id)
+            n = team["checkIns"]
+            team["activity"] = round((team["activity"] * n + activity) / (n + 1), 1)
+            team["checkIns"] = n + 1
+            if team["status"] == "registered":
+                team["status"] = "building"
+            store[team_id] = team
+
+        return {"ok": True, "checkIn": {
+            "teamId": team_id, "note": body.get("note", ""),
+            "activityScore": round(activity)}}
+
+    async def get_team_status(
+        self, user_context: UserContext, hackathon_id: str, team_id: str
+    ) -> Dict[str, Any]:
+        """GET /api/v1/hackathons/{id}/teams/{tid}/status -- 0 credits."""
+        teams = self._teams(hackathon_id)
+        team = next((t for t in teams if t["id"] == team_id), teams[0])
+        return {
+            "hackathonId": hackathon_id, "teamId": team["id"], "name": team["name"],
+            "status": team["status"], "hasBrief": team["hasBrief"],
+            "composite": team["composite"], "checkIns": team["checkIns"],
+            "hasWorkspace": team["hasWorkspace"],
+        }
+
+    async def provision_team_workspace(
+        self, user_context: UserContext, hackathon_id: str, team_id: str, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/hackathons/{id}/teams/{tid}/workspace -- 0 credits.
+        Pipe the analyzed hackathon brief into a team workspace (reuses
+        WorkspaceService) and mark the team's workspace live in the store.
+        Body: { projectId? }.
+        """
+        project_id = body.get("projectId") or f"proj_hack_{team_id}"
+        ws = await WorkspaceService(self.brain).provision_workspace(
+            user_context, {"projectId": project_id, "name": body.get("name", "Hackathon Team")},
+        )
+        store = self._store(hackathon_id)
+        team = store.get(team_id) or self._new_team(team_id)
+        team.update({"hasWorkspace": True, "projectId": project_id})
+        store[team_id] = team
+        return {"ok": True, "hackathonId": hackathon_id, "teamId": team_id, **ws}
+
+    # ── helpers ───────────────────────────────────────────────────────────
+    @staticmethod
+    def _store(hackathon_id: Optional[str]) -> Dict[str, Dict[str, Any]]:
+        """Return (seeding on first touch) the team store for a hackathon."""
+        key = hackathon_id or "_default"
+        store = _HACKATHON_STORE.get(key)
+        if store is None:
+            store = {}
+            for seed in _SEED_TEAMS:
+                team = dict(seed)
+                # Seed a deterministic baseline activity (never random); real
+                # check-ins blend into this running mean via log_check_in.
+                team["activity"] = float(
+                    min(100, 30 + team["checkIns"] * 12 + int(team["composite"]) % 25)
+                )
+                store[team["id"]] = team
+            _HACKATHON_STORE[key] = store
+        return store
+
+    @staticmethod
+    def _new_team(team_id: str, name: str = "Team") -> Dict[str, Any]:
+        return {"id": team_id, "name": name, "isSolo": True, "status": "registered",
+                "hasBrief": False, "composite": 0, "checkIns": 0,
+                "hasWorkspace": False, "activity": 0.0}
+
+    def _teams(self, hackathon_id: str) -> List[Dict[str, Any]]:
+        return list(self._store(hackathon_id).values())
+
+    @staticmethod
+    def _clarity_score(text: str) -> float:
+        n = len(text.strip())
+        base = 40 if n >= 80 else 20 if n >= 40 else 5
+        pain = ["struggle", "can't", "wastes", "lacks", "hard", "fail"]
+        if any(w in text.lower() for w in pain):
+            base += 25
+        if any(ch.isdigit() for ch in text):
+            base += 15
+        return float(min(100, base + 15))
+
+    @staticmethod
+    def _critiques(problem: str, solution: str) -> List[str]:
+        out: List[str] = []
+        if len(problem.strip()) < 80:
+            out.append("Sharpen the problem: who hurts, and how badly?")
+        if not any(ch.isdigit() for ch in problem + solution):
+            out.append("Add a number — market size, time wasted, or users affected.")
+        if len(solution.strip()) < 60:
+            out.append("Make the solution concrete: what does it actually do?")
+        return out
+
+    @staticmethod
+    def _crs_band(crs10: float) -> str:
+        return ">7" if crs10 > 7 else "4-6" if crs10 >= 4 else "<4"
+
+    def _avg_velocity(self, hackathon_id: str) -> float:
+        cells = self._velocity_cells(hackathon_id)
+        return sum(c["activity"] for c in cells) / len(cells) if cells else 0.0
+
+    def _velocity_cells(self, hackathon_id: str) -> List[Dict[str, Any]]:
+        # Live: per-team running-mean activity from posted check-ins (maintained
+        # in log_check_in). Seeded from a deterministic baseline (never random)
+        # in _store so the heatmap renders before any check-in arrives.
+        return [{"teamId": t["id"], "name": t["name"], "activity": round(t["activity"])}
+                for t in self._teams(hackathon_id)]
 
 
 # ============================================================================

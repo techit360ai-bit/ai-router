@@ -48,6 +48,7 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -136,12 +137,15 @@ class TaskType(Enum):
 
 
 class ModelProvider(Enum):
-    OPENAI_GPT4      = "openai_gpt4"
-    OPENAI_GPT4_MINI = "openai_gpt4_mini"
-    ANTHROPIC_CLAUDE = "anthropic_claude"
-    ANTHROPIC_HAIKU  = "anthropic_claude_haiku"
-    LOCAL_LLAMA      = "local_llama"
-    COHERE_EMBED     = "cohere_embed"
+    OPENAI_GPT4       = "openai_gpt4"
+    OPENAI_GPT4_MINI  = "openai_gpt4_mini"
+    ANTHROPIC_CLAUDE  = "anthropic_claude"
+    ANTHROPIC_HAIKU   = "anthropic_claude_haiku"
+    LOCAL_LLAMA       = "local_llama"
+    COHERE_EMBED      = "cohere_embed"
+    GEMINI_FLASH      = "gemini_flash"
+    GEMINI_FLASH_LITE = "gemini_flash_lite"
+    OPENROUTER_FREE   = "openrouter_free"
 
 
 # ============================================================================
@@ -898,6 +902,8 @@ class ModelConfig:
     max_context_length: int
     strengths:          List[str]
     use_cases:          List[TaskType]
+    api_key_env:        str  = ""      # env var required for this provider to be "available"; "" = always available
+    is_free:            bool = False   # reporting only
 
 
 @dataclass
@@ -918,74 +924,124 @@ class AIResponse:
 # MODEL ROUTER
 # ============================================================================
 
+class ComplexityTier(Enum):
+    HEAVY    = "heavy"      # deep reasoning, coding, scoring
+    STANDARD = "standard"   # long-form generation
+    LIGHT    = "light"      # chat, summaries, dashboard glue
+    TRIVIAL  = "trivial"    # classification, moderation, notifications
+
+
 class ModelRouter:
     """Routes each task to the optimal LLM. No feature is locked to one vendor."""
 
-    TASK_MAP: Dict[TaskType, ModelProvider] = {
-        # Deep reasoning -> GPT-4
-        TaskType.IDEA_EVALUATION:          ModelProvider.OPENAI_GPT4,
-        TaskType.UNICORN_ANALYSIS:         ModelProvider.OPENAI_GPT4,
-        TaskType.CODE_REVIEW:              ModelProvider.OPENAI_GPT4,
-        TaskType.RISK_ANALYSIS:            ModelProvider.OPENAI_GPT4,
-        TaskType.STARTUP_STRATEGY:         ModelProvider.OPENAI_GPT4,
-        TaskType.PIVOT_INTELLIGENCE:       ModelProvider.OPENAI_GPT4,
-        TaskType.PRODUCT_FEASIBILITY:      ModelProvider.OPENAI_GPT4,
-        TaskType.TECH_STACK_DESIGN:        ModelProvider.OPENAI_GPT4,
-        TaskType.INVESTOR_EVI:             ModelProvider.OPENAI_GPT4,
-        # Long-form generation -> Claude Sonnet
-        TaskType.BUSINESS_PLAN:            ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.EXECUTIVE_SUMMARY:        ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.MARKET_INTELLIGENCE:      ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.FINANCE_STRATEGY:         ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.INVESTOR_READINESS:       ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.INVESTOR_SIGNAL:          ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.TRAINING_GENERATION:      ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.SUMMARY:                  ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.MARKET_SURVEY_SIMULATION: ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.EXECUTION_ROADMAP:        ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.ORG_SPHERE:               ModelProvider.ANTHROPIC_CLAUDE,
-        # Lightweight ops -> GPT-4o-mini
-        TaskType.CHAT:                     ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.TOUR_GUIDE:               ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.WORKSPACE_ASSISTANT:      ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.DASHBOARD_INTELLIGENCE:   ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.FEED_INTELLIGENCE:        ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.RECOMMENDATION_ENGINE:    ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.GSIS_COMPUTE:             ModelProvider.OPENAI_GPT4_MINI,
-        # Idea & Solution Hub -- GPT-4 for analysis; Claude for synthesis/grants
-        TaskType.PROBLEM_ANALYSIS:         ModelProvider.OPENAI_GPT4,
-        TaskType.SOLUTION_SYNTHESIS:       ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.IMPACT_PREDICTION:        ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.FEASIBILITY_ESTIMATE:     ModelProvider.OPENAI_GPT4,
-        TaskType.PROBLEM_DISCOVERY:        ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.SOLUTION_MATCHING:        ModelProvider.ANTHROPIC_HAIKU,
-        TaskType.DEPLOYMENT_PLANNING:      ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.GRANT_MATCHING:           ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DISCUSSION_MODERATION:    ModelProvider.OPENAI_GPT4_MINI,
-        TaskType.FIELD_FEEDBACK_ANALYSIS:  ModelProvider.OPENAI_GPT4_MINI,
-        # Document Generation -- all long-form -> Claude Sonnet
-        TaskType.DOCUMENT_EXECUTIVE_SUMMARY:    ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_BUSINESS_PLAN:        ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_PITCH_DECK:           ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_INVESTOR_REPORT:      ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_UNICORN_REPORT:       ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_PRODUCT_ROADMAP:      ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_FINANCIAL_PROJECTION: ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.DOCUMENT_MARKET_RESEARCH:      ModelProvider.ANTHROPIC_CLAUDE,
-        # Fast classification -> Haiku
-        TaskType.MATCHING:                 ModelProvider.ANTHROPIC_HAIKU,
-        TaskType.PROFILE_ANALYSIS:         ModelProvider.ANTHROPIC_HAIKU,
-        TaskType.ADMIN_MONITOR:            ModelProvider.ANTHROPIC_HAIKU,
-        # Prompt -> Live App -- Claude Sonnet for structured code scaffolds
-        TaskType.APP_SCAFFOLD_GENERATION:  ModelProvider.ANTHROPIC_CLAUDE,
-        TaskType.APP_DEPLOY_CONFIG:        ModelProvider.OPENAI_GPT4_MINI,
-        # Embeddings -> Cohere
-        TaskType.EMBEDDINGS:               ModelProvider.COHERE_EMBED,
+    TASK_COMPLEXITY: Dict[TaskType, ComplexityTier] = {
+        # HEAVY — deep reasoning / coding / scoring
+        TaskType.IDEA_EVALUATION:     ComplexityTier.HEAVY,
+        TaskType.UNICORN_ANALYSIS:    ComplexityTier.HEAVY,
+        TaskType.CODE_REVIEW:         ComplexityTier.HEAVY,
+        TaskType.RISK_ANALYSIS:       ComplexityTier.HEAVY,
+        TaskType.STARTUP_STRATEGY:    ComplexityTier.HEAVY,
+        TaskType.PIVOT_INTELLIGENCE:  ComplexityTier.HEAVY,
+        TaskType.PRODUCT_FEASIBILITY: ComplexityTier.HEAVY,
+        TaskType.TECH_STACK_DESIGN:   ComplexityTier.HEAVY,
+        TaskType.INVESTOR_EVI:        ComplexityTier.HEAVY,
+        TaskType.PROBLEM_ANALYSIS:    ComplexityTier.HEAVY,
+        TaskType.FEASIBILITY_ESTIMATE: ComplexityTier.HEAVY,
+        TaskType.APP_SCAFFOLD_GENERATION: ComplexityTier.HEAVY,
+        # STANDARD — long-form generation
+        TaskType.BUSINESS_PLAN:            ComplexityTier.STANDARD,
+        TaskType.EXECUTIVE_SUMMARY:        ComplexityTier.STANDARD,
+        TaskType.MARKET_INTELLIGENCE:      ComplexityTier.STANDARD,
+        TaskType.FINANCE_STRATEGY:         ComplexityTier.STANDARD,
+        TaskType.INVESTOR_READINESS:       ComplexityTier.STANDARD,
+        TaskType.INVESTOR_SIGNAL:          ComplexityTier.STANDARD,
+        TaskType.TRAINING_GENERATION:      ComplexityTier.STANDARD,
+        TaskType.SUMMARY:                  ComplexityTier.STANDARD,
+        TaskType.MARKET_SURVEY_SIMULATION: ComplexityTier.STANDARD,
+        TaskType.EXECUTION_ROADMAP:        ComplexityTier.STANDARD,
+        TaskType.ORG_SPHERE:               ComplexityTier.STANDARD,
+        TaskType.SOLUTION_SYNTHESIS:       ComplexityTier.STANDARD,
+        TaskType.DEPLOYMENT_PLANNING:      ComplexityTier.STANDARD,
+        TaskType.GRANT_MATCHING:           ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_EXECUTIVE_SUMMARY:    ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_BUSINESS_PLAN:        ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_PITCH_DECK:           ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_INVESTOR_REPORT:      ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_UNICORN_REPORT:       ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_PRODUCT_ROADMAP:      ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_FINANCIAL_PROJECTION: ComplexityTier.STANDARD,
+        TaskType.DOCUMENT_MARKET_RESEARCH:      ComplexityTier.STANDARD,
+        # LIGHT — chat / glue / light reasoning
+        TaskType.CHAT:                   ComplexityTier.LIGHT,
+        TaskType.TOUR_GUIDE:             ComplexityTier.LIGHT,
+        TaskType.WORKSPACE_ASSISTANT:    ComplexityTier.LIGHT,
+        TaskType.DASHBOARD_INTELLIGENCE: ComplexityTier.LIGHT,
+        TaskType.FEED_INTELLIGENCE:      ComplexityTier.LIGHT,
+        TaskType.RECOMMENDATION_ENGINE:  ComplexityTier.LIGHT,
+        TaskType.GSIS_COMPUTE:           ComplexityTier.LIGHT,
+        TaskType.IMPACT_PREDICTION:      ComplexityTier.LIGHT,
+        TaskType.PROBLEM_DISCOVERY:      ComplexityTier.LIGHT,
+        TaskType.APP_DEPLOY_CONFIG:      ComplexityTier.LIGHT,
+        # TRIVIAL — classification / moderation
+        TaskType.MATCHING:                ComplexityTier.TRIVIAL,
+        TaskType.PROFILE_ANALYSIS:        ComplexityTier.TRIVIAL,
+        TaskType.ADMIN_MONITOR:           ComplexityTier.TRIVIAL,
+        TaskType.SOLUTION_MATCHING:       ComplexityTier.TRIVIAL,
+        TaskType.DISCUSSION_MODERATION:   ComplexityTier.TRIVIAL,
+        TaskType.FIELD_FEEDBACK_ANALYSIS: ComplexityTier.TRIVIAL,
+        # EMBEDDINGS intentionally omitted — special-cased to Cohere in select_chain.
+    }
+
+    TIER_MODELS: Dict[ComplexityTier, List[ModelProvider]] = {
+        ComplexityTier.HEAVY:    [ModelProvider.OPENAI_GPT4, ModelProvider.ANTHROPIC_CLAUDE,
+                                  ModelProvider.OPENAI_GPT4_MINI],
+        ComplexityTier.STANDARD: [ModelProvider.ANTHROPIC_CLAUDE, ModelProvider.OPENAI_GPT4,
+                                  ModelProvider.ANTHROPIC_HAIKU],
+        ComplexityTier.LIGHT:    [ModelProvider.GEMINI_FLASH, ModelProvider.OPENAI_GPT4_MINI,
+                                  ModelProvider.ANTHROPIC_HAIKU],
+        ComplexityTier.TRIVIAL:  [ModelProvider.OPENROUTER_FREE, ModelProvider.GEMINI_FLASH_LITE,
+                                  ModelProvider.ANTHROPIC_HAIKU, ModelProvider.OPENAI_GPT4_MINI],
     }
 
     def __init__(self) -> None:
-        self.model_configs  = self._init_models()
-        self.fallback_chain = self._init_fallbacks()
+        self.model_configs = self._init_models()
+        self._validate_coverage()
+
+    def _validate_coverage(self) -> None:
+        for task in TaskType:
+            if task is TaskType.EMBEDDINGS:
+                continue
+            if task not in self.TASK_COMPLEXITY:
+                raise ValueError(f"TASK_COMPLEXITY missing tier for {task}")
+        for tier, providers in self.TIER_MODELS.items():
+            for prov in providers:
+                if prov not in self.model_configs:
+                    raise ValueError(f"TIER_MODELS[{tier}] references unknown provider {prov}")
+
+    @staticmethod
+    def _is_available(cfg: ModelConfig) -> bool:
+        return not cfg.api_key_env or bool(os.environ.get(cfg.api_key_env))
+
+    def _ordered_configs(self, providers: List[ModelProvider]) -> List[ModelConfig]:
+        """Map providers -> configs, eligible (key present) first, none dropped."""
+        configs = [self.model_configs[p] for p in providers if p in self.model_configs]
+        eligible   = [c for c in configs if self._is_available(c)]
+        ineligible = [c for c in configs if not self._is_available(c)]
+        ordered, seen = [], set()
+        for c in eligible + ineligible:
+            if c.provider not in seen:
+                ordered.append(c)
+                seen.add(c.provider)
+        return ordered
+
+    def select_chain(self, request: AIRequest) -> List[ModelConfig]:
+        """Ordered fallback chain of models for a request (never empty)."""
+        if request.task_type is TaskType.EMBEDDINGS:
+            return [self.model_configs[ModelProvider.COHERE_EMBED]]
+        if request.user_context.subscription_tier == SubscriptionTier.FREE:
+            return self._ordered_configs(self.TIER_MODELS[ComplexityTier.TRIVIAL])
+        tier = self.TASK_COMPLEXITY.get(request.task_type, ComplexityTier.LIGHT)
+        return self._ordered_configs(self.TIER_MODELS[tier])
 
     def _init_models(self) -> Dict[ModelProvider, ModelConfig]:
         return {
@@ -993,49 +1049,56 @@ class ModelRouter:
                 ModelProvider.OPENAI_GPT4, "gpt-4-turbo", 0.01, 128_000,
                 ["deep reasoning", "unicorn scoring", "code"],
                 [TaskType.IDEA_EVALUATION, TaskType.UNICORN_ANALYSIS],
+                api_key_env="OPENAI_API_KEY",
             ),
             ModelProvider.OPENAI_GPT4_MINI: ModelConfig(
                 ModelProvider.OPENAI_GPT4_MINI, "gpt-4o-mini", 0.0002, 128_000,
                 ["speed", "low cost", "chat"],
                 [TaskType.CHAT, TaskType.TOUR_GUIDE],
+                api_key_env="OPENAI_API_KEY",
             ),
             ModelProvider.ANTHROPIC_CLAUDE: ModelConfig(
                 ModelProvider.ANTHROPIC_CLAUDE, "claude-sonnet-4-6", 0.003, 200_000,
                 ["long context", "business plans", "strategy"],
                 [TaskType.BUSINESS_PLAN, TaskType.SUMMARY],
+                api_key_env="ANTHROPIC_API_KEY",
             ),
             ModelProvider.ANTHROPIC_HAIKU: ModelConfig(
                 ModelProvider.ANTHROPIC_HAIKU, "claude-haiku-4-5-20251001", 0.00025, 200_000,
                 ["speed", "classification", "matching"],
                 [TaskType.MATCHING, TaskType.PROFILE_ANALYSIS],
+                api_key_env="ANTHROPIC_API_KEY",
             ),
             ModelProvider.COHERE_EMBED: ModelConfig(
                 ModelProvider.COHERE_EMBED, "embed-english-v3.0", 0.0001, 512,
                 ["embeddings", "semantic search"],
                 [TaskType.EMBEDDINGS],
+                api_key_env="COHERE_API_KEY",
+            ),
+            ModelProvider.GEMINI_FLASH: ModelConfig(
+                ModelProvider.GEMINI_FLASH, "gemini-2.0-flash", 0.0001, 1_000_000,
+                ["speed", "low cost", "light reasoning"],
+                [TaskType.CHAT, TaskType.FEED_INTELLIGENCE],
+                api_key_env="GEMINI_API_KEY",
+            ),
+            ModelProvider.GEMINI_FLASH_LITE: ModelConfig(
+                ModelProvider.GEMINI_FLASH_LITE, "gemini-2.0-flash-lite", 0.00004, 1_000_000,
+                ["cheapest", "classification", "notifications"],
+                [TaskType.MATCHING, TaskType.DISCUSSION_MODERATION],
+                api_key_env="GEMINI_API_KEY",
+            ),
+            ModelProvider.OPENROUTER_FREE: ModelConfig(
+                ModelProvider.OPENROUTER_FREE, "meta-llama/llama-3.3-70b-instruct:free",
+                0.0, 128_000,
+                ["free", "light reasoning", "high volume"],
+                [TaskType.MATCHING, TaskType.FIELD_FEEDBACK_ANALYSIS],
+                api_key_env="OPENROUTER_API_KEY", is_free=True,
             ),
         }
 
-    def _init_fallbacks(self) -> Dict[ModelProvider, List[ModelProvider]]:
-        return {
-            ModelProvider.OPENAI_GPT4:      [ModelProvider.ANTHROPIC_CLAUDE, ModelProvider.OPENAI_GPT4_MINI],
-            ModelProvider.ANTHROPIC_CLAUDE: [ModelProvider.OPENAI_GPT4, ModelProvider.ANTHROPIC_HAIKU],
-            ModelProvider.OPENAI_GPT4_MINI: [ModelProvider.ANTHROPIC_HAIKU],
-            ModelProvider.ANTHROPIC_HAIKU:  [ModelProvider.OPENAI_GPT4_MINI],
-        }
-
     def select_model(self, request: AIRequest) -> ModelConfig:
-        if request.user_context.subscription_tier == SubscriptionTier.FREE:
-            cheap = {TaskType.CHAT: ModelProvider.OPENAI_GPT4_MINI,
-                     TaskType.TOUR_GUIDE: ModelProvider.OPENAI_GPT4_MINI,
-                     TaskType.EMBEDDINGS: ModelProvider.COHERE_EMBED}
-            return self.model_configs[cheap.get(request.task_type, ModelProvider.ANTHROPIC_HAIKU)]
-        provider = self.TASK_MAP.get(request.task_type, ModelProvider.OPENAI_GPT4_MINI)
-        return self.model_configs[provider]
-
-    def get_fallback_model(self, failed: ModelProvider) -> Optional[ModelConfig]:
-        fallbacks = self.fallback_chain.get(failed, [])
-        return self.model_configs.get(fallbacks[0]) if fallbacks else None
+        """Convenience: the first (preferred) model in the request's fallback chain."""
+        return self.select_chain(request)[0]
 
 
 # ============================================================================
@@ -1350,18 +1413,18 @@ class AICommandLayer:
         prompt       = await self.prompt_engine.build_prompt(
             request.task_type, context, request.user_context.role
         )
-        model_config = self.model_router.select_model(request)
-        response     = await self._execute_with_retry(model_config, prompt, request)
+        chain    = self.model_router.select_chain(request)
+        response = await self._execute_with_retry(chain, prompt, request)
 
         response.credits_consumed = CreditCost.cost_for(request.task_type)
         elapsed = (datetime.now() - start).total_seconds() * 1000
         await self._log(request, response, elapsed)
         return response
 
-    async def _execute_with_retry(self, model_config: ModelConfig,
-                                   prompt: str, request: AIRequest,
-                                   max_retries: int = 2) -> AIResponse:
-        for attempt in range(max_retries + 1):
+    async def _execute_with_retry(self, chain: List[ModelConfig],
+                                  prompt: str, request: AIRequest) -> AIResponse:
+        last_exc: Optional[Exception] = None
+        for attempt, model_config in enumerate(chain):
             try:
                 output = await self._call_llm(model_config, prompt, request)
                 return AIResponse(
@@ -1372,15 +1435,13 @@ class AICommandLayer:
                     cost=round((output["tokens"] / 1000) * model_config.cost_per_1k_tokens, 6),
                     confidence_score=output.get("confidence", 1.0),
                     execution_time_ms=output["duration_ms"],
-                    metadata={"attempt": attempt + 1},
+                    metadata={"attempt": attempt + 1,
+                              "provider": model_config.provider.value},
                 )
-            except Exception as exc:
-                if attempt < max_retries:
-                    fb = self.model_router.get_fallback_model(model_config.provider)
-                    if fb:
-                        model_config = fb
-                        continue
-                raise exc
+            except Exception as exc:  # noqa: BLE001 — try next model in chain
+                last_exc = exc
+                continue
+        raise last_exc if last_exc else RuntimeError("empty model chain")
 
     async def _call_llm(self, model_config: ModelConfig, prompt: str,
                          request: AIRequest) -> Dict:
