@@ -126,39 +126,47 @@ app.add_middleware(
 # AUTHENTICATION DEPENDENCY
 # ============================================================================
 
-async def get_user_context(request: Request) -> UserContext:
-    """
-    Extract and validate the current user from the request.
+# Auth config (env-driven).
+#   SECRET_KEY       -- HS256 signing key shared with the token issuer (Node backend).
+#   JWT_ALGORITHM    -- defaults to HS256.
+#   ALLOW_DEMO_AUTH  -- when true (default) requests WITHOUT a token fall back to the
+#                       demo context so local dev keeps working. Set to "false" in
+#                       production so anonymous requests are rejected. A request WITH a
+#                       token is ALWAYS validated regardless of this flag.
+SECRET_KEY = os.getenv("SECRET_KEY")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
 
-    Production implementation:
-      1. Read Authorization header -> "Bearer <jwt_token>"
-      2. Decode JWT using python-jose + SECRET_KEY
-      3. Extract user_id from payload
-      4. Query users + billing tables from PostgreSQL
-      5. Build and return UserContext
+# Tolerant aliases so tokens minted by the Node backend map onto our enums.
+_ROLE_ALIASES = {
+    "founder": UserRole.FOUNDER,
+    "collaborator": UserRole.BUILDER,
+    "builder": UserRole.BUILDER,
+    "investor": UserRole.INVESTOR,
+    "organisation": UserRole.ACCELERATOR_MGR,
+    "organization": UserRole.ACCELERATOR_MGR,
+    "accelerator_manager": UserRole.ACCELERATOR_MGR,
+    "admin": UserRole.ADMIN,
+}
 
-    Current implementation:
-      Returns a demo Founder Pro context so every endpoint works
-      immediately without auth infrastructure. Replace this before
-      going to production.
 
-    To add real auth, install python-jose:
-      pip install python-jose[cryptography] passlib[bcrypt]
-    """
-    # ── Production: uncomment and complete ────────────────────────────────
-    # from jose import JWTError, jwt
-    # token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    # if not token:
-    #     raise HTTPException(status_code=401, detail="Missing authentication token")
-    # try:
-    #     payload = jwt.decode(token, os.getenv("SECRET_KEY"), algorithms=["HS256"])
-    #     user_id = payload.get("sub")
-    # except JWTError:
-    #     raise HTTPException(status_code=401, detail="Invalid token")
-    # user = await fetch_user_from_db(user_id)
-    # return build_user_context(user)
-    # ── End production block ──────────────────────────────────────────────
+def _role_from_claim(value: Any) -> UserRole:
+    if isinstance(value, str):
+        return _ROLE_ALIASES.get(value.strip().lower(), UserRole.FOUNDER)
+    return UserRole.FOUNDER
 
+
+def _tier_from_claim(value: Any) -> SubscriptionTier:
+    if isinstance(value, str):
+        try:
+            return SubscriptionTier(value.strip().lower())
+        except ValueError:
+            pass
+    return SubscriptionTier.FREE
+
+
+def _demo_user_context() -> UserContext:
+    """Demo Founder Pro context for local dev / anonymous requests (ALLOW_DEMO_AUTH)."""
     return UserContext(
         user_id="demo_user_001",
         role=UserRole.FOUNDER,
@@ -177,6 +185,110 @@ async def get_user_context(request: Request) -> UserContext:
         has_revenue=False,
         beta_users_count=0,
     )
+
+
+async def get_user_context(request: Request) -> UserContext:
+    """
+    Extract and validate the current user from the request.
+
+      1. Read Authorization header -> "Bearer <jwt_token>"
+      2. Decode + verify the JWT (HS256) with SECRET_KEY (python-jose)
+      3. Build a UserContext from the token claims
+
+    A request WITH a token is always validated (401 on missing/invalid).
+    A request WITHOUT a token falls back to the demo context only when
+    ALLOW_DEMO_AUTH is enabled (set it to "false" in production).
+
+    NOTE: operational fields (credits, team_size, ...) are read from the token
+    claims here. A fuller implementation would hydrate them from the users +
+    billing tables in PostgreSQL keyed by `sub`; see database_schema.py.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:].strip() if auth_header[:7].lower() == "bearer " else ""
+
+    if not token:
+        if ALLOW_DEMO_AUTH:
+            logger.warning("auth_demo_fallback", reason="no_token")
+            return _demo_user_context()
+        raise HTTPException(status_code=401, detail="Missing authentication token")
+
+    if not SECRET_KEY:
+        # A token was supplied but the server can't verify it.
+        logger.error("auth_misconfigured", reason="SECRET_KEY not set")
+        raise HTTPException(status_code=500, detail="Authentication is not configured")
+
+    try:
+        from jose import JWTError, jwt
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user_id = payload.get("sub") or payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token missing subject claim")
+
+    def _int(key: str, default: int) -> int:
+        try:
+            return int(payload.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    return UserContext(
+        user_id=str(user_id),
+        role=_role_from_claim(payload.get("role")),
+        subscription_tier=_tier_from_claim(
+            payload.get("subscription_tier") or payload.get("tier")
+        ),
+        credits_remaining=_int("credits_remaining", _int("credits", 0)),
+        project_id=payload.get("project_id"),
+        project_stage=payload.get("project_stage"),
+        industry=payload.get("industry"),
+        tech_stack=payload.get("tech_stack") or [],
+        past_feedback=[],
+        training_progress=payload.get("training_progress") or {"completion_percentage": 0},
+        time_logged_today=_int("time_logged_today", 0),
+        tasks_completed_week=_int("tasks_completed_week", 0),
+        days_since_update=_int("days_since_update", 0),
+        team_size=_int("team_size", 1),
+        has_revenue=bool(payload.get("has_revenue", False)),
+        beta_users_count=_int("beta_users_count", 0),
+    )
+
+
+# ============================================================================
+# DATABASE DEPENDENCY
+# ============================================================================
+
+# Lazily-created engine + session factory (shared across requests). The engine
+# is only constructed on first DB use so the app still imports without a DB.
+_db_engine = None
+_DBSession = None
+
+
+def _db_session_factory():
+    global _db_engine, _DBSession
+    if _DBSession is None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        _db_engine = create_engine(
+            os.getenv("DATABASE_URL", "postgresql://techit:password@postgres:5432/techit_db"),
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=5,
+        )
+        _DBSession = sessionmaker(bind=_db_engine, expire_on_commit=False)
+    return _DBSession
+
+
+def get_db():
+    """FastAPI dependency yielding a SQLAlchemy session (closed after the request)."""
+    Session = _db_session_factory()
+    db = Session()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 # ============================================================================
@@ -834,13 +946,45 @@ async def submit_problem(
 async def get_problems_board(
     limit: int = 20,
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
-    """Global Problems Board -- ranked by priority score. 0 credits, Free+"""
-    # Production: SELECT * FROM problem_nodes ORDER BY priority_score DESC LIMIT :limit
+    """Global Problems Board -- verified problems ranked by priority score. 0 credits, Free+"""
+    from database_schema import ProblemNode
+
+    capped = min(max(limit, 1), 100)
+    try:
+        rows = (
+            db.query(ProblemNode)
+            .filter(ProblemNode.verified.is_(True))
+            .order_by(ProblemNode.priority_score.desc())
+            .limit(capped)
+            .all()
+        )
+    except Exception as e:  # noqa: BLE001 -- degrade rather than 500 the board
+        logger.error("problems_board_query_failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Problems board temporarily unavailable")
+
     return {
-        "message": "Global Problems Board -- query problem_nodes ordered by priority_score DESC",
-        "limit": limit,
-        "query": "SELECT * FROM problem_nodes WHERE verified=true ORDER BY priority_score DESC",
+        "problems": [
+            {
+                "id": str(p.id),
+                "title": p.title,
+                "description": p.description,
+                "category": p.category,
+                "urgency": p.urgency,
+                "location": p.location,
+                "priority_score": float(p.priority_score or 0),
+                "impact_score": float(p.impact_score or 0),
+                "engagement_count": p.engagement_count or 0,
+                "sdg_alignment": p.sdg_alignment or [],
+                "tags": p.tags or [],
+                "is_ai_discovered": bool(p.is_ai_discovered),
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in rows
+        ],
+        "count": len(rows),
+        "limit": capped,
     }
 
 
@@ -948,12 +1092,47 @@ async def generate_grant(
 
 
 @app.get("/api/v1/solutions/impact/global", tags=["Idea & Solution Hub"])
-async def global_impact(user: UserContext = Depends(get_user_context)):
-    """Global Impact Dashboard -- live metrics. 0 credits, Free+"""
-    # Production: query impact_snapshots + solution_deployments aggregates
+async def global_impact(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Global Impact Dashboard -- live aggregates over deployments + impact snapshots. 0 credits, Free+"""
+    from sqlalchemy import func
+    from database_schema import (
+        ProblemNode, SolutionProject, SolutionDeployment, ImpactSnapshot,
+    )
+
+    try:
+        active_problems = db.query(func.count(ProblemNode.id)).filter(
+            ProblemNode.verified.is_(True)
+        ).scalar() or 0
+        active_solutions = db.query(func.count(SolutionProject.id)).scalar() or 0
+        active_deployments = db.query(func.count(SolutionDeployment.id)).filter(
+            SolutionDeployment.status == "active"
+        ).scalar() or 0
+        total_beneficiaries = db.query(
+            func.coalesce(func.sum(SolutionDeployment.beneficiaries_reached), 0)
+        ).scalar() or 0
+        # Distinct deployment regions (drop NULLs) → country/region list.
+        countries = [
+            r[0] for r in db.query(SolutionDeployment.region)
+            .filter(SolutionDeployment.region.isnot(None))
+            .distinct().all()
+        ]
+        funds_deployed_usd = db.query(
+            func.coalesce(func.sum(ImpactSnapshot.funds_deployed_usd), 0)
+        ).scalar() or 0
+    except Exception as e:  # noqa: BLE001
+        logger.error("global_impact_query_failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Global impact data temporarily unavailable")
+
     return IdeaSolutionHubService(brain).get_global_impact_dashboard(
-        active_problems=0, active_solutions=0, active_deployments=0,
-        total_beneficiaries=0, countries=[], funds_deployed_usd=0.0,
+        active_problems=int(active_problems),
+        active_solutions=int(active_solutions),
+        active_deployments=int(active_deployments),
+        total_beneficiaries=int(total_beneficiaries),
+        countries=countries,
+        funds_deployed_usd=float(funds_deployed_usd),
     )
 
 
@@ -1091,20 +1270,71 @@ async def embed_idea(
 # ============================================================================
 
 @app.get("/api/v1/credits/summary", tags=["Billing"])
-async def credits_summary(user: UserContext = Depends(get_user_context)):
+async def credits_summary(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
     """
-    Current credit balance and usage summary. 0 credits, Free+
+    Current credit balance and usage summary from credit_ledger + credit_purchases.
+    0 credits, Free+
+    """
+    from sqlalchemy import func
+    from database_schema import CreditLedger, CreditPurchase
 
-    Production: fetch UserBillingState from billing DB tables.
-    """
+    try:
+        latest = (
+            db.query(CreditLedger)
+            .filter(CreditLedger.user_id == user.user_id)
+            .order_by(CreditLedger.created_at.desc())
+            .first()
+        )
+        balance = latest.credits_after if latest else user.credits_remaining
+
+        spent = db.query(func.coalesce(func.sum(CreditLedger.credits_delta), 0)).filter(
+            CreditLedger.user_id == user.user_id,
+            CreditLedger.credits_delta < 0,
+        ).scalar() or 0
+
+        credits_purchased = db.query(func.coalesce(func.sum(CreditPurchase.credits_qty), 0)).filter(
+            CreditPurchase.user_id == user.user_id,
+            CreditPurchase.status == "completed",
+        ).scalar() or 0
+
+        usd_spent = db.query(func.coalesce(func.sum(CreditPurchase.amount_usd), 0)).filter(
+            CreditPurchase.user_id == user.user_id,
+            CreditPurchase.status == "completed",
+        ).scalar() or 0
+
+        recent = (
+            db.query(CreditLedger)
+            .filter(CreditLedger.user_id == user.user_id)
+            .order_by(CreditLedger.created_at.desc())
+            .limit(10)
+            .all()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error("credits_summary_query_failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Credit summary temporarily unavailable")
+
     return {
-        "user_id":             user.user_id,
-        "credits_remaining":   user.credits_remaining,
-        "subscription_tier":   user.subscription_tier.value,
-        "message": (
-            "Production: query credit_ledger + credit_purchases tables. "
-            "See billing_system.py HybridCreditEngine."
-        ),
+        "user_id":            user.user_id,
+        "subscription_tier":  user.subscription_tier.value,
+        "balance":            int(balance or 0),
+        "credits_purchased":  int(credits_purchased),
+        "credits_spent":      abs(int(spent)),
+        "usd_spent":          float(usd_spent),
+        "recent_transactions": [
+            {
+                "id":            str(t.id),
+                "event_type":    t.event_type.value if hasattr(t.event_type, "value") else str(t.event_type),
+                "credits_delta": t.credits_delta,
+                "credits_after": t.credits_after,
+                "task_type":     t.task_type,
+                "description":   t.description,
+                "created_at":    t.created_at.isoformat() if t.created_at else None,
+            }
+            for t in recent
+        ],
     }
 
 
@@ -1136,22 +1366,78 @@ async def check_paywall(
 @app.post("/api/v1/webhooks/stripe", tags=["Billing"])
 async def stripe_webhook(request: Request):
     """
-    Stripe webhook handler.
-    Production: verify signature, handle checkout.session.completed,
-    update credit_purchases + credit_ledger tables.
+    Stripe webhook handler with signature verification.
+
+    Verifies the `stripe-signature` header against STRIPE_WEBHOOK_SECRET, then
+    dispatches on event type. `checkout.session.completed` records a PAYG credit
+    purchase (idempotent on the Stripe id).
     """
-    # Production:
-    # import stripe
-    # payload = await request.body()
-    # sig_header = request.headers.get("stripe-signature")
-    # try:
-    #     event = stripe.Webhook.construct_event(
-    #         payload, sig_header, os.getenv("STRIPE_WEBHOOK_SECRET")
-    #     )
-    # except stripe.error.SignatureVerificationError:
-    #     raise HTTPException(status_code=400, detail="Invalid signature")
-    # Handle event.type ...
-    return {"received": True}
+    import stripe
+
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+    if not webhook_secret:
+        logger.error("stripe_webhook_misconfigured", reason="STRIPE_WEBHOOK_SECRET not set")
+        raise HTTPException(status_code=500, detail="Stripe webhook is not configured")
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except ValueError:
+        # Malformed payload
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    event_type = event.get("type", "")
+    obj = event.get("data", {}).get("object", {}) or {}
+
+    # Process known events. Failures here are logged but still return 200 so
+    # Stripe doesn't retry indefinitely once the signature is verified.
+    try:
+        if event_type == "checkout.session.completed":
+            _record_credit_purchase(obj)
+        else:
+            logger.info("stripe_webhook_ignored", event_type=event_type)
+    except Exception as e:  # noqa: BLE001
+        logger.error("stripe_webhook_processing_failed", event_type=event_type, error=str(e))
+
+    return {"received": True, "event_type": event_type}
+
+
+def _record_credit_purchase(session_obj: Dict[str, Any]) -> None:
+    """Idempotently record a PAYG credit purchase from a completed checkout session."""
+    from database_schema import CreditPurchase
+
+    stripe_id = session_obj.get("id")
+    metadata = session_obj.get("metadata", {}) or {}
+    user_id = metadata.get("user_id")
+    credits_qty = int(metadata.get("credits", 0) or 0)
+    amount_usd = (session_obj.get("amount_total", 0) or 0) / 100.0  # cents -> USD
+
+    if not (stripe_id and user_id and credits_qty > 0):
+        logger.warning("stripe_checkout_missing_fields", stripe_id=stripe_id, user_id=user_id)
+        return
+
+    Session = _db_session_factory()
+    db = Session()
+    try:
+        exists = db.query(CreditPurchase).filter(CreditPurchase.stripe_id == stripe_id).first()
+        if exists:
+            logger.info("stripe_checkout_already_recorded", stripe_id=stripe_id)
+            return
+        db.add(CreditPurchase(
+            user_id=user_id,
+            credits_qty=credits_qty,
+            amount_usd=amount_usd,
+            stripe_id=stripe_id,
+            status="completed",
+        ))
+        db.commit()
+        logger.info("stripe_credit_purchase_recorded", user_id=user_id, credits=credits_qty)
+    finally:
+        db.close()
 
 
 # ============================================================================
