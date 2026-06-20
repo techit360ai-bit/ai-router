@@ -106,9 +106,13 @@ Also: Stripe webhook signature verification is commented out in `main.py`. Enabl
 | Celery Beat | — | 14 scheduled tasks |
 | Flower | 5555 | Celery monitor |
 
-### Auth (incomplete)
+### Auth
 
-`get_user_context()` in `main.py` returns a hard-coded demo `UserContext`. The production JWT path is commented out inline. When implementing: decode HS256 JWT with `SECRET_KEY`, query `users` + billing tables, build `UserContext`. Dependencies: `python-jose[cryptography]` and `passlib[bcrypt]` are already in `requirements.txt`.
+`get_user_context()` in `main.py` decodes the `Authorization: Bearer <jwt>` header with HS256 and the shared platform secret. Order: read `JWT_SECRET` first (canonical, matches BACKEND repo both on `main` and `feat/messaging-backend`), fall back to `SECRET_KEY` (legacy alias) so existing deployments keep booting.
+
+Demo-auth fallback (`ALLOW_DEMO_AUTH=true`) returns a fake Founder Pro user when no token is present. **Forbidden** when `ENVIRONMENT` is `"production"` or `"staging"` — the module-level guardrail at the top of `main.py` raises on import so the service refuses to boot.
+
+Operational fields (credits, team_size, …) are read from the JWT claims today; the production path will hydrate them from PostgreSQL keyed by `sub` (TODO). Dependencies: `python-jose[cryptography]` and `passlib[bcrypt]` are already in `requirements.txt`.
 
 ### Agent groups (34 total)
 
@@ -128,9 +132,13 @@ Defined in `Techit Network All Agents Master Prompts (1).md`. The master prompts
 
 ### Environment variables
 
-Minimum required to run locally: `SECRET_KEY`, `POSTGRES_PASSWORD`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. Generate `SECRET_KEY` with:
+Minimum required to run locally: `JWT_SECRET` (or legacy `SECRET_KEY`), `POSTGRES_PASSWORD`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. Generate `JWT_SECRET` with:
 ```bash
 python3 -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-Full list: `DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COHERE_API_KEY`, `SECRET_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `PINECONE_API_KEY`, `AWS_S3_BUCKET`, `SENTRY_DSN`, `ELEVENLABS_API_KEY`.
+`JWT_SECRET` must match the value used by BACKEND/main (Node `jsonwebtoken`) and BACKEND/feat/messaging-backend (Go `jwt/v5`) so tokens issued by the platform verify here.
+
+`ENVIRONMENT` defaults to `"development"`. Set to `"staging"` or `"production"` and the demo-auth guardrail will refuse to boot with `ALLOW_DEMO_AUTH=true`.
+
+Full list: `DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COHERE_API_KEY`, `JWT_SECRET` (alias `SECRET_KEY`), `ENVIRONMENT`, `ALLOW_DEMO_AUTH`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `PINECONE_API_KEY`, `AWS_S3_BUCKET`, `SENTRY_DSN`, `ELEVENLABS_API_KEY`.

@@ -127,15 +127,31 @@ app.add_middleware(
 # ============================================================================
 
 # Auth config (env-driven).
-#   SECRET_KEY       -- HS256 signing key shared with the token issuer (Node backend).
+#   JWT_SECRET       -- HS256 signing key shared with the token issuer (BACKEND repo,
+#                       both Node main and Go feat/messaging-backend). Canonical name
+#                       across all platform services as of 2026-06-20.
+#   SECRET_KEY       -- legacy alias for JWT_SECRET. Honored as a fallback so existing
+#                       ai-router deployments keep booting; new deployments should set
+#                       JWT_SECRET instead.
 #   JWT_ALGORITHM    -- defaults to HS256.
 #   ALLOW_DEMO_AUTH  -- when true (default) requests WITHOUT a token fall back to the
-#                       demo context so local dev keeps working. Set to "false" in
-#                       production so anonymous requests are rejected. A request WITH a
-#                       token is ALWAYS validated regardless of this flag.
-SECRET_KEY = os.getenv("SECRET_KEY")
+#                       demo context so local dev keeps working. Forbidden when
+#                       ENVIRONMENT is "production" or "staging" (see startup guard
+#                       below). A request WITH a token is ALWAYS validated.
+#   ENVIRONMENT      -- "development" | "staging" | "production". Drives the demo-auth
+#                       guardrail.
+SECRET_KEY = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
+
+# Startup guardrail: refuse to boot if demo auth is wired up in a hardened
+# environment. Prevents the silent-anonymous-Founder-Pro footgun in prod.
+if ALLOW_DEMO_AUTH and ENVIRONMENT in {"production", "staging"}:
+    raise RuntimeError(
+        f"ALLOW_DEMO_AUTH=true is forbidden in ENVIRONMENT={ENVIRONMENT}. "
+        "Unset ALLOW_DEMO_AUTH or set it to false before starting the service."
+    )
 
 # Tolerant aliases so tokens minted by the Node backend map onto our enums.
 _ROLE_ALIASES = {
@@ -192,7 +208,8 @@ async def get_user_context(request: Request) -> UserContext:
     Extract and validate the current user from the request.
 
       1. Read Authorization header -> "Bearer <jwt_token>"
-      2. Decode + verify the JWT (HS256) with SECRET_KEY (python-jose)
+      2. Decode + verify the JWT (HS256) with JWT_SECRET (python-jose).
+         Uses SECRET_KEY only if JWT_SECRET is unset (legacy alias).
       3. Build a UserContext from the token claims
 
     A request WITH a token is always validated (401 on missing/invalid).
@@ -214,7 +231,7 @@ async def get_user_context(request: Request) -> UserContext:
 
     if not SECRET_KEY:
         # A token was supplied but the server can't verify it.
-        logger.error("auth_misconfigured", reason="SECRET_KEY not set")
+        logger.error("auth_misconfigured", reason="JWT_SECRET/SECRET_KEY not set")
         raise HTTPException(status_code=500, detail="Authentication is not configured")
 
     try:
