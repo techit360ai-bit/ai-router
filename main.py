@@ -698,13 +698,62 @@ async def investor_heatmap(user: UserContext = Depends(get_user_context)):
 # WORKSPACE AI  (task suggestions, code review, sprint planning)
 # ============================================================================
 
+def _extract_bearer_token(request: Request) -> Optional[str]:
+    """Pull the raw Bearer off the request so we can forward it to BACKEND/api/mcp.
+    Returns None when missing — endpoints that depend on MCP must decide
+    whether to degrade gracefully or raise 401."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header[:7].lower() == "bearer ":
+        token = auth_header[7:].strip()
+        return token or None
+    return None
+
+
 @app.post("/api/v1/workspace/tasks/suggest", tags=["Workspace"])
 async def workspace_suggest_tasks(
     body: Dict[str, Any],
+    request: Request,
     user: UserContext = Depends(get_user_context),
 ):
-    """AI task suggestions for the workspace. 0 credits."""
-    return await WorkspaceAIService(brain).suggest_tasks(user, body)
+    """AI task suggestions for the workspace. 0 credits.
+
+    Forwards the caller's Bearer token to BACKEND/api/mcp so suggestions are
+    tool-aware (catalogue passed into the agent's prompt context)."""
+    return await WorkspaceAIService(brain).suggest_tasks(
+        user, body, user_token=_extract_bearer_token(request),
+    )
+
+
+@app.get("/api/v1/workspace/tools", tags=["Workspace"])
+async def workspace_list_tools(
+    request: Request,
+    user: UserContext = Depends(get_user_context),
+):
+    """List plugin tools the user can invoke. 0 credits. Requires Bearer token."""
+    token = _extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Bearer token required to list MCP tools")
+    return await WorkspaceAIService(brain).list_tools(user, token)
+
+
+@app.post("/api/v1/workspace/tools/invoke", tags=["Workspace"])
+async def workspace_invoke_tool(
+    body: Dict[str, Any],
+    request: Request,
+    user: UserContext = Depends(get_user_context),
+):
+    """Invoke a plugin tool as the authenticated user. 0 credits.
+    Body: { plugin, tool, params? }. Forwards the caller's Bearer to
+    BACKEND/api/mcp — role enforcement + audit happen there."""
+    token = _extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Bearer token required to invoke MCP tool")
+    plugin = (body.get("plugin") or "").strip()
+    tool = (body.get("tool") or "").strip()
+    if not plugin or not tool:
+        raise HTTPException(status_code=400, detail="plugin and tool are required")
+    params = body.get("params") or {}
+    return await WorkspaceAIService(brain).invoke_tool(user, token, plugin, tool, params)
 
 
 @app.post("/api/v1/workspace/code/review", tags=["Workspace"])

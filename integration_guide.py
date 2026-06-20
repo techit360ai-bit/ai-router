@@ -312,13 +312,33 @@ class WorkspaceAIService:
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
 
-    async def suggest_tasks(self, user_context: UserContext, workspace_data: Dict) -> Dict:
-        """POST /api/v1/workspace/tasks/suggest -- 0 credits"""
-        ctx = AgentContext(user_context=user_context,
-                           trigger_event={"workspace_data": workspace_data})
+    async def suggest_tasks(
+        self,
+        user_context: UserContext,
+        workspace_data: Dict,
+        user_token: Optional[str] = None,
+    ) -> Dict:
+        """POST /api/v1/workspace/tasks/suggest -- 0 credits.
+
+        When the caller forwards their bearer token, we pull the MCP tool
+        catalogue from BACKEND/api/mcp and include it in the agent's prompt
+        context so WorkspaceAssistantAgent's suggestions become tool-aware.
+        Without a token, the agent runs without that context (no regression).
+        """
+        available_tools = await self._safe_list_tools(user_token)
+        ctx = AgentContext(
+            user_context=user_context,
+            trigger_event={
+                "workspace_data": workspace_data,
+                "available_tools": available_tools,
+            },
+        )
         r   = await self.brain.trigger_agent(AgentType.WORKSPACE_ASSISTANT, ctx)
-        return {"suggestions": r.output.get("task_suggestions"),
-                "next_actions": r.recommendations}
+        return {
+            "suggestions": r.output.get("task_suggestions"),
+            "next_actions": r.recommendations,
+            "available_tools": available_tools,
+        }
 
     async def review_code(self, user_context: UserContext, code_payload: Dict) -> Dict:
         """POST /api/v1/workspace/code/review -- 1 credit, Founder Pro+"""
@@ -333,6 +353,50 @@ class WorkspaceAIService:
                            trigger_event={"workspace_data": sprint_data, "mode": "sprint_planning"})
         r   = await self.brain.trigger_agent(AgentType.WORKSPACE_ASSISTANT, ctx)
         return r.output
+
+    async def list_tools(self, user_context: UserContext, user_token: str) -> Dict[str, Any]:
+        """GET /api/v1/workspace/tools -- 0 credits.
+
+        Catalogue of plugin tools the user can invoke via BACKEND/api/mcp.
+        Forwarded bearer is the only authority — BACKEND verifies and audits.
+        """
+        from mcp_client import MCPError, get_mcp_client
+        try:
+            tools = await get_mcp_client().list_tools(user_token=user_token)
+            return {"ok": True, "tools": tools}
+        except MCPError as exc:
+            return {"ok": False, "error": str(exc), "tools": []}
+
+    async def invoke_tool(
+        self,
+        user_context: UserContext,
+        user_token: str,
+        plugin: str,
+        tool: str,
+        params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """POST /api/v1/workspace/tools/invoke -- 0 credits.
+
+        Executes a plugin tool as the authenticated user (no service identity).
+        BACKEND/api/mcp enforces role and audit using the same JWT_SECRET this
+        service verifies tokens with.
+        """
+        from mcp_client import MCPError, get_mcp_client
+        try:
+            return await get_mcp_client().invoke(plugin, tool, params, user_token=user_token)
+        except MCPError as exc:
+            return {"ok": False, "error": {"code": "mcp_failed", "error": str(exc)}}
+
+    async def _safe_list_tools(self, user_token: Optional[str]) -> List[Dict[str, Any]]:
+        """Best-effort tool fetch for prompt-context injection. Never raises."""
+        if not user_token:
+            return []
+        from mcp_client import MCPError, get_mcp_client
+        try:
+            return await get_mcp_client().list_tools(user_token=user_token)
+        except MCPError as exc:
+            logger.warning("mcp_tools_unavailable_for_prompt", error=str(exc))
+            return []
 
 
 # ============================================================================
