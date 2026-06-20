@@ -2675,24 +2675,32 @@ class ProjectService:
     ) -> Dict[str, Any]:
         """
         POST /api/v1/founder/projects -- 0 credits.
-        Body: { title, tagline?, industry?, stage? }. Production: INSERT projects.
+        Body: { title, tagline?, industry?, stage?, hackathonId?, teamId? }.
+        Production: INSERT projects (+ project_origins row when hackathonId+teamId
+        are present, so the venture knows it was promoted from a hackathon team).
         """
         title = (body.get("title") or "").strip()
         if not title:
             return {"ok": False, "error": "title_required"}
-        return {
-            "ok": True,
-            "project": {
-                "id": body.get("id", "proj_new"),
-                "title": title,
-                "tagline": body.get("tagline", ""),
-                "industry": body.get("industry", ""),
-                "stage": body.get("stage", "idea"),
-                "isPrimary": False,
-                "gsisScore": 0,
-                "hasWorkspace": False,
-            },
+        hackathon_id = body.get("hackathonId") or body.get("hackathon_id")
+        team_id = body.get("teamId") or body.get("team_id")
+        project: Dict[str, Any] = {
+            "id": body.get("id", "proj_new"),
+            "title": title,
+            "tagline": body.get("tagline", ""),
+            "industry": body.get("industry", ""),
+            "stage": body.get("stage", "idea"),
+            "isPrimary": False,
+            "gsisScore": 0,
+            "hasWorkspace": False,
         }
+        if hackathon_id and team_id:
+            project["origin"] = {
+                "kind": "hackathon_promote",
+                "hackathonId": hackathon_id,
+                "teamId": team_id,
+            }
+        return {"ok": True, "project": project}
 
     def _load_projects(self, user_context: UserContext) -> List[Dict[str, Any]]:
         # Production: SELECT id,title,tagline,industry,stage,gsis_score FROM projects
@@ -2996,6 +3004,32 @@ class HackathonService:
         team.update({"hasWorkspace": True, "projectId": project_id})
         store[team_id] = team
         return {"ok": True, "hackathonId": hackathon_id, "teamId": team_id, **ws}
+
+    async def report_team_to_organizers(
+        self, user_context: UserContext, hackathon_id: str, team_id: str, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/hackathons/{id}/teams/{tid}/report -- 0 credits.
+        Record a team report (idea/team/artifacts/stage + optional workspaceId)
+        on the team so org dashboards can surface it. Production: INSERT into
+        hackathon_team_reports keyed by (hackathon_id, team_id, created_at).
+        """
+        store = self._store(hackathon_id)
+        team = store.get(team_id) or self._new_team(team_id)
+        report = {
+            "workspaceId": body.get("workspaceId"),
+            "idea": body.get("idea"),
+            "team": body.get("team"),
+            "artifacts": body.get("artifacts"),
+            "stage": body.get("stage"),
+            "reportedBy": user_context.user_id,
+        }
+        # Keep last N reports per team; here N=10.
+        history = team.get("reports") or []
+        history.append(report)
+        team["reports"] = history[-10:]
+        store[team_id] = team
+        return {"ok": True, "hackathonId": hackathon_id, "teamId": team_id, "report": report}
 
     # ── helpers ───────────────────────────────────────────────────────────
     @staticmethod

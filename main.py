@@ -740,7 +740,10 @@ async def founder_create_project(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Create a new venture. 0 credits. Body: { title, tagline?, industry?, stage? }"""
+    """Create a new venture. 0 credits.
+    Body: { title, tagline?, industry?, stage?, hackathonId?, teamId? }.
+    hackathonId+teamId are recorded on the project's origin field when both are
+    provided, so a venture promoted from a hackathon knows where it came from."""
     return await ProjectService(brain).create_project(user, body)
 
 
@@ -849,6 +852,16 @@ async def hackathon_team_workspace(
 ):
     """Pipe the analyzed brief into a team workspace. 0 credits. Body: { projectId? }"""
     return await HackathonService(brain).provision_team_workspace(user, hackathon_id, team_id, body)
+
+
+@app.post("/api/v1/hackathons/{hackathon_id}/teams/{team_id}/report", tags=["Hackathon"])
+async def hackathon_team_report(
+    hackathon_id: str, team_id: str, body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Report a team's idea+artifacts to organizers (promote pipeline). 0 credits.
+    Body: { workspaceId?, idea?, team?, artifacts?, stage? }"""
+    return await HackathonService(brain).report_team_to_organizers(user, hackathon_id, team_id, body)
 
 
 # ============================================================================
