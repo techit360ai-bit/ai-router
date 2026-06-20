@@ -141,4 +141,19 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 
 `ENVIRONMENT` defaults to `"development"`. Set to `"staging"` or `"production"` and the demo-auth guardrail will refuse to boot with `ALLOW_DEMO_AUTH=true`.
 
-Full list: `DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COHERE_API_KEY`, `JWT_SECRET` (alias `SECRET_KEY`), `ENVIRONMENT`, `ALLOW_DEMO_AUTH`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `PINECONE_API_KEY`, `AWS_S3_BUCKET`, `SENTRY_DSN`, `ELEVENLABS_API_KEY`.
+Full list: `DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COHERE_API_KEY`, `JWT_SECRET` (alias `SECRET_KEY`), `ENVIRONMENT`, `ALLOW_DEMO_AUTH`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `PINECONE_API_KEY`, `AWS_S3_BUCKET`, `SENTRY_DSN`, `ELEVENLABS_API_KEY`, `MCP_BASE_URL`, `MCP_TIMEOUT`.
+
+### Plugin tools via BACKEND (MCP integration)
+
+Tool execution lives on BACKEND repo, branch `feat/plugins-mcp`, mounted at `/api/mcp` on the same Node Express service that serves `/api/auth`. ai-router reaches it through `mcp_client.MCPClient` (`mcp_client.py`).
+
+Auth: pass the END USER'S Bearer token to every client call; the client forwards it as-is. BACKEND verifies with the same `JWT_SECRET` this service uses, so role enforcement happens there using the user's authenticated identity — no service-to-service token, no shared SA.
+
+```python
+from mcp_client import get_mcp_client
+client = get_mcp_client()
+tools = await client.list_tools(user_token=ctx.bearer)
+result = await client.invoke('github', 'list_repositories', {}, user_token=ctx.bearer)
+```
+
+Environment: `MCP_BASE_URL` (defaults to `http://localhost:3000/api/mcp`), `MCP_TIMEOUT` seconds (default 10).
