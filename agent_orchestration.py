@@ -670,9 +670,16 @@ class RiskEvaluatorAgent(BaseAgent):
 class WorkspaceAssistantAgent(BaseAgent):
     async def execute(self, context: AgentContext) -> AgentResult:
         t0  = datetime.now()
+        trigger = context.trigger_event or {}
+        # available_tools comes from WorkspaceAIService.suggest_tasks when the
+        # caller forwards their Bearer token (it fetches the MCP catalogue from
+        # BACKEND/api/mcp). Threading it into input_data is what actually lets
+        # the LLM reference real tool names — without this forward, the F2
+        # wiring is data-in-context-die-there.
         ai  = await self._call_ai(
             TaskType.WORKSPACE_ASSISTANT,
-            {"workspace": (context.trigger_event or {}).get("workspace_data", {}),
+            {"workspace": trigger.get("workspace_data", {}),
+             "available_tools": trigger.get("available_tools", []),
              "user": context.user_context.to_prompt_context()},
             context.user_context,
         )
