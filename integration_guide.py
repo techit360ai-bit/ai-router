@@ -312,13 +312,33 @@ class WorkspaceAIService:
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
 
-    async def suggest_tasks(self, user_context: UserContext, workspace_data: Dict) -> Dict:
-        """POST /api/v1/workspace/tasks/suggest -- 0 credits"""
-        ctx = AgentContext(user_context=user_context,
-                           trigger_event={"workspace_data": workspace_data})
+    async def suggest_tasks(
+        self,
+        user_context: UserContext,
+        workspace_data: Dict,
+        user_token: Optional[str] = None,
+    ) -> Dict:
+        """POST /api/v1/workspace/tasks/suggest -- 0 credits.
+
+        When the caller forwards their bearer token, we pull the MCP tool
+        catalogue from BACKEND/api/mcp and include it in the agent's prompt
+        context so WorkspaceAssistantAgent's suggestions become tool-aware.
+        Without a token, the agent runs without that context (no regression).
+        """
+        available_tools = await self._safe_list_tools(user_token)
+        ctx = AgentContext(
+            user_context=user_context,
+            trigger_event={
+                "workspace_data": workspace_data,
+                "available_tools": available_tools,
+            },
+        )
         r   = await self.brain.trigger_agent(AgentType.WORKSPACE_ASSISTANT, ctx)
-        return {"suggestions": r.output.get("task_suggestions"),
-                "next_actions": r.recommendations}
+        return {
+            "suggestions": r.output.get("task_suggestions"),
+            "next_actions": r.recommendations,
+            "available_tools": available_tools,
+        }
 
     async def review_code(self, user_context: UserContext, code_payload: Dict) -> Dict:
         """POST /api/v1/workspace/code/review -- 1 credit, Founder Pro+"""
@@ -333,6 +353,50 @@ class WorkspaceAIService:
                            trigger_event={"workspace_data": sprint_data, "mode": "sprint_planning"})
         r   = await self.brain.trigger_agent(AgentType.WORKSPACE_ASSISTANT, ctx)
         return r.output
+
+    async def list_tools(self, user_context: UserContext, user_token: str) -> Dict[str, Any]:
+        """GET /api/v1/workspace/tools -- 0 credits.
+
+        Catalogue of plugin tools the user can invoke via BACKEND/api/mcp.
+        Forwarded bearer is the only authority — BACKEND verifies and audits.
+        """
+        from mcp_client import MCPError, get_mcp_client
+        try:
+            tools = await get_mcp_client().list_tools(user_token=user_token)
+            return {"ok": True, "tools": tools}
+        except MCPError as exc:
+            return {"ok": False, "error": str(exc), "tools": []}
+
+    async def invoke_tool(
+        self,
+        user_context: UserContext,
+        user_token: str,
+        plugin: str,
+        tool: str,
+        params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """POST /api/v1/workspace/tools/invoke -- 0 credits.
+
+        Executes a plugin tool as the authenticated user (no service identity).
+        BACKEND/api/mcp enforces role and audit using the same JWT_SECRET this
+        service verifies tokens with.
+        """
+        from mcp_client import MCPError, get_mcp_client
+        try:
+            return await get_mcp_client().invoke(plugin, tool, params, user_token=user_token)
+        except MCPError as exc:
+            return {"ok": False, "error": {"code": "mcp_failed", "error": str(exc)}}
+
+    async def _safe_list_tools(self, user_token: Optional[str]) -> List[Dict[str, Any]]:
+        """Best-effort tool fetch for prompt-context injection. Never raises."""
+        if not user_token:
+            return []
+        from mcp_client import MCPError, get_mcp_client
+        try:
+            return await get_mcp_client().list_tools(user_token=user_token)
+        except MCPError as exc:
+            logger.warning("mcp_tools_unavailable_for_prompt", error=str(exc))
+            return []
 
 
 # ============================================================================
@@ -2675,24 +2739,32 @@ class ProjectService:
     ) -> Dict[str, Any]:
         """
         POST /api/v1/founder/projects -- 0 credits.
-        Body: { title, tagline?, industry?, stage? }. Production: INSERT projects.
+        Body: { title, tagline?, industry?, stage?, hackathonId?, teamId? }.
+        Production: INSERT projects (+ project_origins row when hackathonId+teamId
+        are present, so the venture knows it was promoted from a hackathon team).
         """
         title = (body.get("title") or "").strip()
         if not title:
             return {"ok": False, "error": "title_required"}
-        return {
-            "ok": True,
-            "project": {
-                "id": body.get("id", "proj_new"),
-                "title": title,
-                "tagline": body.get("tagline", ""),
-                "industry": body.get("industry", ""),
-                "stage": body.get("stage", "idea"),
-                "isPrimary": False,
-                "gsisScore": 0,
-                "hasWorkspace": False,
-            },
+        hackathon_id = body.get("hackathonId") or body.get("hackathon_id")
+        team_id = body.get("teamId") or body.get("team_id")
+        project: Dict[str, Any] = {
+            "id": body.get("id", "proj_new"),
+            "title": title,
+            "tagline": body.get("tagline", ""),
+            "industry": body.get("industry", ""),
+            "stage": body.get("stage", "idea"),
+            "isPrimary": False,
+            "gsisScore": 0,
+            "hasWorkspace": False,
         }
+        if hackathon_id and team_id:
+            project["origin"] = {
+                "kind": "hackathon_promote",
+                "hackathonId": hackathon_id,
+                "teamId": team_id,
+            }
+        return {"ok": True, "project": project}
 
     def _load_projects(self, user_context: UserContext) -> List[Dict[str, Any]]:
         # Production: SELECT id,title,tagline,industry,stage,gsis_score FROM projects
@@ -2996,6 +3068,32 @@ class HackathonService:
         team.update({"hasWorkspace": True, "projectId": project_id})
         store[team_id] = team
         return {"ok": True, "hackathonId": hackathon_id, "teamId": team_id, **ws}
+
+    async def report_team_to_organizers(
+        self, user_context: UserContext, hackathon_id: str, team_id: str, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/hackathons/{id}/teams/{tid}/report -- 0 credits.
+        Record a team report (idea/team/artifacts/stage + optional workspaceId)
+        on the team so org dashboards can surface it. Production: INSERT into
+        hackathon_team_reports keyed by (hackathon_id, team_id, created_at).
+        """
+        store = self._store(hackathon_id)
+        team = store.get(team_id) or self._new_team(team_id)
+        report = {
+            "workspaceId": body.get("workspaceId"),
+            "idea": body.get("idea"),
+            "team": body.get("team"),
+            "artifacts": body.get("artifacts"),
+            "stage": body.get("stage"),
+            "reportedBy": user_context.user_id,
+        }
+        # Keep last N reports per team; here N=10.
+        history = team.get("reports") or []
+        history.append(report)
+        team["reports"] = history[-10:]
+        store[team_id] = team
+        return {"ok": True, "hackathonId": hackathon_id, "teamId": team_id, "report": report}
 
     # ── helpers ───────────────────────────────────────────────────────────
     @staticmethod
