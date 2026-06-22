@@ -127,15 +127,31 @@ app.add_middleware(
 # ============================================================================
 
 # Auth config (env-driven).
-#   SECRET_KEY       -- HS256 signing key shared with the token issuer (Node backend).
+#   JWT_SECRET       -- HS256 signing key shared with the token issuer (BACKEND repo,
+#                       both Node main and Go feat/messaging-backend). Canonical name
+#                       across all platform services as of 2026-06-20.
+#   SECRET_KEY       -- legacy alias for JWT_SECRET. Honored as a fallback so existing
+#                       ai-router deployments keep booting; new deployments should set
+#                       JWT_SECRET instead.
 #   JWT_ALGORITHM    -- defaults to HS256.
 #   ALLOW_DEMO_AUTH  -- when true (default) requests WITHOUT a token fall back to the
-#                       demo context so local dev keeps working. Set to "false" in
-#                       production so anonymous requests are rejected. A request WITH a
-#                       token is ALWAYS validated regardless of this flag.
-SECRET_KEY = os.getenv("SECRET_KEY")
+#                       demo context so local dev keeps working. Forbidden when
+#                       ENVIRONMENT is "production" or "staging" (see startup guard
+#                       below). A request WITH a token is ALWAYS validated.
+#   ENVIRONMENT      -- "development" | "staging" | "production". Drives the demo-auth
+#                       guardrail.
+SECRET_KEY = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
+
+# Startup guardrail: refuse to boot if demo auth is wired up in a hardened
+# environment. Prevents the silent-anonymous-Founder-Pro footgun in prod.
+if ALLOW_DEMO_AUTH and ENVIRONMENT in {"production", "staging"}:
+    raise RuntimeError(
+        f"ALLOW_DEMO_AUTH=true is forbidden in ENVIRONMENT={ENVIRONMENT}. "
+        "Unset ALLOW_DEMO_AUTH or set it to false before starting the service."
+    )
 
 # Tolerant aliases so tokens minted by the Node backend map onto our enums.
 _ROLE_ALIASES = {
@@ -266,6 +282,9 @@ async def get_user_context(request: Request) -> UserContext:
       4. Override role + subscription_tier + credits_remaining with DB values
          keyed by `sub` (closes ai-router #13) — a forged claim cannot bypass
          the paywall because the DB owns operational state.
+      2. Decode + verify the JWT (HS256) with JWT_SECRET (python-jose).
+         Uses SECRET_KEY only if JWT_SECRET is unset (legacy alias).
+      3. Build a UserContext from the token claims
 
     A request WITH a token is always validated (401 on missing/invalid).
     A request WITHOUT a token falls back to the demo context only when
@@ -282,6 +301,8 @@ async def get_user_context(request: Request) -> UserContext:
 
     if not SECRET_KEY:
         logger.error("auth_misconfigured", reason="SECRET_KEY not set")
+        # A token was supplied but the server can't verify it.
+        logger.error("auth_misconfigured", reason="JWT_SECRET/SECRET_KEY not set")
         raise HTTPException(status_code=500, detail="Authentication is not configured")
 
     try:
@@ -738,13 +759,62 @@ async def investor_heatmap(user: UserContext = Depends(get_user_context)):
 # WORKSPACE AI  (task suggestions, code review, sprint planning)
 # ============================================================================
 
+def _extract_bearer_token(request: Request) -> Optional[str]:
+    """Pull the raw Bearer off the request so we can forward it to BACKEND/api/mcp.
+    Returns None when missing — endpoints that depend on MCP must decide
+    whether to degrade gracefully or raise 401."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header[:7].lower() == "bearer ":
+        token = auth_header[7:].strip()
+        return token or None
+    return None
+
+
 @app.post("/api/v1/workspace/tasks/suggest", tags=["Workspace"])
 async def workspace_suggest_tasks(
     body: Dict[str, Any],
+    request: Request,
     user: UserContext = Depends(get_user_context),
 ):
-    """AI task suggestions for the workspace. 0 credits."""
-    return await WorkspaceAIService(brain).suggest_tasks(user, body)
+    """AI task suggestions for the workspace. 0 credits.
+
+    Forwards the caller's Bearer token to BACKEND/api/mcp so suggestions are
+    tool-aware (catalogue passed into the agent's prompt context)."""
+    return await WorkspaceAIService(brain).suggest_tasks(
+        user, body, user_token=_extract_bearer_token(request),
+    )
+
+
+@app.get("/api/v1/workspace/tools", tags=["Workspace"])
+async def workspace_list_tools(
+    request: Request,
+    user: UserContext = Depends(get_user_context),
+):
+    """List plugin tools the user can invoke. 0 credits. Requires Bearer token."""
+    token = _extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Bearer token required to list MCP tools")
+    return await WorkspaceAIService(brain).list_tools(user, token)
+
+
+@app.post("/api/v1/workspace/tools/invoke", tags=["Workspace"])
+async def workspace_invoke_tool(
+    body: Dict[str, Any],
+    request: Request,
+    user: UserContext = Depends(get_user_context),
+):
+    """Invoke a plugin tool as the authenticated user. 0 credits.
+    Body: { plugin, tool, params? }. Forwards the caller's Bearer to
+    BACKEND/api/mcp — role enforcement + audit happen there."""
+    token = _extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Bearer token required to invoke MCP tool")
+    plugin = (body.get("plugin") or "").strip()
+    tool = (body.get("tool") or "").strip()
+    if not plugin or not tool:
+        raise HTTPException(status_code=400, detail="plugin and tool are required")
+    params = body.get("params") or {}
+    return await WorkspaceAIService(brain).invoke_tool(user, token, plugin, tool, params)
 
 
 @app.post("/api/v1/workspace/code/review", tags=["Workspace"])
@@ -780,7 +850,10 @@ async def founder_create_project(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Create a new venture. 0 credits. Body: { title, tagline?, industry?, stage? }"""
+    """Create a new venture. 0 credits.
+    Body: { title, tagline?, industry?, stage?, hackathonId?, teamId? }.
+    hackathonId+teamId are recorded on the project's origin field when both are
+    provided, so a venture promoted from a hackathon knows where it came from."""
     return await ProjectService(brain).create_project(user, body)
 
 
@@ -889,6 +962,16 @@ async def hackathon_team_workspace(
 ):
     """Pipe the analyzed brief into a team workspace. 0 credits. Body: { projectId? }"""
     return await HackathonService(brain).provision_team_workspace(user, hackathon_id, team_id, body)
+
+
+@app.post("/api/v1/hackathons/{hackathon_id}/teams/{team_id}/report", tags=["Hackathon"])
+async def hackathon_team_report(
+    hackathon_id: str, team_id: str, body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Report a team's idea+artifacts to organizers (promote pipeline). 0 credits.
+    Body: { workspaceId?, idea?, team?, artifacts?, stage? }"""
+    return await HackathonService(brain).report_team_to_organizers(user, hackathon_id, team_id, body)
 
 
 # ============================================================================

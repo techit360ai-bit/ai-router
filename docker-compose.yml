@@ -35,8 +35,10 @@ services:
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
       - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
       - AWS_S3_BUCKET=${AWS_S3_BUCKET}
-      - ENVIRONMENT=development
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - JWT_SECRET=${JWT_SECRET:-${SECRET_KEY}}
       - SECRET_KEY=${SECRET_KEY}
+      - ALLOW_DEMO_AUTH=${ALLOW_DEMO_AUTH:-true}
       - SENTRY_DSN=${SENTRY_DSN}
       - PYTHONPATH=/app
     depends_on:
