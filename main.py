@@ -203,47 +203,10 @@ def _demo_user_context() -> UserContext:
     )
 
 
-async def get_user_context(request: Request) -> UserContext:
-    """
-    Extract and validate the current user from the request.
-
-      1. Read Authorization header -> "Bearer <jwt_token>"
-      2. Decode + verify the JWT (HS256) with JWT_SECRET (python-jose).
-         Uses SECRET_KEY only if JWT_SECRET is unset (legacy alias).
-      3. Build a UserContext from the token claims
-
-    A request WITH a token is always validated (401 on missing/invalid).
-    A request WITHOUT a token falls back to the demo context only when
-    ALLOW_DEMO_AUTH is enabled (set it to "false" in production).
-
-    NOTE: operational fields (credits, team_size, ...) are read from the token
-    claims here. A fuller implementation would hydrate them from the users +
-    billing tables in PostgreSQL keyed by `sub`; see database_schema.py.
-    """
-    auth_header = request.headers.get("Authorization", "")
-    token = auth_header[7:].strip() if auth_header[:7].lower() == "bearer " else ""
-
-    if not token:
-        if ALLOW_DEMO_AUTH:
-            logger.warning("auth_demo_fallback", reason="no_token")
-            return _demo_user_context()
-        raise HTTPException(status_code=401, detail="Missing authentication token")
-
-    if not SECRET_KEY:
-        # A token was supplied but the server can't verify it.
-        logger.error("auth_misconfigured", reason="JWT_SECRET/SECRET_KEY not set")
-        raise HTTPException(status_code=500, detail="Authentication is not configured")
-
-    try:
-        from jose import JWTError, jwt
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-
-    user_id = payload.get("sub") or payload.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Token missing subject claim")
-
+def _context_from_claim(user_id: str, payload: Dict[str, Any]) -> UserContext:
+    """Build a UserContext purely from JWT claims. Used as the source for
+    non-security-critical fields, and as the fallback when DB lookup misses
+    (newly-issued token, demo mode, DB unreachable)."""
     def _int(key: str, default: int) -> int:
         try:
             return int(payload.get(key, default))
@@ -270,6 +233,104 @@ async def get_user_context(request: Request) -> UserContext:
         has_revenue=bool(payload.get("has_revenue", False)),
         beta_users_count=_int("beta_users_count", 0),
     )
+
+
+def _hydrate_from_db(ctx: UserContext, db) -> UserContext:
+    """Override security-critical fields (role, subscription_tier,
+    credits_remaining) with DB values. Identity (user_id) and incidental
+    fields (project, industry, etc.) stay from claim — a forged claim
+    inflating `credits_remaining` cannot bypass the paywall because the DB
+    is authoritative for usage state.
+
+    DB unavailable or user not found → return ctx unchanged. The warning
+    log surfaces ops issues without blocking auth."""
+    from dataclasses import replace as dc_replace
+
+    try:
+        from database_schema import User as UserRow
+        from sqlalchemy import select
+        row = db.execute(
+            select(UserRow).where(UserRow.id == ctx.user_id)
+        ).scalar_one_or_none()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("user_db_hydrate_failed", user_id=ctx.user_id, error=str(exc))
+        return ctx
+
+    if row is None:
+        return ctx
+
+    def _enum_str(v: Any) -> str:
+        return v.value if hasattr(v, "value") else str(v)
+
+    return dc_replace(
+        ctx,
+        role=_role_from_claim(_enum_str(row.role)),
+        subscription_tier=_tier_from_claim(_enum_str(row.subscription_tier)),
+        credits_remaining=int(
+            (row.subscription_credits_remaining or 0) + (row.payg_credits_balance or 0)
+        ),
+    )
+
+
+async def get_user_context(request: Request) -> UserContext:
+    """
+    Extract and validate the current user from the request.
+
+      1. Read Authorization header -> "Bearer <jwt_token>"
+      2. Decode + verify the JWT (HS256) with SECRET_KEY (python-jose)
+      3. Build a UserContext from claims
+      4. Override role + subscription_tier + credits_remaining with DB values
+         keyed by `sub` (closes ai-router #13) — a forged claim cannot bypass
+         the paywall because the DB owns operational state.
+      2. Decode + verify the JWT (HS256) with JWT_SECRET (python-jose).
+         Uses SECRET_KEY only if JWT_SECRET is unset (legacy alias).
+      3. Build a UserContext from the token claims
+
+    A request WITH a token is always validated (401 on missing/invalid).
+    A request WITHOUT a token falls back to the demo context only when
+    ALLOW_DEMO_AUTH is enabled (forbidden in staging/production by C3 guard).
+    """
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:].strip() if auth_header[:7].lower() == "bearer " else ""
+
+    if not token:
+        if ALLOW_DEMO_AUTH:
+            logger.warning("auth_demo_fallback", reason="no_token")
+            return _demo_user_context()
+        raise HTTPException(status_code=401, detail="Missing authentication token")
+
+    if not SECRET_KEY:
+        logger.error("auth_misconfigured", reason="SECRET_KEY not set")
+        # A token was supplied but the server can't verify it.
+        logger.error("auth_misconfigured", reason="JWT_SECRET/SECRET_KEY not set")
+        raise HTTPException(status_code=500, detail="Authentication is not configured")
+
+    try:
+        from jose import JWTError, jwt
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user_id = payload.get("sub") or payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token missing subject claim")
+
+    ctx = _context_from_claim(str(user_id), payload)
+
+    # Hydrate from DB. We resolve the session lazily here (instead of via
+    # FastAPI Depends) so endpoints that use get_user_context don't have to
+    # change their signatures — the dependency surface stays the same.
+    try:
+        Session = _db_session_factory()
+        session = Session()
+        try:
+            ctx = _hydrate_from_db(ctx, session)
+        finally:
+            session.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("user_db_session_unavailable", user_id=str(user_id), error=str(exc))
+
+    return ctx
 
 
 # ============================================================================
