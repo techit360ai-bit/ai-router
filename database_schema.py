@@ -242,8 +242,8 @@ class Project(Base):
     decay_factor      = Column(Float, default=1.0)
 
     # Compliance & transparency
-    compliance_items   = Column(JSON, default={})
-    transparency_items = Column(JSON, default={})
+    compliance_items   = Column(JSON, default=lambda: {})
+    transparency_items = Column(JSON, default=lambda: {})
 
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
     updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -370,7 +370,7 @@ class PaywallHit(Base):
     paywall_copy   = Column(Text)
     upgrade_cta    = Column(Text)
     upgrade_plan_id = Column(String(50))
-    context_vars   = Column(JSON, default={})
+    context_vars   = Column(JSON, default=lambda: {})
     converted      = Column(Boolean, default=False)
     converted_at   = Column(TIMESTAMP)
     hit_at         = Column(TIMESTAMP, default=datetime.utcnow)
@@ -687,7 +687,7 @@ class ReadinessTracker(Base):
                            nullable=False, unique=True)
     current_stage = Column(SQLEnum(ProjectStageEnum), default=ProjectStageEnum.IDEA)
     stage_pct     = Column(Float, default=0.0)
-    requirements_remaining = Column(JSON, default=[])
+    requirements_remaining = Column(JSON, default=lambda: [])
     estimated_days_to_next = Column(Integer)
     risk_level    = Column(String(10), default="low")
 
@@ -767,7 +767,7 @@ class LearnerProfile(Base):
     estimated_weeks_to_mvp   = Column(Float)                           # Engine output
     has_technical_skills     = Column(Boolean, default=False)
     has_cofounder            = Column(Boolean, default=False)
-    pre_existing_skills      = Column(JSON, default=[])
+    pre_existing_skills      = Column(JSON, default=lambda: [])
     unicorn_score            = Column(Float, default=0.0)
     beta_users_count         = Column(Integer, default=0)
     has_revenue              = Column(Boolean, default=False)
@@ -792,25 +792,25 @@ class PersonalisedCurriculum(Base):
     learner_id      = Column(UUID(as_uuid=True), ForeignKey("learner_profiles.id"))
 
     # Pre-MVP
-    pre_mvp_module_ids        = Column(JSON, default=[])  # ordered list of module_ids
+    pre_mvp_module_ids        = Column(JSON, default=lambda: [])  # ordered list of module_ids
     estimated_weeks_to_mvp    = Column(Float)
     estimated_hours_to_mvp    = Column(Float)
     weekly_learning_target_hrs = Column(Float)
     mvp_target_date           = Column(String(20))
 
     # Post-MVP
-    post_mvp_tracks_available  = Column(JSON, default=[])
-    post_mvp_unlocked_ids      = Column(JSON, default=[])
-    post_mvp_locked_ids        = Column(JSON, default=[])
+    post_mvp_tracks_available  = Column(JSON, default=lambda: [])
+    post_mvp_unlocked_ids      = Column(JSON, default=lambda: [])
+    post_mvp_locked_ids        = Column(JSON, default=lambda: [])
 
     # Progress
-    completed_module_ids    = Column(JSON, default=[])
-    in_progress_module_ids  = Column(JSON, default=[])
+    completed_module_ids    = Column(JSON, default=lambda: [])
+    in_progress_module_ids  = Column(JSON, default=lambda: [])
     next_module_id          = Column(String(20))
 
     # Certifications
-    certifications_earned    = Column(JSON, default=[])
-    certifications_eligible  = Column(JSON, default=[])
+    certifications_earned    = Column(JSON, default=lambda: [])
+    certifications_eligible  = Column(JSON, default=lambda: [])
 
     # Adaptation history
     adaptation_count   = Column(Integer, default=0)
@@ -2213,7 +2213,7 @@ class ProjectAnalysis(Base):
     owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"),    nullable=False)
     venture_name = Column(String(255))
     # Full compiled blueprint (unicorn/market/feasibility/strategy/finance/plan/tech...).
-    blueprint   = Column(JSON, default={})
+    blueprint   = Column(JSON, default=lambda: {})
     # Headline scores lifted out for indexing/sorting.
     unicorn_potential_score = Column(Float, default=0.0)
     investment_score        = Column(Float, default=0.0)
@@ -2258,7 +2258,7 @@ class HackathonTeam(Base):
     hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"), nullable=False)
     name          = Column(String(255))
     captain_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"))
-    members       = Column(JSON, default=[])               # [{user_id, name, role}]
+    members       = Column(JSON, default=lambda: [])               # [{user_id, name, role}]
     is_solo       = Column(Boolean, default=True)
     project_id    = Column(UUID(as_uuid=True), ForeignKey("projects.id"))   # set when piped to a venture
     workspace_id  = Column(UUID(as_uuid=True), ForeignKey("workspaces.id")) # team workspace
@@ -2280,13 +2280,13 @@ class HackathonBrief(Base):
     hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"),      nullable=False)
     problem       = Column(Text)
     solution      = Column(Text)
-    fields        = Column(JSON, default={})               # full 7-field brief
+    fields        = Column(JSON, default=lambda: {})               # full 7-field brief
     # platform sub-scores (0..100) + composite
     problem_clarity_score = Column(Float, default=0)
     team_momentum_score   = Column(Float, default=0)
     demo_readiness_hours  = Column(Float, default=0)
     composite_score       = Column(Float, default=0)
-    critiques     = Column(JSON, default=[])
+    critiques     = Column(JSON, default=lambda: [])
     submitted_at  = Column(TIMESTAMP, default=datetime.utcnow)
 
     __table_args__ = (Index("idx_hbrief_team", "team_id", "submitted_at"),)
@@ -2317,7 +2317,7 @@ class HackathonScore(Base):
     id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     team_id       = Column(UUID(as_uuid=True), ForeignKey("hackathon_teams.id"), nullable=False)
     hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"),      nullable=False)
-    judge_scores  = Column(JSON, default={})               # {problem_clarity, ...} 0..10
+    judge_scores  = Column(JSON, default=lambda: {})               # {problem_clarity, ...} 0..10
     platform_avg  = Column(Float, default=0)
     judge_avg_pct = Column(Float, default=0)
     composite     = Column(Float, default=0)
