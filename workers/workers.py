@@ -71,6 +71,17 @@ celery.conf.update(
     task_reject_on_worker_lost=True,
     task_default_retry_delay=60,
     task_max_retries=3,
+    # Hard ceilings so a hung task can't block its worker forever (e.g. an LLM
+    # call without timeout, a DB query against a dead connection). Soft limit
+    # raises SoftTimeLimitExceeded inside the task so it can clean up; hard
+    # limit kills the worker process. Per-task overrides via @celery.task(
+    # soft_time_limit=N, time_limit=M) for the heavier `ai_heavy` queue jobs
+    # (weekly_summaries, adaptive_curriculum_weekly) if needed.
+    task_soft_time_limit=300,   # 5 min
+    task_time_limit=600,        # 10 min
+    # Match worker visibility timeout so Redis doesn't redeliver before
+    # the hard kill fires.
+    broker_transport_options={"visibility_timeout": 600},
     # Belt-and-suspenders import guarantee alongside include= above.
     # Both directives ensure Celery imports this module before inspecting
     # registered tasks, which is what makes `inspect registered` return

@@ -85,15 +85,11 @@ HTTP request → main.py endpoint
 
 Every API operation has a credit cost defined in `billing_system.CREDIT_OPERATIONS`. `SubscriptionAccessControl` in `ai_router_core.py` enforces tier gates (Free → Builder → Founder Pro → Investor → Enterprise). Credit deduction must happen inside the service layer before the LLM call.
 
-### Known stub endpoints (need real DB queries)
+### Known stub endpoints
 
-Three endpoints currently return placeholder responses, not real data:
+The earlier three stubs (`/api/v1/solutions/problems/board`, `.../impact/global`, `/api/v1/credits/summary`) now run real PostgreSQL queries since commit `dafac33`. Newer stubs may still surface — search for `# Production:` comments to find them.
 
-- `GET /api/v1/solutions/problems/board` — query `problem_nodes` ordered by `priority_score DESC`
-- `GET /api/v1/solutions/impact/global` — aggregate `impact_snapshots` + `solution_deployments`
-- `GET /api/v1/credits/summary` — query `credit_ledger` + `credit_purchases`
-
-Also: Stripe webhook signature verification is commented out in `main.py`. Enable before connecting Stripe beyond local.
+Stripe webhook signature verification is **enabled** (`stripe.Webhook.construct_event` at `main.py:1443`). `STRIPE_WEBHOOK_SECRET` must be set or the endpoint returns 500. (This note used to say verification was off — it isn't; the code was already updated.)
 
 ### Infrastructure (docker-compose.yml)
 
