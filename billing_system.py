@@ -68,6 +68,13 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
+import structlog
+
+# Single module-level logger keeps the credit-event log line shape consistent
+# across every resolve() outcome. Search prod logs for `credit_resolved` to
+# see every paywall trigger / deduction in chronological order.
+logger = structlog.get_logger(__name__)
+
 
 # ============================================================================
 # ENUMERATIONS
@@ -617,6 +624,11 @@ class HybridCreditEngine:
         """
         op = CREDIT_OPERATIONS.get(operation_id)
         if not op:
+            logger.warning(
+                "credit_resolved", outcome="unknown_operation",
+                user_id=state.user_id, plan_id=state.plan_id,
+                operation_id=operation_id, approved=False, paywall_triggered=True,
+            )
             return CreditResolutionResult(
                 approved=False, operation_id=operation_id, credit_cost=0,
                 from_subscription=0, from_payg=0,
@@ -628,6 +640,13 @@ class HybridCreditEngine:
         # Step 1 -- plan permission
         if not self._plan_permits(state.plan_id, op.min_plan_id):
             copy = self._render_copy(op.paywall_copy, context_vars)
+            logger.info(
+                "credit_resolved", outcome="plan_denied",
+                user_id=state.user_id, plan_id=state.plan_id,
+                operation_id=operation_id, credit_cost=op.credit_cost,
+                required_min_plan=op.min_plan_id,
+                approved=False, paywall_triggered=True,
+            )
             return CreditResolutionResult(
                 approved=False, operation_id=operation_id, credit_cost=op.credit_cost,
                 from_subscription=0, from_payg=0,
@@ -643,6 +662,13 @@ class HybridCreditEngine:
         total = state.total_credits_available
         cost  = op.credit_cost
         if total < cost:
+            logger.info(
+                "credit_resolved", outcome="insufficient_credits",
+                user_id=state.user_id, plan_id=state.plan_id,
+                operation_id=operation_id, credit_cost=cost,
+                credits_remaining=total,
+                approved=False, paywall_triggered=True,
+            )
             return CreditResolutionResult(
                 approved=False, operation_id=operation_id, credit_cost=cost,
                 from_subscription=0, from_payg=0,
@@ -668,6 +694,15 @@ class HybridCreditEngine:
         usd_cost  = round(from_payg * state.plan_spec.payg_credit_rate, 4)
         remaining = state.total_credits_available - cost
 
+        logger.info(
+            "credit_resolved", outcome="approved",
+            user_id=state.user_id, plan_id=state.plan_id,
+            operation_id=operation_id, credit_cost=cost,
+            from_subscription=from_sub, from_payg=from_payg,
+            credits_remaining_after=remaining,
+            usd_cost_this_operation=usd_cost,
+            approved=True, paywall_triggered=False,
+        )
         return CreditResolutionResult(
             approved=True, operation_id=operation_id, credit_cost=cost,
             from_subscription=from_sub, from_payg=from_payg,

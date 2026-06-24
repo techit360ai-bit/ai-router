@@ -300,7 +300,6 @@ async def get_user_context(request: Request) -> UserContext:
         raise HTTPException(status_code=401, detail="Missing authentication token")
 
     if not SECRET_KEY:
-        logger.error("auth_misconfigured", reason="SECRET_KEY not set")
         # A token was supplied but the server can't verify it.
         logger.error("auth_misconfigured", reason="JWT_SECRET/SECRET_KEY not set")
         raise HTTPException(status_code=500, detail="Authentication is not configured")
@@ -308,11 +307,13 @@ async def get_user_context(request: Request) -> UserContext:
     try:
         from jose import JWTError, jwt
         payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
-    except JWTError:
+    except JWTError as exc:
+        logger.warning("auth_jwt_invalid", reason="decode_failed", error=str(exc))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     user_id = payload.get("sub") or payload.get("user_id")
     if not user_id:
+        logger.warning("auth_jwt_invalid", reason="missing_subject_claim")
         raise HTTPException(status_code=401, detail="Token missing subject claim")
 
     ctx = _context_from_claim(str(user_id), payload)
