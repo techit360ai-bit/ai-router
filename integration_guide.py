@@ -2855,7 +2855,26 @@ class WorkspaceService:
 # the durable layer is the hackathon_* tables in database_schema.py.
 _HACKATHON_STORE: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
+# Per-hackathon asyncio.Lock so concurrent register / submit_brief / log_check_in
+# / provision_team_workspace / report_team_to_organizers can't race-mutate the
+# same team dict. Without this lock, two simultaneous check-ins read the same
+# (activity, checkIns) tuple → compute different running means → last write
+# wins → one check-in is silently lost. Python yields on every await in the
+# request handlers, so this IS a real race (unlike the file-store case in
+# Node where write() is await-free).
+#
+# The lock dict itself is mutated only inside _store_lock() which is also
+# guarded by the module's GIL for the dict-write step — fine for the
+# single-process FastAPI deploy. Multi-process gunicorn workers would need
+# a Redis lock; the existing "ephemeral, not shared across workers" caveat
+# above applies.
+import asyncio as _asyncio
+_HACKATHON_LOCKS: Dict[str, _asyncio.Lock] = {}
+
 # Seed teams so the org command-centre renders before any live activity arrives.
+# Now gated: production traffic must not see Loom Health / Solaris / Verdant /
+# Northwind appearing on the org dashboard before any real team has registered.
+# Set HACKATHON_SEED_TEAMS=true to opt back into seeding (the dev/test default).
 _SEED_TEAMS: List[Dict[str, Any]] = [
     {"id": "team_001", "name": "Loom Health", "isSolo": False, "status": "building",
      "hasBrief": True, "composite": 88, "checkIns": 5, "hasWorkspace": True},
@@ -2866,6 +2885,18 @@ _SEED_TEAMS: List[Dict[str, Any]] = [
     {"id": "team_004", "name": "Northwind", "isSolo": False, "status": "submitted",
      "hasBrief": True, "composite": 91, "checkIns": 7, "hasWorkspace": True},
 ]
+
+
+def _seed_teams_enabled() -> bool:
+    """Seeding is on for dev/test, off for staging/production by default.
+    Override either way with HACKATHON_SEED_TEAMS=true|false.
+    """
+    import os
+    explicit = os.getenv("HACKATHON_SEED_TEAMS")
+    if explicit is not None:
+        return explicit.strip().lower() in ("1", "true", "yes")
+    env = os.getenv("ENVIRONMENT", "development").strip().lower()
+    return env in ("development", "dev", "local", "test")
 
 
 class HackathonService:
@@ -2959,18 +2990,18 @@ class HackathonService:
         members = body.get("members", [])
         is_solo = len(members) <= 1
         team_id = body.get("teamId", "team_new")
-        store = self._store(body.get("hackathonId"))
-        team = store.get(team_id) or self._new_team(team_id, body.get("name", "Solo"))
-        team.update({"name": body.get("name", team["name"]), "isSolo": is_solo,
-                     "status": "registered"})
-        store[team_id] = team
-        return {
-            "ok": True,
-            "team": {
+        hackathon_id = body.get("hackathonId")
+        async with self._lock(hackathon_id):
+            store = self._store(hackathon_id)
+            team = store.get(team_id) or self._new_team(team_id, body.get("name", "Solo"))
+            team.update({"name": body.get("name", team["name"]), "isSolo": is_solo,
+                         "status": "registered"})
+            store[team_id] = team
+            snapshot = {
                 "id": team["id"], "name": team["name"],
                 "isSolo": team["isSolo"], "status": team["status"],
-            },
-        }
+            }
+        return {"ok": True, "team": snapshot}
 
     async def submit_brief(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -2992,11 +3023,13 @@ class HackathonService:
 
         team_id = body.get("teamId")
         if team_id:
-            store = self._store(body.get("hackathonId"))
-            team = store.get(team_id) or self._new_team(team_id)
-            team.update({"hasBrief": True, "composite": composite,
-                         "status": "building" if team["status"] == "registered" else team["status"]})
-            store[team_id] = team
+            hackathon_id = body.get("hackathonId")
+            async with self._lock(hackathon_id):
+                store = self._store(hackathon_id)
+                team = store.get(team_id) or self._new_team(team_id)
+                team.update({"hasBrief": True, "composite": composite,
+                             "status": "building" if team["status"] == "registered" else team["status"]})
+                store[team_id] = team
 
         return {
             "ok": True,
@@ -3024,14 +3057,16 @@ class HackathonService:
 
         team_id = body.get("teamId")
         if team_id:
-            store = self._store(body.get("hackathonId"))
-            team = store.get(team_id) or self._new_team(team_id)
-            n = team["checkIns"]
-            team["activity"] = round((team["activity"] * n + activity) / (n + 1), 1)
-            team["checkIns"] = n + 1
-            if team["status"] == "registered":
-                team["status"] = "building"
-            store[team_id] = team
+            hackathon_id = body.get("hackathonId")
+            async with self._lock(hackathon_id):
+                store = self._store(hackathon_id)
+                team = store.get(team_id) or self._new_team(team_id)
+                n = team["checkIns"]
+                team["activity"] = round((team["activity"] * n + activity) / (n + 1), 1)
+                team["checkIns"] = n + 1
+                if team["status"] == "registered":
+                    team["status"] = "building"
+                store[team_id] = team
 
         return {"ok": True, "checkIn": {
             "teamId": team_id, "note": body.get("note", ""),
@@ -3063,10 +3098,11 @@ class HackathonService:
         ws = await WorkspaceService(self.brain).provision_workspace(
             user_context, {"projectId": project_id, "name": body.get("name", "Hackathon Team")},
         )
-        store = self._store(hackathon_id)
-        team = store.get(team_id) or self._new_team(team_id)
-        team.update({"hasWorkspace": True, "projectId": project_id})
-        store[team_id] = team
+        async with self._lock(hackathon_id):
+            store = self._store(hackathon_id)
+            team = store.get(team_id) or self._new_team(team_id)
+            team.update({"hasWorkspace": True, "projectId": project_id})
+            store[team_id] = team
         return {"ok": True, "hackathonId": hackathon_id, "teamId": team_id, **ws}
 
     async def report_team_to_organizers(
@@ -3078,8 +3114,6 @@ class HackathonService:
         on the team so org dashboards can surface it. Production: INSERT into
         hackathon_team_reports keyed by (hackathon_id, team_id, created_at).
         """
-        store = self._store(hackathon_id)
-        team = store.get(team_id) or self._new_team(team_id)
         report = {
             "workspaceId": body.get("workspaceId"),
             "idea": body.get("idea"),
@@ -3088,29 +3122,51 @@ class HackathonService:
             "stage": body.get("stage"),
             "reportedBy": user_context.user_id,
         }
-        # Keep last N reports per team; here N=10.
-        history = team.get("reports") or []
-        history.append(report)
-        team["reports"] = history[-10:]
-        store[team_id] = team
+        async with self._lock(hackathon_id):
+            store = self._store(hackathon_id)
+            team = store.get(team_id) or self._new_team(team_id)
+            # Keep last N reports per team; here N=10.
+            history = team.get("reports") or []
+            history.append(report)
+            team["reports"] = history[-10:]
+            store[team_id] = team
         return {"ok": True, "hackathonId": hackathon_id, "teamId": team_id, "report": report}
 
     # ── helpers ───────────────────────────────────────────────────────────
     @staticmethod
+    def _lock(hackathon_id: Optional[str]) -> _asyncio.Lock:
+        """Return (lazy-allocating) the asyncio.Lock guarding this hackathon's
+        store. Dict-write of the lock itself is atomic under the GIL — safe."""
+        key = hackathon_id or "_default"
+        lock = _HACKATHON_LOCKS.get(key)
+        if lock is None:
+            lock = _asyncio.Lock()
+            _HACKATHON_LOCKS[key] = lock
+        return lock
+
+    @staticmethod
     def _store(hackathon_id: Optional[str]) -> Dict[str, Dict[str, Any]]:
-        """Return (seeding on first touch) the team store for a hackathon."""
+        """Return (seeding on first touch) the team store for a hackathon.
+
+        Seed teams are only inserted when `_seed_teams_enabled()` returns True
+        (dev/test, or HACKATHON_SEED_TEAMS=true). Production gets an empty
+        store so org dashboards don't render Loom Health / Solaris / Verdant /
+        Northwind before any real team has registered.
+        """
         key = hackathon_id or "_default"
         store = _HACKATHON_STORE.get(key)
         if store is None:
             store = {}
-            for seed in _SEED_TEAMS:
-                team = dict(seed)
-                # Seed a deterministic baseline activity (never random); real
-                # check-ins blend into this running mean via log_check_in.
-                team["activity"] = float(
-                    min(100, 30 + team["checkIns"] * 12 + int(team["composite"]) % 25)
-                )
-                store[team["id"]] = team
+            if _seed_teams_enabled():
+                for seed in _SEED_TEAMS:
+                    team = dict(seed)
+                    # Seed a deterministic baseline activity (never random);
+                    # real check-ins blend into this running mean via
+                    # log_check_in.
+                    team["activity"] = float(
+                        min(100, 30 + team["checkIns"] * 12 + int(team["composite"]) % 25)
+                    )
+                    store[team["id"]] = team
             _HACKATHON_STORE[key] = store
         return store
 
