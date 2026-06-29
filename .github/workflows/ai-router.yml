@@ -1,0 +1,70 @@
+name: TECHIT AI Router
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**.py"
+      - "requirements.txt"
+      - "docker-compose.yml"
+      - "Dockerfile.*"
+      - ".env.example"
+      - "docs/**"
+      - "scripts/**"
+      - ".github/workflows/ai-router.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "**.py"
+      - "requirements.txt"
+      - "docker-compose.yml"
+      - "Dockerfile.*"
+      - ".env.example"
+      - "docs/**"
+      - "scripts/**"
+      - ".github/workflows/ai-router.yml"
+
+jobs:
+  quality:
+    name: AI Router Quality Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Validate deployment env contract
+        run: python3 scripts/validate_env.py
+        env:
+          ENVIRONMENT: production
+          ALLOW_DEMO_AUTH: "false"
+          JWT_ALGORITHM: HS256
+          JWT_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          POSTGRES_PASSWORD: ci-postgres-password
+          DATABASE_URL: postgresql://techit:secret@postgres.example:5432/techit_db
+          REDIS_URL: rediss://redis.example:6379
+          CELERY_BROKER: rediss://redis.example:6379
+          ALLOWED_ORIGINS: https://app.techit.example
+          MCP_BASE_URL: https://api.techit.example/api/mcp
+          MCP_TIMEOUT: "10"
+          OPENAI_API_KEY: sk-ci-contract-value
+          ANTHROPIC_API_KEY: sk-ant-ci-contract-value
+          STRIPE_SECRET_KEY: sk_live_ci_contract_value
+          STRIPE_WEBHOOK_SECRET: whsec_ci_contract_value
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest -q
+        env:
+          ENVIRONMENT: development
+          ALLOW_DEMO_AUTH: "true"
+          JWT_SECRET: test-secret-key-for-ci-only
+          SECRET_KEY: test-secret-key-for-ci-only
+          DATABASE_URL: postgresql://techit:password@localhost:5432/techit_db
+          REDIS_URL: redis://localhost:6379
