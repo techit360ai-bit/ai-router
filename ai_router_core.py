@@ -49,10 +49,14 @@ import hashlib
 import json
 import math
 import os
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple
+from uuid import uuid4
 
 import agent_prompts as AP
 
@@ -920,6 +924,18 @@ class AIResponse:
     metadata:          Dict = field(default_factory=dict)
 
 
+class ProviderConfigurationError(RuntimeError):
+    """Raised when a provider is selected but cannot be called safely."""
+
+
+class ProviderCallError(RuntimeError):
+    """Raised when a provider request fails and the fallback chain should continue."""
+
+
+class AccountingTransactionError(RuntimeError):
+    """Raised when durable AI accounting cannot be completed."""
+
+
 # ============================================================================
 # MODEL ROUTER
 # ============================================================================
@@ -1391,6 +1407,12 @@ class AICommandLayer:
         self.prompt_engine = prompt_engine
         self.safety_engine = safety_engine
         self.execution_log: List[Dict] = []
+        self.environment = os.getenv("ENVIRONMENT", "development").strip().lower()
+        self.allow_placeholder = (
+            os.getenv("ALLOW_AI_PLACEHOLDER_RESPONSES", "false").lower()
+            in ("1", "true", "yes")
+        )
+        self.provider_timeout_seconds = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "30"))
 
     async def process_request(self, request: AIRequest) -> AIResponse:
         start = datetime.now()
@@ -1398,6 +1420,8 @@ class AICommandLayer:
         safety = await self.safety_engine.validate_request(request)
         if not safety.approved:
             raise PermissionError(f"Request blocked: {safety.reason}")
+
+        UsageLedgerRecorder.validate_config()
 
         context = {
             "user":      request.user_context.to_prompt_context(),
@@ -1414,11 +1438,14 @@ class AICommandLayer:
             request.task_type, context, request.user_context.role
         )
         chain    = self.model_router.select_chain(request)
+        request_id = str(uuid4())
         response = await self._execute_with_retry(chain, prompt, request)
 
         response.credits_consumed = CreditCost.cost_for(request.task_type)
+        response.metadata.setdefault("request_id", request_id)
         elapsed = (datetime.now() - start).total_seconds() * 1000
         await self._log(request, response, elapsed)
+        await self._record_usage(request, response, elapsed)
         return response
 
     async def _execute_with_retry(self, chain: List[ModelConfig],
@@ -1436,7 +1463,9 @@ class AICommandLayer:
                     confidence_score=output.get("confidence", 1.0),
                     execution_time_ms=output["duration_ms"],
                     metadata={"attempt": attempt + 1,
-                              "provider": model_config.provider.value},
+                              "provider": model_config.provider.value,
+                              "prompt_tokens": output.get("prompt_tokens"),
+                              "completion_tokens": output.get("completion_tokens")},
                 )
             except Exception as exc:  # noqa: BLE001 — try next model in chain
                 last_exc = exc
@@ -1446,11 +1475,223 @@ class AICommandLayer:
     async def _call_llm(self, model_config: ModelConfig, prompt: str,
                          request: AIRequest) -> Dict:
         """
-        Production: routes to OpenAI / Anthropic / Cohere based on model_config.provider.
-        Abstracted here for portability.
+        Routes to the configured provider and normalizes response shape:
+        {"text": str, "tokens": int, "confidence": float, "duration_ms": int}.
+
+        Tests mock `_provider_request`; production uses direct HTTPS calls so the
+        core module does not require provider SDK imports just to boot.
         """
-        return {"text": "AI Response Placeholder", "tokens": 500,
-                "confidence": 0.95, "duration_ms": 1200}
+        if model_config.api_key_env and not os.environ.get(model_config.api_key_env):
+            if self.allow_placeholder and self.environment not in {"production", "staging"}:
+                return self._placeholder_response(model_config)
+            raise ProviderConfigurationError(
+                f"{model_config.provider.value} requires {model_config.api_key_env}"
+            )
+
+        started = time.perf_counter()
+        try:
+            if model_config.provider in {
+                ModelProvider.OPENAI_GPT4,
+                ModelProvider.OPENAI_GPT4_MINI,
+            }:
+                payload = self._openai_payload(model_config, prompt, request)
+                raw = await self._provider_request(
+                    "https://api.openai.com/v1/chat/completions",
+                    os.environ["OPENAI_API_KEY"],
+                    payload,
+                )
+                return self._normalize_openai(raw, started)
+
+            if model_config.provider in {
+                ModelProvider.ANTHROPIC_CLAUDE,
+                ModelProvider.ANTHROPIC_HAIKU,
+            }:
+                payload = self._anthropic_payload(model_config, prompt, request)
+                raw = await self._provider_request(
+                    "https://api.anthropic.com/v1/messages",
+                    os.environ["ANTHROPIC_API_KEY"],
+                    payload,
+                    extra_headers={"anthropic-version": "2023-06-01"},
+                )
+                return self._normalize_anthropic(raw, started)
+
+            if model_config.provider is ModelProvider.COHERE_EMBED:
+                payload = {
+                    "model": model_config.model_name,
+                    "texts": [prompt],
+                    "input_type": "search_document",
+                }
+                raw = await self._provider_request(
+                    "https://api.cohere.com/v1/embed",
+                    os.environ["COHERE_API_KEY"],
+                    payload,
+                )
+                return self._normalize_cohere(raw, started)
+
+            if model_config.provider in {
+                ModelProvider.GEMINI_FLASH,
+                ModelProvider.GEMINI_FLASH_LITE,
+            }:
+                payload = self._gemini_payload(prompt, request)
+                url = (
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model_config.model_name}:generateContent"
+                    f"?key={os.environ['GEMINI_API_KEY']}"
+                )
+                raw = await self._provider_request(url, None, payload)
+                return self._normalize_gemini(raw, started)
+
+            if model_config.provider is ModelProvider.OPENROUTER_FREE:
+                payload = self._openai_payload(model_config, prompt, request)
+                raw = await self._provider_request(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    os.environ["OPENROUTER_API_KEY"],
+                    payload,
+                    extra_headers={
+                        "HTTP-Referer": os.getenv("TECHIT_PUBLIC_URL", "https://techit.network"),
+                        "X-Title": "TechIT AI Router",
+                    },
+                )
+                return self._normalize_openai(raw, started)
+        except (ProviderConfigurationError, ProviderCallError):
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ProviderCallError(f"{model_config.provider.value} failed: {exc}") from exc
+
+        raise ProviderConfigurationError(f"unsupported provider {model_config.provider.value}")
+
+    @staticmethod
+    def _openai_payload(model_config: ModelConfig, prompt: str, request: AIRequest) -> Dict:
+        return {
+            "model": model_config.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": request.max_tokens,
+            "temperature": 0.2,
+        }
+
+    @staticmethod
+    def _anthropic_payload(model_config: ModelConfig, prompt: str, request: AIRequest) -> Dict:
+        return {
+            "model": model_config.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": request.max_tokens,
+            "temperature": 0.2,
+        }
+
+    @staticmethod
+    def _gemini_payload(prompt: str, request: AIRequest) -> Dict:
+        return {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "maxOutputTokens": request.max_tokens,
+                "temperature": 0.2,
+            },
+        }
+
+    async def _provider_request(
+        self,
+        url: str,
+        api_key: Optional[str],
+        payload: Dict,
+        *,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> Dict:
+        headers = {
+            "Content-Type": "application/json",
+            **(extra_headers or {}),
+        }
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        def _post() -> Dict:
+            body = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=self.provider_timeout_seconds) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise ProviderCallError(f"provider HTTP {exc.code}: {detail}") from exc
+            except urllib.error.URLError as exc:
+                raise ProviderCallError(f"provider network error: {exc.reason}") from exc
+
+        return await asyncio.to_thread(_post)
+
+    @staticmethod
+    def _normalize_openai(raw: Dict, started: float) -> Dict:
+        choice = (raw.get("choices") or [{}])[0]
+        text = ((choice.get("message") or {}).get("content") or choice.get("text") or "").strip()
+        usage = raw.get("usage") or {}
+        tokens = usage.get("total_tokens") or usage.get("completion_tokens") or 0
+        return {
+            "text": text,
+            "tokens": int(tokens or 0),
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "confidence": 1.0,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+
+    @staticmethod
+    def _normalize_anthropic(raw: Dict, started: float) -> Dict:
+        parts = raw.get("content") or []
+        text = "\n".join(
+            part.get("text", "") for part in parts
+            if isinstance(part, dict) and part.get("type") == "text"
+        ).strip()
+        usage = raw.get("usage") or {}
+        tokens = int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+        return {
+            "text": text,
+            "tokens": tokens,
+            "prompt_tokens": usage.get("input_tokens"),
+            "completion_tokens": usage.get("output_tokens"),
+            "confidence": 1.0,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+
+    @staticmethod
+    def _normalize_cohere(raw: Dict, started: float) -> Dict:
+        embeddings = raw.get("embeddings") or []
+        text = json.dumps({"embeddings": embeddings})
+        billed = ((raw.get("meta") or {}).get("billed_units") or {})
+        tokens = int(billed.get("input_tokens") or len(text.split()))
+        return {
+            "text": text,
+            "tokens": tokens,
+            "prompt_tokens": tokens,
+            "completion_tokens": 0,
+            "confidence": 1.0,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+
+    @staticmethod
+    def _normalize_gemini(raw: Dict, started: float) -> Dict:
+        candidates = raw.get("candidates") or []
+        parts = (((candidates[0] if candidates else {}).get("content") or {}).get("parts") or [])
+        text = "\n".join(
+            part.get("text", "") for part in parts
+            if isinstance(part, dict) and part.get("text")
+        ).strip()
+        usage = raw.get("usageMetadata") or {}
+        tokens = usage.get("totalTokenCount") or usage.get("candidatesTokenCount") or 0
+        return {
+            "text": text,
+            "tokens": int(tokens or 0),
+            "prompt_tokens": usage.get("promptTokenCount"),
+            "completion_tokens": usage.get("candidatesTokenCount"),
+            "confidence": 1.0,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+
+    @staticmethod
+    def _placeholder_response(model_config: ModelConfig) -> Dict:
+        return {
+            "text": f"AI placeholder response via {model_config.model_name}",
+            "tokens": 0,
+            "confidence": 0.0,
+            "duration_ms": 0,
+        }
 
     async def _log(self, request: AIRequest, response: AIResponse, elapsed_ms: float) -> None:
         self.execution_log.append({
@@ -1465,6 +1706,237 @@ class AICommandLayer:
             "ip_protected":      request.ip_protected,
             "timestamp":         datetime.now().isoformat(),
         })
+
+    async def _record_usage(self, request: AIRequest, response: AIResponse, elapsed_ms: float) -> None:
+        """Record usage and credit debit.
+
+        In production/staging, accounting failures fail closed. In local/dev
+        contexts, failures are logged so test/demo provider execution can still
+        run without a database.
+        """
+        try:
+            recorder = UsageLedgerRecorder.from_env()
+            if recorder is None:
+                return
+            await recorder.record(request, response, elapsed_ms)
+        except ProviderConfigurationError:
+            raise
+        except AccountingTransactionError:
+            if self.environment in {"production", "staging"}:
+                raise
+            self.execution_log.append({
+                "event": "usage_accounting_failed",
+                "user_id": request.user_context.user_id,
+                "task_type": request.task_type.value,
+                "timestamp": datetime.now().isoformat(),
+            })
+        except Exception as exc:  # noqa: BLE001
+            if self.environment in {"production", "staging"}:
+                raise
+            self.execution_log.append({
+                "event": "usage_ledger_record_failed",
+                "user_id": request.user_context.user_id,
+                "task_type": request.task_type.value,
+                "error": str(exc),
+                "timestamp": datetime.now().isoformat(),
+            })
+
+
+class UsageLedgerRecorder:
+    """Small SQLAlchemy-backed usage ledger writer.
+
+    Lazy imports keep ai_router_core importable in syntax-only/test contexts where
+    SQLAlchemy is not installed.
+    """
+
+    def __init__(self, database_url: str) -> None:
+        self.database_url = database_url
+
+    @classmethod
+    def validate_config(cls) -> None:
+        disabled = os.getenv("AI_USAGE_LEDGER_ENABLED", "true").lower() in {"0", "false", "no"}
+        database_url = os.getenv("DATABASE_URL")
+        environment = os.getenv("ENVIRONMENT", "development").strip().lower()
+
+        if environment in {"production", "staging"}:
+            if disabled:
+                raise ProviderConfigurationError(
+                    "AI_USAGE_LEDGER_ENABLED cannot be disabled in production"
+                )
+            if not database_url:
+                raise ProviderConfigurationError(
+                    "DATABASE_URL is required when AI usage ledger is enabled"
+                )
+
+    @classmethod
+    def from_env(cls) -> Optional["UsageLedgerRecorder"]:
+        cls.validate_config()
+
+        disabled = os.getenv("AI_USAGE_LEDGER_ENABLED", "true").lower() in {"0", "false", "no"}
+        if disabled:
+            return None
+
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return None
+        return cls(database_url)
+
+    async def record(self, request: AIRequest, response: AIResponse, elapsed_ms: float) -> None:
+        await asyncio.to_thread(self._record_sync, request, response, elapsed_ms)
+
+    def _record_sync(self, request: AIRequest, response: AIResponse, elapsed_ms: float) -> None:
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine(self.database_url, pool_pre_ping=True)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        try:
+            credit_split = self._debit_credits(session, request, response)
+            session.execute(
+                text(
+                    """
+                    INSERT INTO ai_usage_ledger (
+                        id, request_id, user_id, workspace_id, provider, model,
+                        task_type, tokens_used, prompt_tokens, completion_tokens,
+                        cost_usd, credits_consumed, latency_ms, status, metadata,
+                        created_at
+                    )
+                    VALUES (
+                        CAST(:id AS UUID), :request_id, CAST(:user_id AS UUID),
+                        :workspace_id, :provider, :model,
+                        :task_type, :tokens_used, :prompt_tokens, :completion_tokens,
+                        :cost_usd, :credits_consumed, :latency_ms, :status,
+                        CAST(:metadata AS JSONB), NOW()
+                    )
+                    """
+                ),
+                {
+                    "id": str(uuid4()),
+                    "request_id": response.metadata.get("request_id"),
+                    "user_id": request.user_context.user_id,
+                    "workspace_id": request.input_data.get("workspace_id") or request.input_data.get("workspaceId"),
+                    "provider": response.metadata.get("provider"),
+                    "model": response.model_used,
+                    "task_type": request.task_type.value,
+                    "tokens_used": response.tokens_used,
+                    "prompt_tokens": response.metadata.get("prompt_tokens"),
+                    "completion_tokens": response.metadata.get("completion_tokens"),
+                    "cost_usd": response.cost,
+                    "credits_consumed": response.credits_consumed,
+                    "latency_ms": int(elapsed_ms),
+                    "status": "success",
+                    "metadata": json.dumps({
+                        **response.metadata,
+                        "credit_accounting": credit_split,
+                    }, default=str),
+                },
+            )
+            session.commit()
+        except AccountingTransactionError:
+            session.rollback()
+            raise
+        except Exception as exc:
+            session.rollback()
+            raise AccountingTransactionError(str(exc)) from exc
+        finally:
+            session.close()
+
+    @staticmethod
+    def _debit_credits(session: Any, request: AIRequest, response: AIResponse) -> Dict[str, int]:
+        from sqlalchemy import text
+
+        cost = int(response.credits_consumed or 0)
+        if cost <= 0:
+            return {"from_subscription": 0, "from_payg": 0, "credits_after": request.user_context.credits_remaining}
+
+        user_row = session.execute(
+            text(
+                """
+                SELECT subscription_credits_remaining, payg_credits_balance,
+                       total_credits_used, plan_id
+                FROM users
+                WHERE id = CAST(:user_id AS UUID)
+                FOR UPDATE
+                """
+            ),
+            {"user_id": request.user_context.user_id},
+        ).fetchone()
+
+        if user_row is None:
+            raise AccountingTransactionError(
+                f"user {request.user_context.user_id} not found for credit debit"
+            )
+
+        subscription_credits = int(user_row.subscription_credits_remaining or 0)
+        payg_credits = int(user_row.payg_credits_balance or 0)
+        total_credits = subscription_credits + payg_credits
+        if total_credits < cost:
+            raise AccountingTransactionError(
+                f"insufficient durable credits: required {cost}, available {total_credits}"
+            )
+
+        from_subscription = min(subscription_credits, cost)
+        from_payg = cost - from_subscription
+        remaining_subscription = subscription_credits - from_subscription
+        remaining_payg = payg_credits - from_payg
+        credits_after = remaining_subscription + remaining_payg
+
+        session.execute(
+            text(
+                """
+                UPDATE users
+                SET subscription_credits_remaining = :subscription_credits,
+                    payg_credits_balance = :payg_credits,
+                    total_credits_used = COALESCE(total_credits_used, 0) + :credits_used
+                WHERE id = CAST(:user_id AS UUID)
+                """
+            ),
+            {
+                "subscription_credits": remaining_subscription,
+                "payg_credits": remaining_payg,
+                "credits_used": cost,
+                "user_id": request.user_context.user_id,
+            },
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO credit_ledger (
+                    id, user_id, event_type, credits_delta, credits_after,
+                    from_subscription, from_payg, usd_charged_payg, task_type,
+                    operation_id, plan_id, description, created_at
+                )
+                VALUES (
+                    CAST(:id AS UUID), CAST(:user_id AS UUID), 'CREDITS_DEDUCTED',
+                    :credits_delta, :credits_after, :from_subscription, :from_payg,
+                    :usd_charged_payg, :task_type, :operation_id, :plan_id,
+                    :description, NOW()
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "user_id": request.user_context.user_id,
+                "credits_delta": -cost,
+                "credits_after": credits_after,
+                "from_subscription": from_subscription,
+                "from_payg": from_payg,
+                "usd_charged_payg": 0,
+                "task_type": request.task_type.value,
+                "operation_id": response.metadata.get("request_id"),
+                "plan_id": getattr(user_row, "plan_id", None),
+                "description": (
+                    "AI provider execution debit "
+                    f"({response.metadata.get('provider')} / {response.model_used})"
+                ),
+            },
+        )
+        return {
+            "from_subscription": from_subscription,
+            "from_payg": from_payg,
+            "credits_after": credits_after,
+        }
 
 
 # ============================================================================
