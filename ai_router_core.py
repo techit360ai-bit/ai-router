@@ -55,6 +55,7 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import agent_prompts as AP
+from provider_adapters import call_provider_model
 
 
 # ============================================================================
@@ -1386,10 +1387,12 @@ class AICommandLayer:
     """
 
     def __init__(self, model_router: ModelRouter, prompt_engine: PromptEngine,
-                 safety_engine: SafetyEngine) -> None:
+                 safety_engine: SafetyEngine,
+                 provider_clients: Optional[Dict[str, Any]] = None) -> None:
         self.model_router  = model_router
         self.prompt_engine = prompt_engine
         self.safety_engine = safety_engine
+        self.provider_clients = provider_clients or {}
         self.execution_log: List[Dict] = []
 
     async def process_request(self, request: AIRequest) -> AIResponse:
@@ -1445,12 +1448,13 @@ class AICommandLayer:
 
     async def _call_llm(self, model_config: ModelConfig, prompt: str,
                          request: AIRequest) -> Dict:
-        """
-        Production: routes to OpenAI / Anthropic / Cohere based on model_config.provider.
-        Abstracted here for portability.
-        """
-        return {"text": "AI Response Placeholder", "tokens": 500,
-                "confidence": 0.95, "duration_ms": 1200}
+        response = await call_provider_model(
+            model_config,
+            prompt,
+            request,
+            clients=self.provider_clients,
+        )
+        return response.as_ai_output()
 
     async def _log(self, request: AIRequest, response: AIResponse, elapsed_ms: float) -> None:
         self.execution_log.append({
