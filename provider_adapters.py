@@ -250,7 +250,16 @@ def _normalize_openai(response: Any, duration_ms: int) -> ProviderResponse:
     tokens = _usage_tokens(usage, "total_tokens")
     if not text:
         raise ProviderResponseError("openai response did not include message text")
-    return ProviderResponse(text=text, tokens=tokens, confidence=1.0, duration_ms=duration_ms)
+    return ProviderResponse(
+        text=text,
+        tokens=tokens,
+        confidence=1.0,
+        duration_ms=duration_ms,
+        raw={
+            "prompt_tokens": _value(usage, "prompt_tokens"),
+            "completion_tokens": _value(usage, "completion_tokens"),
+        },
+    )
 
 
 def _normalize_anthropic(response: Any, duration_ms: int) -> ProviderResponse:
@@ -259,7 +268,16 @@ def _normalize_anthropic(response: Any, duration_ms: int) -> ProviderResponse:
     tokens = _usage_tokens(usage, "input_tokens", "output_tokens")
     if not text:
         raise ProviderResponseError("anthropic response did not include content text")
-    return ProviderResponse(text=text, tokens=tokens, confidence=1.0, duration_ms=duration_ms)
+    return ProviderResponse(
+        text=text,
+        tokens=tokens,
+        confidence=1.0,
+        duration_ms=duration_ms,
+        raw={
+            "prompt_tokens": _value(usage, "input_tokens"),
+            "completion_tokens": _value(usage, "output_tokens"),
+        },
+    )
 
 
 def _normalize_cohere(response: Any, duration_ms: int) -> ProviderResponse:
@@ -274,6 +292,7 @@ def _normalize_cohere(response: Any, duration_ms: int) -> ProviderResponse:
         tokens=tokens,
         confidence=1.0,
         duration_ms=duration_ms,
+        raw={"prompt_tokens": tokens, "completion_tokens": 0},
     )
 
 
@@ -285,7 +304,17 @@ def _normalize_openai_compatible(response: Mapping[str, Any], provider: str,
     tokens = _usage_tokens(response.get("usage", {}), "total_tokens")
     if not text:
         raise ProviderResponseError(f"{provider} response did not include message text")
-    return ProviderResponse(text=text, tokens=tokens, confidence=1.0, duration_ms=duration_ms)
+    usage = response.get("usage", {})
+    return ProviderResponse(
+        text=text,
+        tokens=tokens,
+        confidence=1.0,
+        duration_ms=duration_ms,
+        raw={
+            "prompt_tokens": _value(usage, "prompt_tokens"),
+            "completion_tokens": _value(usage, "completion_tokens"),
+        },
+    )
 
 
 def _normalize_gemini(response: Mapping[str, Any], duration_ms: int) -> ProviderResponse:
@@ -296,7 +325,17 @@ def _normalize_gemini(response: Mapping[str, Any], duration_ms: int) -> Provider
     tokens = _usage_tokens(response.get("usageMetadata", {}), "totalTokenCount")
     if not text:
         raise ProviderResponseError("gemini response did not include content text")
-    return ProviderResponse(text=text, tokens=tokens, confidence=1.0, duration_ms=duration_ms)
+    usage = response.get("usageMetadata", {})
+    return ProviderResponse(
+        text=text,
+        tokens=tokens,
+        confidence=1.0,
+        duration_ms=duration_ms,
+        raw={
+            "prompt_tokens": _value(usage, "promptTokenCount"),
+            "completion_tokens": _value(usage, "candidatesTokenCount"),
+        },
+    )
 
 
 async def _post_json(client: Any, url: str, headers: Dict[str, str],

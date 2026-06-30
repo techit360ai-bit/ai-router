@@ -54,6 +54,53 @@ def _layer() -> AICommandLayer:
     return AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
 
 
+class FakeOpenAICompletions:
+    def __init__(self, *, response: object | None = None, error: Exception | None = None) -> None:
+        self.response = response
+        self.error = error
+
+    async def create(self, **_kwargs):
+        if self.error:
+            raise self.error
+        return self.response
+
+
+class FakeOpenAIClient:
+    def __init__(self, *, response: object | None = None, error: Exception | None = None) -> None:
+        completions = FakeOpenAICompletions(response=response, error=error)
+        self.chat = SimpleNamespace(completions=completions)
+
+
+class FakeAnthropicMessages:
+    def __init__(self, *, response: object | None = None, error: Exception | None = None) -> None:
+        self.response = response
+        self.error = error
+
+    async def create(self, **_kwargs):
+        if self.error:
+            raise self.error
+        return self.response
+
+
+class FakeAnthropicClient:
+    def __init__(self, *, response: object | None = None, error: Exception | None = None) -> None:
+        self.messages = FakeAnthropicMessages(response=response, error=error)
+
+
+class FakeCreditLedger:
+    def reserve(self, *, user_context, task_type, cost, operation_id, metadata=None):
+        return SimpleNamespace(
+            cost=cost,
+            from_subscription=cost,
+            from_payg=0,
+            credits_after=user_context.credits_remaining - cost,
+            ledger_id="ledger-test",
+        )
+
+    def refund(self, _reservation, *, reason: str = "") -> None:
+        return None
+
+
 def _req(task: TaskType = TaskType.UNICORN_ANALYSIS) -> AIRequest:
     return AIRequest(task_type=task, user_context=_ctx(), input_data={"idea": "x"})
 
@@ -61,11 +108,15 @@ def _req(task: TaskType = TaskType.UNICORN_ANALYSIS) -> AIRequest:
 async def _test_openai_provider_response_is_normalized() -> None:
     os.environ["OPENAI_API_KEY"] = "test-openai"
     os.environ["AI_USAGE_LEDGER_ENABLED"] = "false"
-    layer = _layer()
-    layer._provider_request = AsyncMock(return_value={
-        "choices": [{"message": {"content": "real response"}}],
-        "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
-    })
+    layer = AICommandLayer(
+        ModelRouter(),
+        PromptEngine(),
+        SafetyEngine(),
+        provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="real response"))],
+            usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7, total_tokens=18),
+        ))},
+    )
 
     response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
 
@@ -84,14 +135,18 @@ async def _test_fallback_uses_next_provider_after_failure() -> None:
     os.environ["OPENAI_API_KEY"] = "test-openai"
     os.environ["ANTHROPIC_API_KEY"] = "test-anthropic"
     os.environ["AI_USAGE_LEDGER_ENABLED"] = "false"
-    layer = _layer()
-    layer._provider_request = AsyncMock(side_effect=[
-        ProviderCallError("openai down"),
-        {
-            "content": [{"type": "text", "text": "anthropic response"}],
-            "usage": {"input_tokens": 10, "output_tokens": 5},
+    layer = AICommandLayer(
+        ModelRouter(),
+        PromptEngine(),
+        SafetyEngine(),
+        provider_clients={
+            "openai": FakeOpenAIClient(error=ProviderCallError("openai down")),
+            "anthropic": FakeAnthropicClient(response=SimpleNamespace(
+                content=[SimpleNamespace(text="anthropic response")],
+                usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            )),
         },
-    ])
+    )
 
     response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
 
@@ -111,7 +166,12 @@ async def _test_missing_keys_fail_closed_without_placeholder() -> None:
         os.environ.pop(key, None)
     os.environ["ENVIRONMENT"] = "production"
     os.environ["DATABASE_URL"] = "postgresql://example"
-    layer = _layer()
+    layer = AICommandLayer(
+        ModelRouter(),
+        PromptEngine(),
+        SafetyEngine(),
+        credit_ledger=FakeCreditLedger(),
+    )
     try:
         await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
     except ProviderConfigurationError as exc:
@@ -126,11 +186,15 @@ async def _test_missing_keys_fail_closed_without_placeholder() -> None:
 async def _test_usage_ledger_recorder_invoked() -> None:
     os.environ["OPENAI_API_KEY"] = "test-openai"
     os.environ["DATABASE_URL"] = "postgresql://example"
-    layer = _layer()
-    layer._provider_request = AsyncMock(return_value={
-        "choices": [{"message": {"content": "ledger response"}}],
-        "usage": {"total_tokens": 9},
-    })
+    layer = AICommandLayer(
+        ModelRouter(),
+        PromptEngine(),
+        SafetyEngine(),
+        provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ledger response"))],
+            usage=SimpleNamespace(total_tokens=9),
+        ))},
+    )
 
     fake_recorder = AsyncMock()
     with patch("ai_router_core.UsageLedgerRecorder.from_env", return_value=fake_recorder):
@@ -148,11 +212,15 @@ async def _test_missing_database_url_fails_closed_in_production() -> None:
     os.environ["ENVIRONMENT"] = "production"
     os.environ.pop("DATABASE_URL", None)
     os.environ.pop("AI_USAGE_LEDGER_ENABLED", None)
-    layer = _layer()
-    layer._provider_request = AsyncMock(return_value={
-        "choices": [{"message": {"content": "should not finish"}}],
-        "usage": {"total_tokens": 4},
-    })
+    layer = AICommandLayer(
+        ModelRouter(),
+        PromptEngine(),
+        SafetyEngine(),
+        provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="should not finish"))],
+            usage=SimpleNamespace(total_tokens=4),
+        ))},
+    )
 
     try:
         await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
