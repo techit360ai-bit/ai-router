@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 import os
 import structlog
+from sqlalchemy import text
 
 from integration_guide import (
     TechITAIBrain,
@@ -56,6 +57,13 @@ from integration_guide import (
     HackathonService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
+from runtime_config import (
+    PROD_ENVS,
+    RuntimeCheck,
+    RuntimeConfigError,
+    assert_runtime_ready,
+    runtime_checks,
+)
 
 logger = structlog.get_logger()
 
@@ -75,6 +83,13 @@ async def lifespan(app: FastAPI):
     # Nothing else should call TechITAIBrain() -- it's a singleton.
     """
     global brain
+    if ENVIRONMENT in PROD_ENVS:
+        try:
+            assert_runtime_ready()
+        except RuntimeConfigError as exc:
+            logger.error("runtime_config_invalid", error=str(exc))
+            raise
+
     brain = TechITAIBrain()
     logger.info(
         "techit_ai_brain_ready",
@@ -145,13 +160,7 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
 
-# Startup guardrail: refuse to boot if demo auth is wired up in a hardened
-# environment. Prevents the silent-anonymous-Founder-Pro footgun in prod.
-if ALLOW_DEMO_AUTH and ENVIRONMENT in {"production", "staging"}:
-    raise RuntimeError(
-        f"ALLOW_DEMO_AUTH=true is forbidden in ENVIRONMENT={ENVIRONMENT}. "
-        "Unset ALLOW_DEMO_AUTH or set it to false before starting the service."
-    )
+# Startup guardrails are enforced in lifespan via runtime_config.assert_runtime_ready.
 
 # Tolerant aliases so tokens minted by the Node backend map onto our enums.
 _ROLE_ALIASES = {
@@ -376,7 +385,7 @@ def get_db():
 
 @app.get("/health", tags=["Status"])
 async def health():
-    """Platform health check. Used by Docker, Kubernetes, and load balancers."""
+    """Liveness check. Does not prove dependencies are ready."""
     return {
         "status":         "healthy",
         "ai_brain":       "operational",
@@ -386,6 +395,38 @@ async def health():
         "scoring_models": 20,
         "db_tables":      42,
     }
+
+
+@app.get("/ready", tags=["Status"])
+async def ready():
+    """Readiness check for runtime config and dependency reachability."""
+    checks = runtime_checks()
+
+    db_ok = True
+    db_detail = "ok"
+    try:
+        Session = _db_session_factory()
+        session = Session()
+        try:
+            session.execute(text("SELECT 1"))
+        finally:
+            session.close()
+    except Exception as exc:  # noqa: BLE001
+        db_ok = False
+        db_detail = str(exc)
+
+    checks.append(RuntimeCheck("database.ping", db_ok, db_detail))
+    ok = all(check.ok for check in checks)
+    body = {
+        "status": "ready" if ok else "not_ready",
+        "checks": [
+            {"name": check.name, "ok": check.ok, "detail": check.detail}
+            for check in checks
+        ],
+    }
+    if not ok:
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @app.get("/", tags=["Status"])
