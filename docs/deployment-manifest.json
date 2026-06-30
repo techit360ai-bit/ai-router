@@ -25,7 +25,7 @@
       ],
       "healthCheck": {
         "method": "GET",
-        "path": "/health",
+        "path": "/ready",
         "expectedStatus": 200
       },
       "dependencies": [

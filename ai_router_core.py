@@ -59,6 +59,8 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from uuid import uuid4
 
 import agent_prompts as AP
+from credit_ledger import CreditLedger, default_credit_ledger
+from provider_adapters import call_provider_model
 
 
 # ============================================================================
@@ -1402,10 +1404,14 @@ class AICommandLayer:
     """
 
     def __init__(self, model_router: ModelRouter, prompt_engine: PromptEngine,
-                 safety_engine: SafetyEngine) -> None:
+                 safety_engine: SafetyEngine,
+                 provider_clients: Optional[Dict[str, Any]] = None,
+                 credit_ledger: Optional[CreditLedger] = None) -> None:
         self.model_router  = model_router
         self.prompt_engine = prompt_engine
         self.safety_engine = safety_engine
+        self.provider_clients = provider_clients or {}
+        self.credit_ledger = credit_ledger or default_credit_ledger()
         self.execution_log: List[Dict] = []
         self.environment = os.getenv("ENVIRONMENT", "development").strip().lower()
         self.allow_placeholder = (

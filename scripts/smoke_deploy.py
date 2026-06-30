@@ -21,6 +21,7 @@ TIMEOUT = env_int("SMOKE_TIMEOUT_SECONDS", 10)
 
 CHECKS = [
     {"name": "ai-router-health", "base": "AI_ROUTER_BASE_URL", "path": "/health", "statuses": {200}},
+    {"name": "ai-router-readiness", "base": "AI_ROUTER_BASE_URL", "path": "/ready", "statuses": {200}},
     {
         "name": "dashboard-auth-boundary",
         "base": "AI_ROUTER_BASE_URL",
