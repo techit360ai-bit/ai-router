@@ -9,6 +9,7 @@ Pytest:
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import os
 import sys
 from types import SimpleNamespace
@@ -52,6 +53,29 @@ def _ctx() -> UserContext:
 
 def _layer() -> AICommandLayer:
     return AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+
+
+PROVIDER_ENV_KEYS = (
+    "AI_USAGE_LEDGER_ENABLED",
+    "ALLOW_AI_PLACEHOLDER_RESPONSES",
+    "ANTHROPIC_API_KEY",
+    "DATABASE_URL",
+    "ENVIRONMENT",
+    "OPENAI_API_KEY",
+)
+
+
+@contextmanager
+def _isolated_provider_env():
+    previous = {key: os.environ.get(key) for key in PROVIDER_ENV_KEYS}
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 class FakeOpenAICompletions:
@@ -106,131 +130,124 @@ def _req(task: TaskType = TaskType.UNICORN_ANALYSIS) -> AIRequest:
 
 
 async def _test_openai_provider_response_is_normalized() -> None:
-    os.environ["OPENAI_API_KEY"] = "test-openai"
-    os.environ["AI_USAGE_LEDGER_ENABLED"] = "false"
-    layer = AICommandLayer(
-        ModelRouter(),
-        PromptEngine(),
-        SafetyEngine(),
-        provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="real response"))],
-            usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7, total_tokens=18),
-        ))},
-    )
+    with _isolated_provider_env():
+        os.environ["ENVIRONMENT"] = "development"
+        os.environ["OPENAI_API_KEY"] = "test-openai"
+        os.environ["AI_USAGE_LEDGER_ENABLED"] = "false"
+        layer = AICommandLayer(
+            ModelRouter(),
+            PromptEngine(),
+            SafetyEngine(),
+            provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="real response"))],
+                usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7, total_tokens=18),
+            ))},
+        )
 
-    response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
+        response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
 
-    assert response.output == "real response"
-    assert response.tokens_used == 18
-    assert response.metadata["provider"] == "openai_gpt4"
-    assert response.metadata["prompt_tokens"] == 11
-    assert response.metadata["completion_tokens"] == 7
-    assert response.credits_consumed > 0
-
-    os.environ.pop("OPENAI_API_KEY", None)
-    os.environ.pop("AI_USAGE_LEDGER_ENABLED", None)
+        assert response.output == "real response"
+        assert response.tokens_used == 18
+        assert response.metadata["provider"] == "openai_gpt4"
+        assert response.metadata["prompt_tokens"] == 11
+        assert response.metadata["completion_tokens"] == 7
+        assert response.credits_consumed > 0
 
 
 async def _test_fallback_uses_next_provider_after_failure() -> None:
-    os.environ["OPENAI_API_KEY"] = "test-openai"
-    os.environ["ANTHROPIC_API_KEY"] = "test-anthropic"
-    os.environ["AI_USAGE_LEDGER_ENABLED"] = "false"
-    layer = AICommandLayer(
-        ModelRouter(),
-        PromptEngine(),
-        SafetyEngine(),
-        provider_clients={
-            "openai": FakeOpenAIClient(error=ProviderCallError("openai down")),
-            "anthropic": FakeAnthropicClient(response=SimpleNamespace(
-                content=[SimpleNamespace(text="anthropic response")],
-                usage=SimpleNamespace(input_tokens=10, output_tokens=5),
-            )),
-        },
-    )
+    with _isolated_provider_env():
+        os.environ["ENVIRONMENT"] = "development"
+        os.environ["OPENAI_API_KEY"] = "test-openai"
+        os.environ["ANTHROPIC_API_KEY"] = "test-anthropic"
+        os.environ["AI_USAGE_LEDGER_ENABLED"] = "false"
+        layer = AICommandLayer(
+            ModelRouter(),
+            PromptEngine(),
+            SafetyEngine(),
+            provider_clients={
+                "openai": FakeOpenAIClient(error=ProviderCallError("openai down")),
+                "anthropic": FakeAnthropicClient(response=SimpleNamespace(
+                    content=[SimpleNamespace(text="anthropic response")],
+                    usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+                )),
+            },
+        )
 
-    response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
+        response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
 
-    assert response.output == "anthropic response"
-    assert response.model_used == "claude-sonnet-4-6"
-    assert response.tokens_used == 15
-    assert response.metadata["attempt"] == 2
-    assert response.metadata["provider"] == "anthropic_claude"
-
-    os.environ.pop("OPENAI_API_KEY", None)
-    os.environ.pop("ANTHROPIC_API_KEY", None)
-    os.environ.pop("AI_USAGE_LEDGER_ENABLED", None)
+        assert response.output == "anthropic response"
+        assert response.model_used == "claude-sonnet-4-6"
+        assert response.tokens_used == 15
+        assert response.metadata["attempt"] == 2
+        assert response.metadata["provider"] == "anthropic_claude"
 
 
 async def _test_missing_keys_fail_closed_without_placeholder() -> None:
-    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ALLOW_AI_PLACEHOLDER_RESPONSES"):
-        os.environ.pop(key, None)
-    os.environ["ENVIRONMENT"] = "production"
-    os.environ["DATABASE_URL"] = "postgresql://example"
-    layer = AICommandLayer(
-        ModelRouter(),
-        PromptEngine(),
-        SafetyEngine(),
-        credit_ledger=FakeCreditLedger(),
-    )
-    try:
-        await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
-    except ProviderConfigurationError as exc:
-        assert "OPENAI_API_KEY" in str(exc) or "ANTHROPIC_API_KEY" in str(exc)
-    else:
-        raise AssertionError("missing provider keys must fail closed")
-    finally:
-        os.environ.pop("ENVIRONMENT", None)
-        os.environ.pop("DATABASE_URL", None)
+    with _isolated_provider_env():
+        for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ALLOW_AI_PLACEHOLDER_RESPONSES"):
+            os.environ.pop(key, None)
+        os.environ["ENVIRONMENT"] = "production"
+        os.environ["DATABASE_URL"] = "postgresql://example"
+        os.environ.pop("AI_USAGE_LEDGER_ENABLED", None)
+        layer = AICommandLayer(
+            ModelRouter(),
+            PromptEngine(),
+            SafetyEngine(),
+            credit_ledger=FakeCreditLedger(),
+        )
+        try:
+            await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
+        except ProviderConfigurationError as exc:
+            assert "OPENAI_API_KEY" in str(exc) or "ANTHROPIC_API_KEY" in str(exc)
+        else:
+            raise AssertionError("missing provider keys must fail closed")
 
 
 async def _test_usage_ledger_recorder_invoked() -> None:
-    os.environ["OPENAI_API_KEY"] = "test-openai"
-    os.environ["DATABASE_URL"] = "postgresql://example"
-    layer = AICommandLayer(
-        ModelRouter(),
-        PromptEngine(),
-        SafetyEngine(),
-        provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="ledger response"))],
-            usage=SimpleNamespace(total_tokens=9),
-        ))},
-    )
+    with _isolated_provider_env():
+        os.environ["ENVIRONMENT"] = "development"
+        os.environ["OPENAI_API_KEY"] = "test-openai"
+        os.environ["DATABASE_URL"] = "postgresql://example"
+        layer = AICommandLayer(
+            ModelRouter(),
+            PromptEngine(),
+            SafetyEngine(),
+            provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ledger response"))],
+                usage=SimpleNamespace(total_tokens=9),
+            ))},
+        )
 
-    fake_recorder = AsyncMock()
-    with patch("ai_router_core.UsageLedgerRecorder.from_env", return_value=fake_recorder):
-        response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
+        fake_recorder = AsyncMock()
+        with patch("ai_router_core.UsageLedgerRecorder.from_env", return_value=fake_recorder):
+            response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
 
-    fake_recorder.record.assert_awaited_once()
-    assert response.metadata.get("request_id")
-
-    os.environ.pop("OPENAI_API_KEY", None)
-    os.environ.pop("DATABASE_URL", None)
+        fake_recorder.record.assert_awaited_once()
+        assert response.metadata.get("request_id")
 
 
 async def _test_missing_database_url_fails_closed_in_production() -> None:
-    os.environ["OPENAI_API_KEY"] = "test-openai"
-    os.environ["ENVIRONMENT"] = "production"
-    os.environ.pop("DATABASE_URL", None)
-    os.environ.pop("AI_USAGE_LEDGER_ENABLED", None)
-    layer = AICommandLayer(
-        ModelRouter(),
-        PromptEngine(),
-        SafetyEngine(),
-        provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="should not finish"))],
-            usage=SimpleNamespace(total_tokens=4),
-        ))},
-    )
+    with _isolated_provider_env():
+        os.environ["OPENAI_API_KEY"] = "test-openai"
+        os.environ["ENVIRONMENT"] = "production"
+        os.environ.pop("DATABASE_URL", None)
+        os.environ.pop("AI_USAGE_LEDGER_ENABLED", None)
+        layer = AICommandLayer(
+            ModelRouter(),
+            PromptEngine(),
+            SafetyEngine(),
+            provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="should not finish"))],
+                usage=SimpleNamespace(total_tokens=4),
+            ))},
+        )
 
-    try:
-        await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
-    except ProviderConfigurationError as exc:
-        assert "DATABASE_URL" in str(exc)
-    else:
-        raise AssertionError("production ledger requires DATABASE_URL")
-    finally:
-        os.environ.pop("OPENAI_API_KEY", None)
-        os.environ.pop("ENVIRONMENT", None)
+        try:
+            await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
+        except ProviderConfigurationError as exc:
+            assert "DATABASE_URL" in str(exc)
+        else:
+            raise AssertionError("production ledger requires DATABASE_URL")
 
 
 def _test_credit_debit_uses_subscription_then_payg() -> None:
