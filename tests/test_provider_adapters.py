@@ -320,7 +320,8 @@ def test_ai_command_layer_falls_back_to_next_provider_adapter() -> None:
             response = await brain._execute_with_retry(chain, "prompt", _req(TaskType.UNICORN_ANALYSIS))
             assert response.output == "Anthropic normalized response"
             assert response.model_used == "claude-sonnet-4-6"
-            assert response.metadata == {"attempt": 2, "provider": "anthropic_claude"}
+            assert response.metadata["attempt"] == 2
+            assert response.metadata["provider"] == "anthropic_claude"
         finally:
             os.environ.pop("OPENAI_API_KEY", None)
             os.environ.pop("ANTHROPIC_API_KEY", None)

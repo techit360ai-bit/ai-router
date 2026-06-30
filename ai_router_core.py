@@ -60,7 +60,11 @@ from uuid import uuid4
 
 import agent_prompts as AP
 from credit_ledger import CreditLedger, default_credit_ledger
-from provider_adapters import call_provider_model
+from provider_adapters import (
+    ProviderConfigError as AdapterProviderConfigError,
+    ProviderError as AdapterProviderError,
+    call_provider_model,
+)
 
 
 # ============================================================================
@@ -1445,10 +1449,24 @@ class AICommandLayer:
         )
         chain    = self.model_router.select_chain(request)
         request_id = str(uuid4())
-        response = await self._execute_with_retry(chain, prompt, request)
+        credit_cost = CreditCost.cost_for(request.task_type)
+        reservation = self.credit_ledger.reserve(
+            user_context=request.user_context,
+            task_type=request.task_type.value,
+            cost=credit_cost,
+            operation_id=request_id,
+            metadata={"provider_chain": [config.provider.value for config in chain]},
+        )
+        try:
+            response = await self._execute_with_retry(chain, prompt, request)
+        except Exception as exc:
+            self.credit_ledger.refund(reservation, reason=f"Provider failed: {exc}")
+            raise
 
-        response.credits_consumed = CreditCost.cost_for(request.task_type)
+        response.credits_consumed = credit_cost
         response.metadata.setdefault("request_id", request_id)
+        response.metadata.setdefault("credit_ledger_id", reservation.ledger_id)
+        response.metadata.setdefault("credits_after", reservation.credits_after)
         elapsed = (datetime.now() - start).total_seconds() * 1000
         await self._log(request, response, elapsed)
         await self._record_usage(request, response, elapsed)
@@ -1483,9 +1501,6 @@ class AICommandLayer:
         """
         Routes to the configured provider and normalizes response shape:
         {"text": str, "tokens": int, "confidence": float, "duration_ms": int}.
-
-        Tests mock `_provider_request`; production uses direct HTTPS calls so the
-        core module does not require provider SDK imports just to boot.
         """
         if model_config.api_key_env and not os.environ.get(model_config.api_key_env):
             if self.allow_placeholder and self.environment not in {"production", "staging"}:
@@ -1494,77 +1509,25 @@ class AICommandLayer:
                 f"{model_config.provider.value} requires {model_config.api_key_env}"
             )
 
-        started = time.perf_counter()
         try:
-            if model_config.provider in {
-                ModelProvider.OPENAI_GPT4,
-                ModelProvider.OPENAI_GPT4_MINI,
-            }:
-                payload = self._openai_payload(model_config, prompt, request)
-                raw = await self._provider_request(
-                    "https://api.openai.com/v1/chat/completions",
-                    os.environ["OPENAI_API_KEY"],
-                    payload,
-                )
-                return self._normalize_openai(raw, started)
-
-            if model_config.provider in {
-                ModelProvider.ANTHROPIC_CLAUDE,
-                ModelProvider.ANTHROPIC_HAIKU,
-            }:
-                payload = self._anthropic_payload(model_config, prompt, request)
-                raw = await self._provider_request(
-                    "https://api.anthropic.com/v1/messages",
-                    os.environ["ANTHROPIC_API_KEY"],
-                    payload,
-                    extra_headers={"anthropic-version": "2023-06-01"},
-                )
-                return self._normalize_anthropic(raw, started)
-
-            if model_config.provider is ModelProvider.COHERE_EMBED:
-                payload = {
-                    "model": model_config.model_name,
-                    "texts": [prompt],
-                    "input_type": "search_document",
-                }
-                raw = await self._provider_request(
-                    "https://api.cohere.com/v1/embed",
-                    os.environ["COHERE_API_KEY"],
-                    payload,
-                )
-                return self._normalize_cohere(raw, started)
-
-            if model_config.provider in {
-                ModelProvider.GEMINI_FLASH,
-                ModelProvider.GEMINI_FLASH_LITE,
-            }:
-                payload = self._gemini_payload(prompt, request)
-                url = (
-                    "https://generativelanguage.googleapis.com/v1beta/models/"
-                    f"{model_config.model_name}:generateContent"
-                    f"?key={os.environ['GEMINI_API_KEY']}"
-                )
-                raw = await self._provider_request(url, None, payload)
-                return self._normalize_gemini(raw, started)
-
-            if model_config.provider is ModelProvider.OPENROUTER_FREE:
-                payload = self._openai_payload(model_config, prompt, request)
-                raw = await self._provider_request(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    os.environ["OPENROUTER_API_KEY"],
-                    payload,
-                    extra_headers={
-                        "HTTP-Referer": os.getenv("TECHIT_PUBLIC_URL", "https://techit.network"),
-                        "X-Title": "TechIT AI Router",
-                    },
-                )
-                return self._normalize_openai(raw, started)
+            response = await call_provider_model(
+                model_config,
+                prompt,
+                request,
+                clients=self.provider_clients,
+            )
+            output = response.as_ai_output()
+            output["prompt_tokens"] = response.raw.get("prompt_tokens")
+            output["completion_tokens"] = response.raw.get("completion_tokens")
+            return output
         except (ProviderConfigurationError, ProviderCallError):
             raise
+        except AdapterProviderConfigError as exc:
+            raise ProviderConfigurationError(str(exc)) from exc
+        except AdapterProviderError as exc:
+            raise ProviderCallError(str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
             raise ProviderCallError(f"{model_config.provider.value} failed: {exc}") from exc
-
-        raise ProviderConfigurationError(f"unsupported provider {model_config.provider.value}")
 
     @staticmethod
     def _openai_payload(model_config: ModelConfig, prompt: str, request: AIRequest) -> Dict:
