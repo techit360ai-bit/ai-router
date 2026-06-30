@@ -452,6 +452,40 @@ class AIOutput(Base):
     )
 
 
+class AIUsageLedger(Base):
+    """Provider execution ledger keyed by request id.
+
+    This is intentionally narrower than `ai_outputs`: every provider attempt
+    that returns a response can be audited by user, provider, model, token
+    usage, cost, credit cost, and request id without requiring an AIPrompt row.
+    """
+    __tablename__ = "ai_usage_ledger"
+
+    id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    request_id        = Column(String(64), unique=True, nullable=False)
+    user_id           = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    workspace_id      = Column(String(100))
+    provider          = Column(String(64), nullable=False)
+    model             = Column(String(100), nullable=False)
+    task_type         = Column(String(100), nullable=False)
+    tokens_used       = Column(Integer, default=0, nullable=False)
+    prompt_tokens     = Column(Integer)
+    completion_tokens = Column(Integer)
+    cost_usd          = Column(DECIMAL(10, 6), default=0)
+    credits_consumed  = Column(Integer, default=0, nullable=False)
+    latency_ms        = Column(Integer)
+    status            = Column(String(32), default="success", nullable=False)
+    metadata_         = Column("metadata", JSON)
+    created_at        = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_ai_usage_user_created", "user_id", "created_at"),
+        Index("idx_ai_usage_provider_model", "provider", "model"),
+        Index("idx_ai_usage_task_type", "task_type"),
+        Index("idx_ai_usage_request_id", "request_id"),
+    )
+
+
 class AIAudioOutput(Base):
     """Audio versions of AI outputs (Tour Guide briefings, training narration)."""
     __tablename__ = "ai_audio_outputs"
