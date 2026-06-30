@@ -55,6 +55,8 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import agent_prompts as AP
+from credit_ledger import CreditLedger, default_credit_ledger
+from provider_adapters import call_provider_model
 
 
 # ============================================================================
@@ -1386,10 +1388,14 @@ class AICommandLayer:
     """
 
     def __init__(self, model_router: ModelRouter, prompt_engine: PromptEngine,
-                 safety_engine: SafetyEngine) -> None:
+                 safety_engine: SafetyEngine,
+                 provider_clients: Optional[Dict[str, Any]] = None,
+                 credit_ledger: Optional[CreditLedger] = None) -> None:
         self.model_router  = model_router
         self.prompt_engine = prompt_engine
         self.safety_engine = safety_engine
+        self.provider_clients = provider_clients or {}
+        self.credit_ledger = credit_ledger or default_credit_ledger()
         self.execution_log: List[Dict] = []
 
     async def process_request(self, request: AIRequest) -> AIResponse:
@@ -1413,10 +1419,33 @@ class AICommandLayer:
         prompt       = await self.prompt_engine.build_prompt(
             request.task_type, context, request.user_context.role
         )
-        chain    = self.model_router.select_chain(request)
-        response = await self._execute_with_retry(chain, prompt, request)
 
-        response.credits_consumed = CreditCost.cost_for(request.task_type)
+        credit_cost = CreditCost.cost_for(request.task_type)
+        reservation = self.credit_ledger.reserve(
+            user_context=request.user_context,
+            task_type=request.task_type.value,
+            cost=credit_cost,
+            operation_id=request.task_type.value,
+            metadata={"ip_protected": request.ip_protected},
+        )
+
+        try:
+            chain    = self.model_router.select_chain(request)
+            response = await self._execute_with_retry(chain, prompt, request)
+        except Exception:
+            self.credit_ledger.refund(
+                reservation,
+                reason=f"Provider failed for {request.task_type.value}; credit reservation refunded",
+            )
+            raise
+
+        response.credits_consumed = credit_cost
+        response.metadata.update({
+            "credit_ledger_id": reservation.ledger_id,
+            "credits_after": reservation.credits_after,
+            "credits_from_subscription": reservation.from_subscription,
+            "credits_from_payg": reservation.from_payg,
+        })
         elapsed = (datetime.now() - start).total_seconds() * 1000
         await self._log(request, response, elapsed)
         return response
@@ -1445,12 +1474,13 @@ class AICommandLayer:
 
     async def _call_llm(self, model_config: ModelConfig, prompt: str,
                          request: AIRequest) -> Dict:
-        """
-        Production: routes to OpenAI / Anthropic / Cohere based on model_config.provider.
-        Abstracted here for portability.
-        """
-        return {"text": "AI Response Placeholder", "tokens": 500,
-                "confidence": 0.95, "duration_ms": 1200}
+        response = await call_provider_model(
+            model_config,
+            prompt,
+            request,
+            clients=self.provider_clients,
+        )
+        return response.as_ai_output()
 
     async def _log(self, request: AIRequest, response: AIResponse, elapsed_ms: float) -> None:
         self.execution_log.append({

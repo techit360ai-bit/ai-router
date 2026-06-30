@@ -57,6 +57,7 @@ from integration_guide import (
     HackathonService,
 )
 from ai_router_core import UserContext, UserRole, SubscriptionTier
+from credit_ledger import SQLAlchemySessionFactoryCreditLedger
 from runtime_config import (
     PROD_ENVS,
     RuntimeCheck,
@@ -91,6 +92,10 @@ async def lifespan(app: FastAPI):
             raise
 
     brain = TechITAIBrain()
+    if ENVIRONMENT in PROD_ENVS:
+        brain.command_layer.credit_ledger = SQLAlchemySessionFactoryCreditLedger(
+            _db_session_factory()
+        )
     logger.info(
         "techit_ai_brain_ready",
         agents=34,
