@@ -1,0 +1,129 @@
+{
+  "version": 1,
+  "topology": "techit-ai-router",
+  "services": [
+    {
+      "name": "ai-router-api",
+      "path": ".",
+      "runtime": "python-3.11",
+      "image": "Dockerfile.api",
+      "startCommand": "uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4",
+      "envFile": ".env.example",
+      "requiredEnv": [
+        "ENVIRONMENT",
+        "ALLOW_DEMO_AUTH",
+        "JWT_SECRET",
+        "DATABASE_URL",
+        "REDIS_URL",
+        "ALLOWED_ORIGINS",
+        "MCP_BASE_URL",
+        "MCP_TIMEOUT",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET"
+      ],
+      "healthCheck": {
+        "method": "GET",
+        "path": "/health",
+        "expectedStatus": 200
+      },
+      "dependencies": [
+        "postgres-pgvector",
+        "redis",
+        "backends-mcp",
+        "provider-integrations"
+      ]
+    },
+    {
+      "name": "ai-router-worker",
+      "path": "workers",
+      "runtime": "python-3.11",
+      "image": "Dockerfile.worker",
+      "startCommand": "celery -A workers.workers worker --loglevel=info --concurrency=4 -Q default,ai_heavy,ai_light,scheduled",
+      "envFile": ".env.example",
+      "requiredEnv": [
+        "ENVIRONMENT",
+        "DATABASE_URL",
+        "REDIS_URL",
+        "CELERY_BROKER",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY"
+      ],
+      "dependencies": [
+        "postgres-pgvector",
+        "redis",
+        "provider-integrations"
+      ]
+    },
+    {
+      "name": "ai-router-scheduler",
+      "path": "workers",
+      "runtime": "python-3.11",
+      "image": "Dockerfile.worker",
+      "startCommand": "celery -A workers.workers beat --loglevel=info",
+      "envFile": ".env.example",
+      "requiredEnv": [
+        "ENVIRONMENT",
+        "CELERY_BROKER",
+        "REDIS_URL"
+      ],
+      "dependencies": [
+        "redis",
+        "ai-router-worker"
+      ]
+    },
+    {
+      "name": "postgres-pgvector",
+      "image": "pgvector/pgvector:pg16",
+      "provides": [
+        "DATABASE_URL"
+      ],
+      "healthCheck": {
+        "command": "pg_isready -U techit"
+      },
+      "migrations": {
+        "command": "alembic upgrade head",
+        "dryRunCommand": "alembic current"
+      }
+    },
+    {
+      "name": "redis",
+      "image": "redis:7-alpine",
+      "provides": [
+        "REDIS_URL",
+        "CELERY_BROKER"
+      ],
+      "healthCheck": {
+        "command": "redis-cli ping"
+      }
+    },
+    {
+      "name": "provider-integrations",
+      "requiredEnv": [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY"
+      ],
+      "optionalEnv": [
+        "COHERE_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "PINECONE_API_KEY",
+        "ELEVENLABS_API_KEY"
+      ]
+    },
+    {
+      "name": "backends-mcp",
+      "requiredEnv": [
+        "MCP_BASE_URL",
+        "MCP_TIMEOUT"
+      ],
+      "healthCheck": {
+        "method": "GET",
+        "path": "/health",
+        "expectedStatus": 401,
+        "note": "Mounted BACKEND /api/mcp health rejects unauthenticated probes."
+      }
+    }
+  ]
+}
