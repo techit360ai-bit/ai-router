@@ -14,7 +14,7 @@ Start (production, via Docker):
     uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 """
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -642,9 +642,12 @@ async def compute_gsis(
 # ============================================================================
 
 @app.post("/api/v1/tour-guide/daily-check-in", tags=["Tour Guide"])
-async def daily_check_in(user: UserContext = Depends(get_user_context)):
+async def daily_check_in(
+    body: Optional[Dict[str, Any]] = Body(default=None),
+    user: UserContext = Depends(get_user_context),
+):
     """Daily momentum check-in. 0 credits, Free+"""
-    return await TourGuideService(brain).daily_check_in(user)
+    return await TourGuideService(brain).daily_check_in(user, body or {})
 
 
 # ============================================================================
