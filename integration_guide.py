@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from ai_router_core import (
     AICommandLayer, ModelRouter, PromptEngine, SafetyEngine,
@@ -40,6 +41,12 @@ from ai_router_core import (
 )
 from agent_orchestration import (
     AgentOrchestrator, AgentType, AgentContext, VenturePipeline,
+)
+from trust_engine_lite import (
+    FounderTrustProfile,
+    TrustEngineComputer,
+    VerificationSource,
+    VerificationStatus,
 )
 
 
@@ -1699,6 +1706,670 @@ class IPProtectionService:
             ],
             "audit_trail": "Every AI execution logged in ai_outputs with ip_protected flag",
         }
+
+
+# ============================================================================
+# TRUST ENGINE LITE SERVICE
+# ============================================================================
+
+class TrustVerificationService:
+    """
+    Privacy-first Trust Engine Lite API contract layer.
+
+    Wave 37 deliberately does not perform live OAuth, OTP, DNS, deployment, or
+    analytics calls. It accepts only provider-derived metadata summaries from
+    future integration adapters and persists append-only verification/timeline
+    records when a database session is provided.
+    """
+
+    METADATA_FIELDS: Dict[str, set[str]] = {
+        VerificationSource.EMAIL.value: {"verified", "verified_at", "confidence"},
+        VerificationSource.PHONE.value: {"verified", "verified_at", "confidence"},
+        VerificationSource.GITHUB.value: {
+            "github_repo_count",
+            "github_commit_count",
+            "github_contributor_count",
+            "github_last_activity_at",
+            "repo_count",
+            "commit_count",
+            "contributor_count",
+            "last_activity",
+            "confidence",
+            "verified",
+        },
+        VerificationSource.LINKEDIN.value: {"connected", "verified", "confidence"},
+        VerificationSource.DOMAIN.value: {
+            "domain",
+            "method",
+            "verified",
+            "verified_at",
+            "expires_at",
+            "confidence",
+        },
+        VerificationSource.WEBSITE.value: {
+            "website",
+            "method",
+            "verified",
+            "verified_at",
+            "expires_at",
+            "confidence",
+        },
+        VerificationSource.ORGANIZATION.value: {
+            "organization_id",
+            "company_name",
+            "country",
+            "verified",
+            "business_verification_status",
+            "confidence",
+        },
+        VerificationSource.DEPLOYMENT.value: {
+            "platform",
+            "deployment_status",
+            "deployment_live",
+            "deployments_30d",
+            "last_deployment_at",
+            "last_deployment",
+            "success_rate",
+            "confidence",
+            "verified",
+        },
+        VerificationSource.PRODUCT_ANALYTICS.value: {
+            "provider",
+            "mau",
+            "dau",
+            "growth_rate_pct",
+            "retention_rate_pct",
+            "growth_pct",
+            "retention_pct",
+            "confidence",
+            "verified",
+        },
+        VerificationSource.TEAM.value: {
+            "verified_team_count",
+            "pending_invitations",
+            "verified",
+            "confidence",
+        },
+        VerificationSource.MILESTONE.value: {
+            "milestone",
+            "evidence_url",
+            "approval_status",
+            "approved_by",
+            "verified",
+            "confidence",
+        },
+    }
+    SOURCE_ALIASES = {
+        "firebase": VerificationSource.PRODUCT_ANALYTICS.value,
+        "supabase": VerificationSource.PRODUCT_ANALYTICS.value,
+        "product": VerificationSource.PRODUCT_ANALYTICS.value,
+        "analytics": VerificationSource.PRODUCT_ANALYTICS.value,
+        "org": VerificationSource.ORGANIZATION.value,
+    }
+    FORBIDDEN_TERMS = (
+        "token",
+        "secret",
+        "password",
+        "raw",
+        "payload",
+        "source_code",
+        "repository_content",
+        "repo_content",
+        "contact",
+        "message",
+        "document_blob",
+        "analytics_event",
+        "session",
+        "user_email",
+        "user_id",
+    )
+
+    def __init__(self, brain: TechITAIBrain) -> None:
+        self.brain = brain
+
+    def get_profile(
+        self,
+        user_context: UserContext,
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """GET /api/v1/trust/profile -- 0 credits, Free+."""
+        row = self._load_profile_row(user_context, db)
+        profile = self._profile_from_row(user_context, row)
+        computed = TrustEngineComputer.compute(profile)
+
+        return {
+            "user_id": user_context.user_id,
+            "project_id": user_context.project_id,
+            "verification_status": profile.verification_status,
+            "trust_score": computed["trust_score"],
+            "tier": computed["tier"],
+            "confidence_score": self._confidence_from_score(computed["trust_score"]),
+            "badges": computed["badges"],
+            "signals": computed["signals"],
+            "breakdown": computed["breakdown"],
+            "last_sync_at": self._iso(profile.last_sync_at),
+            "computed_at": computed["computed_at"],
+            "privacy": self._privacy_notice(),
+        }
+
+    def get_badges(
+        self,
+        user_context: UserContext,
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """GET /api/v1/trust/badges -- 0 credits, Free+."""
+        row = self._load_profile_row(user_context, db)
+        profile = self._profile_from_row(user_context, row)
+        badges = TrustEngineComputer.compute_badges(profile)
+        return {
+            "user_id": user_context.user_id,
+            "project_id": user_context.project_id,
+            "badges": [self._badge_to_dict(b) for b in badges],
+            "active_badges": [b.label for b in badges if b.is_active],
+            "privacy": "Badges are derived metadata only and expire with their source verification.",
+        }
+
+    def get_history(
+        self,
+        user_context: UserContext,
+        db: Any = None,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """GET /api/v1/trust/history -- 0 credits, Free+."""
+        rows = self._load_history_rows(user_context, db, limit)
+        return {
+            "user_id": user_context.user_id,
+            "project_id": user_context.project_id,
+            "history": [self._history_row_to_dict(r) for r in rows],
+            "append_only": True,
+            "privacy": "History stores verification result metadata and hashes, not provider payloads.",
+        }
+
+    def verify_source(
+        self,
+        user_context: UserContext,
+        source: str,
+        body: Optional[Dict[str, Any]] = None,
+        db: Any = None,
+        *,
+        action: str = "verify",
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/trust/verify/{source} -- 1 credit, Free+.
+
+        The request body is treated as adapter metadata, not raw provider data.
+        Unknown and sensitive keys are dropped before hashing/persistence.
+        """
+        body = body or {}
+        canonical_source = self._canonical_source(source)
+        metadata = self._sanitize_metadata(canonical_source, body)
+        status = self._status_for_action(action, metadata)
+        confidence = self._confidence_for(status, metadata)
+        now = datetime.utcnow()
+
+        record = TrustEngineComputer.build_verification_record(
+            verification_id=str(body.get("verification_id") or f"trust_{uuid4().hex}"),
+            subject_id=str(body.get("subject_id") or user_context.project_id or user_context.user_id),
+            subject_type=str(body.get("subject_type") or ("project" if user_context.project_id else "user")),
+            source=canonical_source,
+            status=status,
+            confidence=confidence,
+            metadata=metadata,
+            created_at=now,
+            reference_id=body.get("reference_id"),
+        )
+        persisted = self._persist_verification(user_context, canonical_source, metadata, record, db)
+        trust_profile = self.get_profile(user_context, db)
+
+        return {
+            "verification": self._record_to_dict(record),
+            "source": canonical_source,
+            "status": status.value,
+            "confidence": confidence,
+            "metadata_stored": metadata,
+            "metadata_hash": record.metadata_hash,
+            "raw_payload_stored": False,
+            "dropped_fields": self._dropped_fields(canonical_source, body),
+            "expires_at": record.expires_at.isoformat(),
+            "persisted": persisted,
+            "trust_profile": trust_profile,
+            "next_action": self._next_action(canonical_source, status),
+        }
+
+    def disconnect_source(
+        self,
+        user_context: UserContext,
+        source: str,
+        body: Optional[Dict[str, Any]] = None,
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/trust/disconnect/{source} -- 0 credits, Free+."""
+        body = {**(body or {}), "verified": False, "disconnected": True}
+        result = self.verify_source(user_context, source, body, db, action="disconnect")
+        result["next_action"] = "Reconnect the integration or leave it disconnected."
+        return result
+
+    def refresh_source(
+        self,
+        user_context: UserContext,
+        source: str,
+        body: Optional[Dict[str, Any]] = None,
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/trust/refresh/{source} -- 1 credit, Free+."""
+        body = {**(body or {}), "manual_refresh": True}
+        return self.verify_source(user_context, source, body, db, action="refresh")
+
+    def submit_milestone(
+        self,
+        user_context: UserContext,
+        body: Dict[str, Any],
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/trust/milestone -- 1 credit, Free+."""
+        milestone_body = {
+            **body,
+            "milestone": body.get("milestone") or body.get("title"),
+            "evidence_url": body.get("evidence_url") or body.get("url"),
+            "approval_status": body.get("approval_status", "pending"),
+            "approved_by": body.get("approved_by"),
+            "verified": body.get("approval_status") == "approved",
+            "confidence": body.get("confidence", 0.5),
+            "subject_type": "milestone",
+            "subject_id": body.get("milestone_id") or body.get("reference_id") or user_context.project_id or user_context.user_id,
+            "reference_id": body.get("reference_id"),
+        }
+        result = self.verify_source(user_context, VerificationSource.MILESTONE.value, milestone_body, db)
+        result["review_status"] = milestone_body["approval_status"]
+        result["next_action"] = "Admin review required before the milestone becomes investor-visible."
+        return result
+
+    @classmethod
+    def _canonical_source(cls, source: str) -> str:
+        value = (source or "").strip().lower()
+        value = cls.SOURCE_ALIASES.get(value, value)
+        allowed = {s.value for s in VerificationSource}
+        if value not in allowed:
+            raise ValueError(f"Unsupported trust verification source: {source}")
+        return value
+
+    @classmethod
+    def _sanitize_metadata(cls, source: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        allowed = cls.METADATA_FIELDS[source]
+        clean: Dict[str, Any] = {}
+        for key, value in (body or {}).items():
+            key_norm = str(key).strip()
+            key_lower = key_norm.lower()
+            if key_lower not in allowed:
+                continue
+            if any(term in key_lower for term in cls.FORBIDDEN_TERMS):
+                continue
+            if not cls._is_safe_metadata_value(value):
+                continue
+            clean[key_lower] = cls._safe_scalar(value)
+
+        if source == VerificationSource.GITHUB.value:
+            cls._copy_alias(clean, "repo_count", "github_repo_count")
+            cls._copy_alias(clean, "commit_count", "github_commit_count")
+            cls._copy_alias(clean, "contributor_count", "github_contributor_count")
+            cls._copy_alias(clean, "last_activity", "github_last_activity_at")
+        if source == VerificationSource.DEPLOYMENT.value:
+            cls._copy_alias(clean, "last_deployment", "last_deployment_at")
+        if source == VerificationSource.PRODUCT_ANALYTICS.value:
+            cls._copy_alias(clean, "growth_pct", "growth_rate_pct")
+            cls._copy_alias(clean, "retention_pct", "retention_rate_pct")
+
+        return clean
+
+    @staticmethod
+    def _copy_alias(data: Dict[str, Any], src: str, dest: str) -> None:
+        if src in data and dest not in data:
+            data[dest] = data[src]
+
+    @classmethod
+    def _is_safe_metadata_value(cls, value: Any) -> bool:
+        return isinstance(value, (str, int, float, bool, datetime)) or value is None
+
+    @classmethod
+    def _safe_scalar(cls, value: Any) -> Any:
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
+
+    @classmethod
+    def _dropped_fields(cls, source: str, body: Dict[str, Any]) -> List[str]:
+        allowed = cls.METADATA_FIELDS[source]
+        dropped = []
+        for key, value in (body or {}).items():
+            key_lower = str(key).strip().lower()
+            if (
+                key_lower not in allowed
+                or any(term in key_lower for term in cls.FORBIDDEN_TERMS)
+                or not cls._is_safe_metadata_value(value)
+            ):
+                dropped.append(str(key))
+        return sorted(set(dropped))
+
+    @staticmethod
+    def _status_for_action(action: str, metadata: Dict[str, Any]) -> VerificationStatus:
+        if action == "disconnect":
+            return VerificationStatus.DISCONNECTED
+        if str(metadata.get("approval_status", "")).lower() == "rejected":
+            return VerificationStatus.FAILED
+        if metadata.get("verified") is True or str(metadata.get("approval_status", "")).lower() == "approved":
+            return VerificationStatus.VERIFIED
+        if action == "refresh":
+            return VerificationStatus.PENDING
+        return VerificationStatus.PENDING
+
+    @staticmethod
+    def _confidence_for(status: VerificationStatus, metadata: Dict[str, Any]) -> float:
+        try:
+            supplied = float(metadata.get("confidence"))
+        except (TypeError, ValueError):
+            supplied = 0.0
+        if supplied:
+            return round(max(0.0, min(1.0, supplied)), 4)
+        if status == VerificationStatus.VERIFIED:
+            return 0.95
+        if status == VerificationStatus.DISCONNECTED:
+            return 0.0
+        if status == VerificationStatus.FAILED:
+            return 0.1
+        return 0.5
+
+    @staticmethod
+    def _confidence_from_score(score: float) -> float:
+        return round(max(0.0, min(1.0, score / 100.0)), 4)
+
+    def _load_profile_row(self, user_context: UserContext, db: Any = None) -> Any:
+        if db is None:
+            return None
+        try:
+            from database_schema import TrustProfile
+
+            query = db.query(TrustProfile).filter(TrustProfile.user_id == user_context.user_id)
+            if user_context.project_id:
+                query = query.filter(TrustProfile.project_id == user_context.project_id)
+            return query.first()
+        except Exception:
+            return None
+
+    def _load_history_rows(self, user_context: UserContext, db: Any = None, limit: int = 50) -> List[Any]:
+        if db is None:
+            return []
+        try:
+            from database_schema import TrustVerificationHistory
+
+            capped = min(max(int(limit), 1), 100)
+            query = db.query(TrustVerificationHistory).filter(
+                TrustVerificationHistory.user_id == user_context.user_id
+            )
+            if user_context.project_id:
+                query = query.filter(TrustVerificationHistory.project_id == user_context.project_id)
+            return query.order_by(TrustVerificationHistory.created_at.desc()).limit(capped).all()
+        except Exception:
+            return []
+
+    def _persist_verification(
+        self,
+        user_context: UserContext,
+        source: str,
+        metadata: Dict[str, Any],
+        record: Any,
+        db: Any = None,
+    ) -> bool:
+        if db is None:
+            return False
+
+        try:
+            from database_schema import (
+                TrustBadgeSnapshot,
+                TrustProfile,
+                TrustTimelineEvent,
+                TrustVerificationHistory,
+            )
+
+            profile_row = self._load_profile_row(user_context, db)
+            if profile_row is None:
+                profile_row = TrustProfile(
+                    user_id=user_context.user_id,
+                    project_id=user_context.project_id,
+                )
+                db.add(profile_row)
+
+            self._apply_source_to_profile(profile_row, source, metadata, record.status, record.created_at)
+            profile = self._profile_from_row(user_context, profile_row)
+            computed = TrustEngineComputer.compute(profile, now=record.created_at)
+            profile_row.trust_score = computed["trust_score"]
+            profile_row.confidence_score = self._confidence_from_score(computed["trust_score"])
+            profile_row.badges = computed["badges"]
+
+            db.add(TrustVerificationHistory(
+                verification_id=record.verification_id,
+                user_id=user_context.user_id,
+                project_id=user_context.project_id,
+                subject_id=record.subject_id,
+                subject_type=record.subject_type,
+                source=self._schema_enum("VerificationSourceEnum", source),
+                status=self._schema_enum("VerificationStatusEnum", record.status),
+                confidence=record.confidence,
+                metadata_hash=record.metadata_hash,
+                reference_id=record.reference_id,
+                event_type=record.event_type,
+                expires_at=record.expires_at,
+                created_at=record.created_at,
+            ))
+
+            timeline_payload = {
+                "event_type": record.event_type,
+                "reference_id": record.reference_id,
+                "source": source,
+                "status": record.status,
+                "created_at": record.created_at.isoformat(),
+            }
+            db.add(TrustTimelineEvent(
+                user_id=user_context.user_id,
+                project_id=user_context.project_id,
+                event_type=record.event_type,
+                reference_id=record.reference_id,
+                visibility="private",
+                source=self._schema_enum("VerificationSourceEnum", source),
+                content_hash=TrustEngineComputer.hash_metadata(timeline_payload),
+                created_at=record.created_at,
+            ))
+
+            for badge in computed["badge_records"]:
+                if badge.is_active:
+                    db.add(TrustBadgeSnapshot(
+                        user_id=user_context.user_id,
+                        project_id=user_context.project_id,
+                        badge_type=badge.badge_type,
+                        label=badge.label,
+                        source=self._schema_enum("VerificationSourceEnum", badge.source),
+                        status=self._schema_enum("VerificationStatusEnum", badge.status),
+                        issued_at=badge.issued_at,
+                        expires_at=badge.expires_at,
+                    ))
+
+            db.commit()
+            return True
+        except Exception:
+            if hasattr(db, "rollback"):
+                db.rollback()
+            return False
+
+    @staticmethod
+    def _schema_enum(enum_name: str, value: str) -> Any:
+        from database_schema import VerificationSourceEnum, VerificationStatusEnum
+
+        enum_cls = {
+            "VerificationSourceEnum": VerificationSourceEnum,
+            "VerificationStatusEnum": VerificationStatusEnum,
+        }[enum_name]
+        for member in enum_cls:
+            if member.value == value:
+                return member
+        raise ValueError(f"Unsupported {enum_name}: {value}")
+
+    def _profile_from_row(self, user_context: UserContext, row: Any = None) -> FounderTrustProfile:
+        if row is None:
+            return FounderTrustProfile(founder_id=user_context.user_id)
+
+        return FounderTrustProfile(
+            founder_id=user_context.user_id,
+            email_verified=bool(getattr(row, "email_verified", False)),
+            phone_verified=bool(getattr(row, "phone_verified", False)),
+            github_connected=bool(getattr(row, "github_connected", False)),
+            linkedin_connected=bool(getattr(row, "linkedin_connected", False)),
+            domain_verified=bool(getattr(row, "domain_verified", False)),
+            organization_verified=bool(getattr(row, "organization_verified", False)),
+            deployment_live=bool(getattr(row, "deployment_live", False)),
+            product_activity_verified=bool(getattr(row, "product_activity_verified", False)),
+            team_verified_count=int(getattr(row, "verified_team_count", 0) or 0),
+            milestone_count=int(getattr(row, "milestone_count", 0) or 0),
+            github_repo_count=int(getattr(row, "github_repo_count", 0) or 0),
+            github_commit_count=int(getattr(row, "github_commit_count", 0) or 0),
+            github_contributor_count=int(getattr(row, "github_contributor_count", 0) or 0),
+            github_last_activity_at=getattr(row, "github_last_activity_at", None),
+            deployments_30d=int(getattr(row, "deployments_30d", 0) or 0),
+            last_deployment_at=getattr(row, "last_deployment_at", None),
+            mau=int(getattr(row, "mau", 0) or 0),
+            dau=int(getattr(row, "dau", 0) or 0),
+            growth_rate_pct=float(getattr(row, "growth_rate_pct", 0.0) or 0.0),
+            retention_rate_pct=float(getattr(row, "retention_rate_pct", 0.0) or 0.0),
+            last_sync_at=getattr(row, "last_sync_at", None),
+            verification_status=self._value(getattr(row, "verification_status", VerificationStatus.UNVERIFIED.value)),
+            trust_score=float(getattr(row, "trust_score", 0.0) or 0.0),
+        )
+
+    def _apply_source_to_profile(
+        self,
+        row: Any,
+        source: str,
+        metadata: Dict[str, Any],
+        status: str,
+        verified_at: datetime,
+    ) -> None:
+        is_verified = status == VerificationStatus.VERIFIED.value
+
+        if source == VerificationSource.EMAIL.value:
+            row.email_verified = is_verified
+        elif source == VerificationSource.PHONE.value:
+            row.phone_verified = is_verified
+        elif source == VerificationSource.GITHUB.value:
+            row.github_connected = is_verified
+            row.github_repo_count = int(metadata.get("github_repo_count", 0) or 0)
+            row.github_commit_count = int(metadata.get("github_commit_count", 0) or 0)
+            row.github_contributor_count = int(metadata.get("github_contributor_count", 0) or 0)
+            row.github_last_activity_at = self._parse_dt(metadata.get("github_last_activity_at"))
+        elif source == VerificationSource.LINKEDIN.value:
+            row.linkedin_connected = is_verified
+        elif source in (VerificationSource.DOMAIN.value, VerificationSource.WEBSITE.value):
+            row.domain_verified = is_verified
+        elif source == VerificationSource.ORGANIZATION.value:
+            row.organization_verified = is_verified
+        elif source == VerificationSource.DEPLOYMENT.value:
+            row.deployment_live = is_verified or bool(metadata.get("deployment_live"))
+            row.deployments_30d = int(metadata.get("deployments_30d", 0) or 0)
+            row.last_deployment_at = self._parse_dt(metadata.get("last_deployment_at"))
+        elif source == VerificationSource.PRODUCT_ANALYTICS.value:
+            row.product_activity_verified = is_verified
+            row.mau = int(metadata.get("mau", 0) or 0)
+            row.dau = int(metadata.get("dau", 0) or 0)
+            row.growth_rate_pct = float(metadata.get("growth_rate_pct", 0.0) or 0.0)
+            row.retention_rate_pct = float(metadata.get("retention_rate_pct", 0.0) or 0.0)
+        elif source == VerificationSource.TEAM.value:
+            row.verified_team_count = int(metadata.get("verified_team_count", 0) or 0)
+        elif source == VerificationSource.MILESTONE.value and is_verified:
+            row.milestone_count = int(getattr(row, "milestone_count", 0) or 0) + 1
+
+        row.verification_status = self._schema_enum("VerificationStatusEnum", status)
+        row.last_sync_at = verified_at
+        row.updated_at = verified_at
+
+    @staticmethod
+    def _parse_dt(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str) and value:
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _value(value: Any) -> Any:
+        return value.value if hasattr(value, "value") else value
+
+    @staticmethod
+    def _iso(value: Any) -> Optional[str]:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return value
+
+    @staticmethod
+    def _badge_to_dict(badge: Any) -> Dict[str, Any]:
+        return {
+            "badge_type": badge.badge_type,
+            "label": badge.label,
+            "source": badge.source,
+            "status": badge.status,
+            "issued_at": badge.issued_at.isoformat(),
+            "expires_at": badge.expires_at.isoformat(),
+            "active": badge.is_active,
+        }
+
+    def _history_row_to_dict(self, row: Any) -> Dict[str, Any]:
+        return {
+            "verification_id": str(getattr(row, "verification_id", "")),
+            "source": self._value(getattr(row, "source", "")),
+            "status": self._value(getattr(row, "status", "")),
+            "confidence": float(getattr(row, "confidence", 0.0) or 0.0),
+            "metadata_hash": getattr(row, "metadata_hash", ""),
+            "reference_id": getattr(row, "reference_id", None),
+            "event_type": getattr(row, "event_type", ""),
+            "expires_at": self._iso(getattr(row, "expires_at", None)),
+            "created_at": self._iso(getattr(row, "created_at", None)),
+        }
+
+    @staticmethod
+    def _record_to_dict(record: Any) -> Dict[str, Any]:
+        return {
+            "verification_id": record.verification_id,
+            "subject_id": record.subject_id,
+            "subject_type": record.subject_type,
+            "source": record.source,
+            "status": record.status,
+            "confidence": record.confidence,
+            "metadata_hash": record.metadata_hash,
+            "reference_id": record.reference_id,
+            "event_type": record.event_type,
+            "expires_at": record.expires_at.isoformat(),
+            "created_at": record.created_at.isoformat(),
+        }
+
+    @staticmethod
+    def _privacy_notice() -> Dict[str, Any]:
+        return {
+            "metadata_only": True,
+            "raw_payload_stored": False,
+            "secrets_stored": False,
+            "history_append_only": True,
+        }
+
+    @staticmethod
+    def _next_action(source: str, status: VerificationStatus) -> str:
+        if status == VerificationStatus.VERIFIED:
+            return "Verification accepted. Keep the source connected so it can refresh before expiry."
+        if status == VerificationStatus.DISCONNECTED:
+            return "Integration disconnected. Existing history remains append-only."
+        if source == VerificationSource.MILESTONE.value:
+            return "Milestone is pending review. Prefer public evidence URLs over uploads."
+        return "Verification pending. A future provider adapter should complete the source check."
 
 
 
