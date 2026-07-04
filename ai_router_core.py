@@ -144,6 +144,10 @@ class TaskType(Enum):
     # Prompt -> Live App engine
     APP_SCAFFOLD_GENERATION        = "app_scaffold_generation"
     APP_DEPLOY_CONFIG              = "app_deploy_config"
+    # Trust Engine Lite
+    TRUST_VERIFY_FOUNDER           = "trust_verify_founder"
+    TRUST_VERIFY_ORG               = "trust_verify_org"
+    TRUST_MILESTONE_REVIEW         = "trust_milestone_review"
 
 
 class ModelProvider(Enum):
@@ -246,6 +250,10 @@ class CreditCost:
         # Prompt -> Live App engine
         TaskType.APP_SCAFFOLD_GENERATION:      5,
         TaskType.APP_DEPLOY_CONFIG:            3,
+        # Trust Engine Lite
+        TaskType.TRUST_VERIFY_FOUNDER:         1,
+        TaskType.TRUST_VERIFY_ORG:             1,
+        TaskType.TRUST_MILESTONE_REVIEW:       1,
     }
 
     MONTHLY_CREDITS: Dict[SubscriptionTier, int] = {
@@ -292,6 +300,8 @@ class SubscriptionAccessControl:
         TaskType.CHAT, TaskType.TOUR_GUIDE, TaskType.IDEA_EVALUATION,
         TaskType.DASHBOARD_INTELLIGENCE, TaskType.WORKSPACE_ASSISTANT,
         TaskType.FEED_INTELLIGENCE, TaskType.GSIS_COMPUTE,
+        TaskType.TRUST_VERIFY_FOUNDER, TaskType.TRUST_VERIFY_ORG,
+        TaskType.TRUST_MILESTONE_REVIEW,
         TaskType.TRAINING_GENERATION,   # adaptive curriculum for all users
         # Idea & Solution Hub -- problem submission and basic impact free
         TaskType.PROBLEM_ANALYSIS, TaskType.IMPACT_PREDICTION,
@@ -1004,6 +1014,7 @@ class ModelRouter:
         TaskType.IMPACT_PREDICTION:      ComplexityTier.LIGHT,
         TaskType.PROBLEM_DISCOVERY:      ComplexityTier.LIGHT,
         TaskType.APP_DEPLOY_CONFIG:      ComplexityTier.LIGHT,
+        TaskType.TRUST_MILESTONE_REVIEW: ComplexityTier.LIGHT,
         # TRIVIAL — classification / moderation
         TaskType.MATCHING:                ComplexityTier.TRIVIAL,
         TaskType.PROFILE_ANALYSIS:        ComplexityTier.TRIVIAL,
@@ -1011,6 +1022,8 @@ class ModelRouter:
         TaskType.SOLUTION_MATCHING:       ComplexityTier.TRIVIAL,
         TaskType.DISCUSSION_MODERATION:   ComplexityTier.TRIVIAL,
         TaskType.FIELD_FEEDBACK_ANALYSIS: ComplexityTier.TRIVIAL,
+        TaskType.TRUST_VERIFY_FOUNDER:    ComplexityTier.TRIVIAL,
+        TaskType.TRUST_VERIFY_ORG:        ComplexityTier.TRIVIAL,
         # EMBEDDINGS intentionally omitted — special-cased to Cohere in select_chain.
     }
 
@@ -1188,6 +1201,34 @@ class PromptEngine:
         TaskType.ORG_SPHERE:              AP.ORG_SPHERE,
         # 21. AdminMonitorAgent
         TaskType.ADMIN_MONITOR:           AP.ADMIN_MONITOR,
+
+        # ── Trust Engine Lite ────────────────────────────────────────────────
+        TaskType.TRUST_VERIFY_FOUNDER: (
+            "You are TechIT's Trust Engine Lite founder verification reviewer. "
+            "Use only metadata-only signals such as verified email/phone flags, "
+            "connected account status, last sync times, confidence, and expiry. "
+            "Never request, infer, or reproduce raw personal data, OAuth tokens, "
+            "contact lists, GitHub repository contents, LinkedIn private profile "
+            "details, or messages. Return a concise verification status, trust "
+            "confidence, expiry risk, and next safe action."
+        ),
+        TaskType.TRUST_VERIFY_ORG: (
+            "You are TechIT's Trust Engine Lite organization verification reviewer. "
+            "Use only metadata-only signals such as domain ownership, website "
+            "verification status, official email-domain verification, business "
+            "verification status, last sync, confidence, and expiry. Never request "
+            "or store registration documents, secrets, website snapshots, DNS "
+            "record dumps, or private company data. Return status, confidence, "
+            "expiry risk, and next safe action."
+        ),
+        TaskType.TRUST_MILESTONE_REVIEW: (
+            "You are TechIT's milestone evidence reviewer. Review only public "
+            "evidence URLs, public announcements, certificate references, and "
+            "short metadata summaries. Prefer URL references over uploads. Never "
+            "ask to retain raw uploaded files unless a retention policy is explicit. "
+            "Return approve/reject/pending, confidence, reason, expiry if relevant, "
+            "and the timeline event that should be appended."
+        ),
 
         # ── Idea & Solution Hub Agents ─────────────────────────────────────────
         # 22. ProblemAnalyzerAgent
