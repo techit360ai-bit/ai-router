@@ -45,6 +45,7 @@ from integration_guide import (
     DocumentGenerationService,
     IPProtectionService,
     AppScaffoldService,
+    TrustVerificationService,
     EquityService,
     PayoutService,
     CapitalPoolService,
@@ -635,6 +636,96 @@ async def compute_gsis(
 ):
     """Compute GSIS from component scores. 1 credit, Free+"""
     return await GSISService(brain).compute_with_narrative(user, scores)
+
+
+# ============================================================================
+# TRUST ENGINE LITE
+# ============================================================================
+
+@app.get("/api/v1/trust/profile", tags=["Trust Engine"])
+async def trust_profile(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Current metadata-only trust profile. 0 credits, Free+."""
+    return TrustVerificationService(brain).get_profile(user, db)
+
+
+@app.get("/api/v1/trust/badges", tags=["Trust Engine"])
+async def trust_badges(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Derived expiring trust badges. 0 credits, Free+."""
+    return TrustVerificationService(brain).get_badges(user, db)
+
+
+@app.get("/api/v1/trust/history", tags=["Trust Engine"])
+async def trust_history(
+    limit: int = 50,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Append-only verification history. 0 credits, Free+."""
+    return TrustVerificationService(brain).get_history(user, db, limit)
+
+
+@app.post("/api/v1/trust/verify/{source}", tags=["Trust Engine"])
+async def trust_verify_source(
+    source: str,
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """
+    Submit metadata-only verification result for a source. 1 credit, Free+.
+
+    This endpoint accepts provider adapter metadata only; it never accepts or
+    stores raw provider payloads, OAuth tokens, source code, analytics events,
+    contact lists, or document blobs.
+    """
+    try:
+        return TrustVerificationService(brain).verify_source(user, source, body, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/disconnect/{source}", tags=["Trust Engine"])
+async def trust_disconnect_source(
+    source: str,
+    body: Dict[str, Any] | None = None,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Disconnect a trust source and append a disconnected history row. 0 credits, Free+."""
+    try:
+        return TrustVerificationService(brain).disconnect_source(user, source, body, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/refresh/{source}", tags=["Trust Engine"])
+async def trust_refresh_source(
+    source: str,
+    body: Dict[str, Any] | None = None,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Trigger a metadata-only manual re-verification contract. 1 credit, Free+."""
+    try:
+        return TrustVerificationService(brain).refresh_source(user, source, body, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/milestone", tags=["Trust Engine"])
+async def trust_submit_milestone(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Submit milestone evidence metadata for review. 1 credit, Free+."""
+    return TrustVerificationService(brain).submit_milestone(user, body, db)
 
 
 # ============================================================================
