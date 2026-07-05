@@ -115,13 +115,26 @@ class TrustContinuousVerificationRunner:
     ) -> Dict[str, Any]:
         now = now or _utcnow()
         adapter_payloads = adapter_payloads or {}
-        plan = self.planner.plan(connections, now=now)
+        connection_list = [dict(conn) for conn in connections if isinstance(conn, dict)]
+        plan = self.planner.plan(connection_list, now=now)
         notifications: List[Dict[str, Any]] = []
         actions: List[Dict[str, Any]] = []
+        badge_notifications = 0
 
         for item in plan["items"]:
             if item.get("notification_type"):
                 notifications.append(self._notification(user_id, project_id, item, now).to_dict())
+
+            source_connection = self._connection_for_item(item, connection_list)
+            badge_change_notes = self._badge_change_notifications(
+                user_id,
+                project_id,
+                item,
+                source_connection,
+                now,
+            )
+            badge_notifications += len(badge_change_notes)
+            notifications.extend(note.to_dict() for note in badge_change_notes)
 
             action = self._action_for_item(item, adapter_payloads, now)
             if action:
@@ -138,6 +151,7 @@ class TrustContinuousVerificationRunner:
                 "connections_seen": len(plan["items"]),
                 "actions_prepared": len(actions),
                 "notifications_prepared": len(notifications),
+                "badge_notifications_prepared": badge_notifications,
                 "due_count": plan["due_count"],
                 "expired_count": plan["expired_count"],
             },
@@ -150,6 +164,21 @@ class TrustContinuousVerificationRunner:
                 "investor_notifications": False,
             },
         }
+
+    @staticmethod
+    def _connection_for_item(item: Dict[str, Any], connections: List[Dict[str, Any]]) -> Dict[str, Any]:
+        source = str(item.get("source") or "")
+        provider = str(item.get("provider") or "")
+        for connection in connections:
+            if (
+                str(connection.get("source") or "") == source
+                and str(connection.get("provider") or connection.get("source") or "") == provider
+            ):
+                return connection
+        for connection in connections:
+            if str(connection.get("source") or "") == source:
+                return connection
+        return {}
 
     def _action_for_item(
         self,
@@ -254,6 +283,111 @@ class TrustContinuousVerificationRunner:
             created_at=now,
             metadata_hash=TrustEngineComputer.hash_metadata(notification_metadata),
         )
+
+    def _badge_change_notifications(
+        self,
+        user_id: str,
+        project_id: Optional[str],
+        item: Dict[str, Any],
+        connection: Dict[str, Any],
+        now: datetime,
+    ) -> List[TrustNotificationIntent]:
+        badges = self._badge_refs(connection)
+        if not badges:
+            return []
+
+        state = item["verification_state"]
+        if state == VerificationStatus.VERIFIED.value and not item.get("should_refresh"):
+            return []
+        if state not in {
+            VerificationStatus.EXPIRED.value,
+            VerificationStatus.FAILED.value,
+            VerificationStatus.DISCONNECTED.value,
+            VerificationStatus.PENDING.value,
+        }:
+            return []
+
+        badge_labels = [badge["label"] for badge in badges]
+        badge_types = [badge["badge_type"] for badge in badges]
+        notification_metadata = {
+            "notification_type": "trust_badge_status_changed",
+            "source": item["source"],
+            "provider": item["provider"],
+            "verification_state": state,
+            "badge_types": badge_types,
+            "created_at": now.isoformat(),
+        }
+        severity = "critical" if state == VerificationStatus.EXPIRED.value else "warning"
+        return [
+            TrustNotificationIntent(
+                notification_id=f"trust_note_{uuid4().hex}",
+                user_id=user_id,
+                project_id=project_id,
+                notification_type="trust_badge_status_changed",
+                source=item["source"],
+                provider=item["provider"],
+                severity=severity,
+                title="Trust badge status changed",
+                message=self._badge_change_message(item, badge_labels),
+                action_required=True,
+                created_at=now,
+                metadata_hash=TrustEngineComputer.hash_metadata(notification_metadata),
+            )
+        ]
+
+    @staticmethod
+    def _badge_refs(connection: Dict[str, Any]) -> List[Dict[str, str]]:
+        raw_badges = connection.get("badges") or connection.get("active_badges") or []
+        if isinstance(raw_badges, dict):
+            raw_badges = [raw_badges]
+        if not isinstance(raw_badges, list):
+            raw_badges = []
+
+        refs: List[Dict[str, str]] = []
+        for badge in raw_badges:
+            if isinstance(badge, str) and badge.strip():
+                refs.append({"badge_type": badge.strip(), "label": badge.strip()})
+            elif isinstance(badge, dict):
+                badge_type = str(badge.get("badge_type") or badge.get("type") or "").strip()
+                label = str(badge.get("label") or badge_type).strip()
+                if badge_type or label:
+                    refs.append({"badge_type": badge_type or label, "label": label or badge_type})
+
+        badge_types = connection.get("badge_types") or []
+        badge_labels = connection.get("badge_labels") or []
+        if isinstance(badge_types, str):
+            badge_types = [badge_types]
+        if isinstance(badge_labels, str):
+            badge_labels = [badge_labels]
+        if isinstance(badge_types, list):
+            for index, badge_type in enumerate(badge_types):
+                badge_type_text = str(badge_type or "").strip()
+                if not badge_type_text:
+                    continue
+                label = ""
+                if isinstance(badge_labels, list) and index < len(badge_labels):
+                    label = str(badge_labels[index] or "").strip()
+                refs.append({"badge_type": badge_type_text, "label": label or badge_type_text})
+
+        unique: Dict[str, Dict[str, str]] = {}
+        for ref in refs:
+            unique.setdefault(ref["badge_type"], ref)
+        return list(unique.values())
+
+    @staticmethod
+    def _badge_change_message(item: Dict[str, Any], badge_labels: List[str]) -> str:
+        provider = item["provider"]
+        state = item["verification_state"]
+        labels = ", ".join(badge_labels[:3]) or "Trust badge"
+        if len(badge_labels) > 3:
+            labels += f" and {len(badge_labels) - 3} more"
+        if state == VerificationStatus.EXPIRED.value:
+            return f"{labels} changed because {provider} verification expired. Refresh the source before showing it as active."
+        if state == VerificationStatus.FAILED.value:
+            return f"{labels} changed because {provider} verification failed. Retry verification or reconnect the integration."
+        if state == VerificationStatus.DISCONNECTED.value:
+            return f"{labels} changed because {provider} is disconnected. Reconnect it to resume badge refresh."
+        return f"{labels} changed because {provider} verification is pending a metadata refresh."
 
     @staticmethod
     def _severity(notification_type: str) -> str:
