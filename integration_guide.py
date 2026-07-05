@@ -42,6 +42,7 @@ from ai_router_core import (
 from agent_orchestration import (
     AgentOrchestrator, AgentType, AgentContext, VenturePipeline,
 )
+from trust_continuous_verification import TrustContinuousVerificationRunner
 from trust_engine_lite import (
     FounderTrustProfile,
     TrustEngineComputer,
@@ -1951,6 +1952,46 @@ class TrustVerificationService:
         plan["project_id"] = user_context.project_id
         return plan
 
+    def run_continuous_verification(
+        self,
+        user_context: UserContext,
+        body: Optional[Dict[str, Any]] = None,
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/trust/continuous-verification/run -- 0 credits, Free+.
+
+        This executes no live provider calls. It consumes existing connection
+        metadata and optional adapter payloads, then prepares notification
+        intents and append-only verification actions. Actions are persisted only
+        when the caller passes execute=true.
+        """
+        body = body or {}
+        connections = body.get("connections") or []
+        adapter_payloads = body.get("adapter_payloads") or {}
+        if not isinstance(connections, list):
+            connections = []
+        if not isinstance(adapter_payloads, dict):
+            adapter_payloads = {}
+
+        run = TrustContinuousVerificationRunner().prepare(
+            user_id=user_context.user_id,
+            project_id=user_context.project_id,
+            connections=connections,
+            adapter_payloads=adapter_payloads,
+        )
+        execute = body.get("execute") is True
+        executed = []
+        if execute:
+            for action in run["verification_actions"]:
+                executed.append(self._execute_continuous_action(user_context, action, db))
+
+        run["execute"] = execute
+        run["executed_results"] = executed
+        run["privacy"]["notifications_are_intents_only"] = True
+        run["privacy"]["raw_payload_stored"] = False
+        return run
+
     def verify_source(
         self,
         user_context: UserContext,
@@ -2050,6 +2091,37 @@ class TrustVerificationService:
         result["next_action"] = "Admin review required before the milestone becomes investor-visible."
         return result
 
+    def _execute_continuous_action(
+        self,
+        user_context: UserContext,
+        action: Dict[str, Any],
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        status = str(action.get("status") or VerificationStatus.PENDING.value)
+        action_mode = {
+            VerificationStatus.EXPIRED.value: "expire",
+            VerificationStatus.FAILED.value: "fail",
+            VerificationStatus.PENDING.value: "refresh",
+        }.get(status, "verify")
+        result = self.verify_source(
+            user_context,
+            str(action["source"]),
+            dict(action.get("metadata") or {}),
+            db,
+            action=action_mode,
+        )
+        return {
+            "action_id": action["action_id"],
+            "action_type": action["action_type"],
+            "source": action["source"],
+            "provider": action["provider"],
+            "requested_status": status,
+            "recorded_status": result["status"],
+            "metadata_hash": result["metadata_hash"],
+            "persisted": result["persisted"],
+            "raw_payload_stored": result["raw_payload_stored"],
+        }
+
     @classmethod
     def _canonical_source(cls, source: str) -> str:
         value = (source or "").strip().lower()
@@ -2122,6 +2194,10 @@ class TrustVerificationService:
     def _status_for_action(action: str, metadata: Dict[str, Any]) -> VerificationStatus:
         if action == "disconnect":
             return VerificationStatus.DISCONNECTED
+        if action == "expire":
+            return VerificationStatus.EXPIRED
+        if action == "fail":
+            return VerificationStatus.FAILED
         if str(metadata.get("approval_status", "")).lower() == "rejected":
             return VerificationStatus.FAILED
         if metadata.get("verified") is True or str(metadata.get("approval_status", "")).lower() == "approved":
