@@ -670,6 +670,18 @@ async def trust_history(
     return TrustVerificationService(brain).get_history(user, db, limit)
 
 
+@app.get("/api/v1/trust/integrations", tags=["Trust Engine"])
+async def trust_integrations(
+    provider: Optional[str] = None,
+    user: UserContext = Depends(get_user_context),
+):
+    """Provider integration manifests with permissions and metadata-only storage policy. 0 credits, Free+."""
+    try:
+        return TrustVerificationService(brain).get_integration_manifests(provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/api/v1/trust/verify/{source}", tags=["Trust Engine"])
 async def trust_verify_source(
     source: str,
@@ -686,6 +698,20 @@ async def trust_verify_source(
     """
     try:
         return TrustVerificationService(brain).verify_source(user, source, body, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/adapters/{provider}/verify", tags=["Trust Engine"])
+async def trust_verify_adapter_payload(
+    provider: str,
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Normalize provider metadata through a privacy adapter, then append a Trust verification row. 1 credit, Free+."""
+    try:
+        return TrustVerificationService(brain).verify_adapter_payload(user, provider, body, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -716,6 +742,15 @@ async def trust_refresh_source(
         return TrustVerificationService(brain).refresh_source(user, source, body, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/refresh-plan", tags=["Trust Engine"])
+async def trust_refresh_plan(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Compute continuous-verification refresh states without mutating history. 0 credits, Free+."""
+    return TrustVerificationService(brain).get_refresh_plan(user, body)
 
 
 @app.post("/api/v1/trust/milestone", tags=["Trust Engine"])

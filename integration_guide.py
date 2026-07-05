@@ -48,6 +48,10 @@ from trust_engine_lite import (
     VerificationSource,
     VerificationStatus,
 )
+from trust_integration_adapters import (
+    TrustIntegrationAdapterRegistry,
+    TrustRefreshPlanner,
+)
 
 
 # ============================================================================
@@ -1884,6 +1888,68 @@ class TrustVerificationService:
             "append_only": True,
             "privacy": "History stores verification result metadata and hashes, not provider payloads.",
         }
+
+    def get_integration_manifests(self, provider: Optional[str] = None) -> Dict[str, Any]:
+        """GET /api/v1/trust/integrations -- 0 credits, Free+."""
+        registry = TrustIntegrationAdapterRegistry.default()
+        if provider:
+            manifests = [registry.manifest(provider)]
+        else:
+            manifests = registry.manifests()
+        return {
+            "integrations": manifests,
+            "privacy": {
+                "metadata_only": True,
+                "raw_payload_stored": False,
+                "tokens_exposed_to_frontend": False,
+                "live_provider_calls": False,
+            },
+        }
+
+    def verify_adapter_payload(
+        self,
+        user_context: UserContext,
+        provider: str,
+        body: Optional[Dict[str, Any]] = None,
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """
+        POST /api/v1/trust/adapters/{provider}/verify -- 1 credit, Free+.
+
+        Future provider clients should feed raw responses into their private
+        adapter process, then submit only this normalized metadata contract.
+        """
+        adapter_result = TrustIntegrationAdapterRegistry.default().normalize(provider, body or {})
+        result = self.verify_source(user_context, adapter_result.source, adapter_result.metadata, db)
+        result["adapter"] = {
+            "provider": adapter_result.provider,
+            "source": adapter_result.source,
+            "status": adapter_result.status,
+            "confidence": adapter_result.confidence,
+            "metadata_hash": adapter_result.metadata_hash,
+            "expires_at": adapter_result.expires_at.isoformat(),
+            "next_sync_at": adapter_result.next_sync_at.isoformat(),
+            "raw_payload_stored": adapter_result.raw_payload_stored,
+            "tokens_stored": adapter_result.tokens_stored,
+        }
+        result["dropped_fields"] = sorted(set(result["dropped_fields"] + adapter_result.dropped_fields))
+        result["next_action"] = self._next_action(adapter_result.source, VerificationStatus(adapter_result.status))
+        return result
+
+    def get_refresh_plan(
+        self,
+        user_context: UserContext,
+        body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/trust/refresh-plan -- 0 credits, Free+."""
+        body = body or {}
+        connections = body.get("connections") or []
+        if not isinstance(connections, list):
+            connections = []
+        plan = TrustRefreshPlanner().plan(connections)
+        plan["user_id"] = user_context.user_id
+        plan["project_id"] = user_context.project_id
+        return plan
 
     def verify_source(
         self,
