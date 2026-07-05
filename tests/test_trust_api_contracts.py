@@ -217,9 +217,12 @@ def test_fastapi_trust_routes_are_registered() -> None:
         "/api/v1/trust/profile",
         "/api/v1/trust/badges",
         "/api/v1/trust/history",
+        "/api/v1/trust/integrations",
         "/api/v1/trust/verify/{source}",
+        "/api/v1/trust/adapters/{provider}/verify",
         "/api/v1/trust/disconnect/{source}",
         "/api/v1/trust/refresh/{source}",
+        "/api/v1/trust/refresh-plan",
         "/api/v1/trust/milestone",
     }
     assert expected.issubset(routes)
