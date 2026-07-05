@@ -796,6 +796,35 @@ async def trust_review_milestone(
     return TrustVerificationService(brain).review_milestone(user, body, db)
 
 
+@app.post("/api/v1/trust/team/invite", tags=["Trust Engine"])
+async def trust_invite_team_member(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Prepare a metadata-only team invitation notification intent. 0 credits, Free+."""
+    return TrustVerificationService(brain).invite_team_member(user, body, db)
+
+
+@app.post("/api/v1/trust/team/verify", tags=["Trust Engine"])
+async def trust_verify_team_member(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Verify a team member through metadata-only Trust state. 1 credit, Free+."""
+    return TrustVerificationService(brain).verify_team_member(user, body, db)
+
+
+@app.post("/api/v1/trust/notifications/preview", tags=["Trust Engine"])
+async def trust_notifications_preview(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Build founder-only Trust notification intents without executing delivery. 0 credits, Free+."""
+    return TrustVerificationService(brain).preview_notifications(user, body)
+
+
 # ============================================================================
 # TOUR GUIDE
 # ============================================================================

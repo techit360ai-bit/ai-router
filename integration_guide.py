@@ -57,6 +57,10 @@ from trust_profile_sharing import (
     TrustMilestoneReviewService as TrustMilestoneReviewContract,
     TrustProfileSharingService,
 )
+from trust_team_notifications import (
+    TrustNotificationPreviewService,
+    TrustTeamVerificationService as TrustTeamContract,
+)
 
 
 # ============================================================================
@@ -2145,6 +2149,71 @@ class TrustVerificationService:
                 "public_evidence_url_preferred": True,
             },
         }
+
+    def invite_team_member(
+        self,
+        user_context: UserContext,
+        body: Dict[str, Any],
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/trust/team/invite -- 0 credits, Free+."""
+        invitation = TrustTeamContract().invite(body)
+        return {
+            "invitation": invitation,
+            "verification": {
+                "source": VerificationSource.TEAM.value,
+                "status": VerificationStatus.PENDING.value,
+                "persisted": False,
+                "reason": "Invitation contracts are notification intents only until a teammate verifies.",
+            },
+            "privacy": {
+                "metadata_only": True,
+                "raw_email_stored": False,
+                "raw_payload_stored": False,
+                "hr_data_stored": False,
+                "investor_visible": False,
+            },
+        }
+
+    def verify_team_member(
+        self,
+        user_context: UserContext,
+        body: Dict[str, Any],
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/trust/team/verify -- 1 credit, Free+."""
+        team_result = TrustTeamContract().verify(body)
+        verification_body = {
+            **team_result["verification_metadata"],
+            "subject_type": "team_member",
+            "subject_id": team_result["member_ref"],
+            "reference_id": body.get("invitation_id") or team_result["member_ref"],
+        }
+        verification = self.verify_source(user_context, VerificationSource.TEAM.value, verification_body, db)
+        return {
+            "team": team_result,
+            "verification": verification,
+            "notification_intent": team_result["notification_intent"],
+            "privacy": {
+                "metadata_only": True,
+                "raw_email_stored": False,
+                "raw_payload_stored": False,
+                "hr_data_stored": False,
+                "investor_visible": False,
+            },
+        }
+
+    def preview_notifications(
+        self,
+        user_context: UserContext,
+        body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/trust/notifications/preview -- 0 credits, Free+."""
+        body = body or {}
+        events = body.get("events") if isinstance(body.get("events"), list) else []
+        preview = TrustNotificationPreviewService().preview(events)
+        preview["owner_ids_exposed_to_investors"] = False
+        return preview
 
     def _execute_continuous_action(
         self,
