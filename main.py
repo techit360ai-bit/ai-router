@@ -670,6 +670,16 @@ async def trust_history(
     return TrustVerificationService(brain).get_history(user, db, limit)
 
 
+@app.post("/api/v1/trust/share-profile/preview", tags=["Trust Engine"])
+async def trust_share_profile_preview(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Build an investor-safe Trust Profile preview after explicit founder opt-in. 0 credits, Free+."""
+    return TrustVerificationService(brain).build_share_profile(user, body, db)
+
+
 @app.get("/api/v1/trust/integrations", tags=["Trust Engine"])
 async def trust_integrations(
     provider: Optional[str] = None,
@@ -774,6 +784,16 @@ async def trust_submit_milestone(
 ):
     """Submit milestone evidence metadata for review. 1 credit, Free+."""
     return TrustVerificationService(brain).submit_milestone(user, body, db)
+
+
+@app.post("/api/v1/trust/milestone/review", tags=["Trust Engine"])
+async def trust_review_milestone(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Review milestone evidence metadata and append approved/rejected Trust state. 1 credit."""
+    return TrustVerificationService(brain).review_milestone(user, body, db)
 
 
 # ============================================================================

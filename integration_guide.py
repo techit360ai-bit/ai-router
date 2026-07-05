@@ -53,6 +53,10 @@ from trust_integration_adapters import (
     TrustIntegrationAdapterRegistry,
     TrustRefreshPlanner,
 )
+from trust_profile_sharing import (
+    TrustMilestoneReviewService as TrustMilestoneReviewContract,
+    TrustProfileSharingService,
+)
 
 
 # ============================================================================
@@ -1890,6 +1894,29 @@ class TrustVerificationService:
             "privacy": "History stores verification result metadata and hashes, not provider payloads.",
         }
 
+    def build_share_profile(
+        self,
+        user_context: UserContext,
+        body: Optional[Dict[str, Any]] = None,
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/trust/share-profile/preview -- 0 credits, Free+."""
+        body = body or {}
+        profile = body.get("profile") if isinstance(body.get("profile"), dict) else self.get_profile(user_context, db)
+        badges_payload = body.get("badges")
+        history_payload = body.get("history")
+        badges = badges_payload if isinstance(badges_payload, list) else self.get_badges(user_context, db)["badges"]
+        history = history_payload if isinstance(history_payload, list) else self.get_history(user_context, db)["history"]
+        settings = body.get("settings") if isinstance(body.get("settings"), dict) else body
+        shared = TrustProfileSharingService().build(
+            profile=profile,
+            badges=badges,
+            history=history,
+            settings=settings,
+        )
+        shared["owner_ids_exposed_to_investors"] = False
+        return shared
+
     def get_integration_manifests(self, provider: Optional[str] = None) -> Dict[str, Any]:
         """GET /api/v1/trust/integrations -- 0 credits, Free+."""
         registry = TrustIntegrationAdapterRegistry.default()
@@ -2090,6 +2117,34 @@ class TrustVerificationService:
         result["review_status"] = milestone_body["approval_status"]
         result["next_action"] = "Admin review required before the milestone becomes investor-visible."
         return result
+
+    def review_milestone(
+        self,
+        user_context: UserContext,
+        body: Dict[str, Any],
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/trust/milestone/review -- 1 credit, admin workflow contract."""
+        review = TrustMilestoneReviewContract().review(body)
+        verification_body = {
+            **review["metadata"],
+            "subject_type": "milestone",
+            "subject_id": body.get("milestone_id") or body.get("reference_id") or user_context.project_id or user_context.user_id,
+            "reference_id": body.get("reference_id") or review["review_id"],
+        }
+        verification = self.verify_source(user_context, VerificationSource.MILESTONE.value, verification_body, db)
+        return {
+            "review": review,
+            "verification": verification,
+            "timeline_event": review["timeline_event"],
+            "investor_visible": review["timeline_event"]["visibility"] == "public",
+            "privacy": {
+                "metadata_only": True,
+                "raw_payload_stored": False,
+                "uploaded_file_stored": False,
+                "public_evidence_url_preferred": True,
+            },
+        }
 
     def _execute_continuous_action(
         self,
