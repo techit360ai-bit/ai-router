@@ -541,6 +541,12 @@ CREDIT_OPERATIONS: Dict[str, CreditOperation] = {
         "gsis_compute", "GSIS Compute", 1, "founder_free", None, None),
     "adaptive_training": CreditOperation(
         "adaptive_training", "Adaptive Training Curriculum", 1, "founder_free", None, None),
+    "trust_verify_founder": CreditOperation(
+        "trust_verify_founder", "Trust Founder Verification", 1, "founder_free", None, None),
+    "trust_verify_org": CreditOperation(
+        "trust_verify_org", "Trust Organization Verification", 1, "founder_free", None, None),
+    "trust_milestone_review": CreditOperation(
+        "trust_milestone_review", "Trust Milestone Review", 1, "founder_free", None, None),
 }
 
 

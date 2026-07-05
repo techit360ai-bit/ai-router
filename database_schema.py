@@ -102,6 +102,7 @@ class PromptTypeEnum(str, Enum):
     ADMIN_MONITOR       = "admin_monitor"
     INVESTOR_EVI        = "investor_evi"
     GSIS                = "gsis"
+    TRUST               = "trust"
 
 
 class AgentTypeEnum(str, Enum):
@@ -126,6 +127,29 @@ class AgentTypeEnum(str, Enum):
     ORG_SPHERE             = "org_sphere"
     ADMIN_MONITOR          = "admin_monitor"
     GSIS_COMPUTE           = "gsis_compute"
+
+
+class VerificationStatusEnum(str, Enum):
+    UNVERIFIED   = "unverified"
+    PENDING      = "pending"
+    VERIFIED     = "verified"
+    EXPIRED      = "expired"
+    FAILED       = "failed"
+    DISCONNECTED = "disconnected"
+
+
+class VerificationSourceEnum(str, Enum):
+    EMAIL             = "email"
+    PHONE             = "phone"
+    GITHUB            = "github"
+    LINKEDIN          = "linkedin"
+    DOMAIN            = "domain"
+    WEBSITE           = "website"
+    ORGANIZATION      = "organization"
+    DEPLOYMENT        = "deployment"
+    PRODUCT_ANALYTICS = "product_analytics"
+    TEAM              = "team"
+    MILESTONE         = "milestone"
 
 
 class BillingEventTypeEnum(str, Enum):
@@ -1137,6 +1161,153 @@ class EventLog(Base):
         Index("idx_event_type_created", "event_type", "created_at"),
         Index("idx_event_processed",    "processed",  "created_at"),
         Index("idx_event_user",         "user_id",    "created_at"),
+    )
+
+
+# ============================================================================
+# TRUST ENGINE LITE
+# ============================================================================
+
+class TrustProfile(Base):
+    """
+    Current metadata-only Trust Engine Lite profile.
+
+    This table stores verification metadata and aggregate counts only. It must
+    never contain OAuth tokens, raw provider payloads, source code, repository
+    contents, contact lists, user analytics events, private LinkedIn data, or
+    uploaded business documents.
+    """
+    __tablename__ = "trust_profiles"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id     = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
+
+    email_verified        = Column(Boolean, default=False, nullable=False)
+    phone_verified        = Column(Boolean, default=False, nullable=False)
+    github_connected      = Column(Boolean, default=False, nullable=False)
+    linkedin_connected    = Column(Boolean, default=False, nullable=False)
+    domain_verified       = Column(Boolean, default=False, nullable=False)
+    organization_verified = Column(Boolean, default=False, nullable=False)
+    deployment_live       = Column(Boolean, default=False, nullable=False)
+    product_activity_verified = Column(Boolean, default=False, nullable=False)
+
+    github_repo_count        = Column(Integer, default=0, nullable=False)
+    github_commit_count      = Column(Integer, default=0, nullable=False)
+    github_contributor_count = Column(Integer, default=0, nullable=False)
+    github_last_activity_at  = Column(TIMESTAMP)
+    deployments_30d          = Column(Integer, default=0, nullable=False)
+    last_deployment_at       = Column(TIMESTAMP)
+    mau                      = Column(Integer, default=0, nullable=False)
+    dau                      = Column(Integer, default=0, nullable=False)
+    growth_rate_pct          = Column(Float, default=0.0, nullable=False)
+    retention_rate_pct       = Column(Float, default=0.0, nullable=False)
+    verified_team_count      = Column(Integer, default=0, nullable=False)
+    milestone_count          = Column(Integer, default=0, nullable=False)
+
+    verification_status = Column(
+        SQLEnum(VerificationStatusEnum),
+        default=VerificationStatusEnum.UNVERIFIED,
+        nullable=False,
+    )
+    trust_score = Column(Float, default=0.0, nullable=False)
+    confidence_score = Column(Float, default=0.0, nullable=False)
+    badges = Column(JSON, default=lambda: [])
+    last_sync_at = Column(TIMESTAMP)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_trust_profile_user", "user_id"),
+        Index("idx_trust_profile_project", "project_id"),
+        Index("idx_trust_profile_status", "verification_status"),
+        Index("idx_trust_profile_score", "trust_score"),
+    )
+
+
+class TrustVerificationHistory(Base):
+    """
+    Immutable verification history.
+
+    INSERT-only by policy. A new verification attempt creates a new row instead
+    of mutating an old one. The only provider-derived field is metadata_hash.
+    """
+    __tablename__ = "trust_verification_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    verification_id = Column(String(100), nullable=False, unique=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
+    subject_id = Column(String(100), nullable=False)
+    subject_type = Column(String(40), nullable=False)
+    source = Column(SQLEnum(VerificationSourceEnum), nullable=False)
+    status = Column(SQLEnum(VerificationStatusEnum), nullable=False)
+    confidence = Column(Float, nullable=False)
+    metadata_hash = Column(String(64), nullable=False)
+    reference_id = Column(String(100))
+    event_type = Column(String(100), nullable=False)
+    expires_at = Column(TIMESTAMP, nullable=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_trust_history_user_created", "user_id", "created_at"),
+        Index("idx_trust_history_subject", "subject_type", "subject_id", "created_at"),
+        Index("idx_trust_history_source_status", "source", "status"),
+        Index("idx_trust_history_expiry", "expires_at"),
+        Index("idx_trust_history_hash", "metadata_hash"),
+    )
+
+
+class TrustTimelineEvent(Base):
+    """
+    Append-only public/private trust timeline event.
+
+    Timeline events are derived from verification activity and milestone review.
+    They store references and hashes, not provider payloads.
+    """
+    __tablename__ = "trust_timeline_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
+    event_type = Column(String(100), nullable=False)
+    reference_id = Column(String(100))
+    visibility = Column(String(30), default="private", nullable=False)
+    source = Column(SQLEnum(VerificationSourceEnum), nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_trust_timeline_user_created", "user_id", "created_at"),
+        Index("idx_trust_timeline_project_created", "project_id", "created_at"),
+        Index("idx_trust_timeline_event", "event_type", "created_at"),
+        Index("idx_trust_timeline_visibility", "visibility"),
+    )
+
+
+class TrustBadgeSnapshot(Base):
+    """
+    Derived badge snapshot with explicit expiry.
+
+    Badges are never permanent. Later waves may refresh or insert replacement
+    rows when verifications are renewed.
+    """
+    __tablename__ = "trust_badge_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
+    badge_type = Column(String(60), nullable=False)
+    label = Column(String(100), nullable=False)
+    source = Column(SQLEnum(VerificationSourceEnum), nullable=False)
+    status = Column(SQLEnum(VerificationStatusEnum), nullable=False)
+    issued_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    expires_at = Column(TIMESTAMP, nullable=False)
+
+    __table_args__ = (
+        Index("idx_trust_badge_user_status", "user_id", "status"),
+        Index("idx_trust_badge_project_status", "project_id", "status"),
+        Index("idx_trust_badge_type_expiry", "badge_type", "expires_at"),
     )
 
 
