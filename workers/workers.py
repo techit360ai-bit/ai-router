@@ -4,7 +4,7 @@ TECHIT AI INCUBATION PLATFORM
 ==============================
 workers.py -- Celery Background Workers
 
-All 14 scheduled tasks, fully implemented with real executable logic.
+All 15 scheduled tasks, fully implemented with real executable logic.
 
 Task index:
   1.  daily_tour_guide              06:00 daily     -- momentum check-in for all active users
@@ -21,6 +21,7 @@ Task index:
   12. deployment_status_refresh     every 15 min    -- update beneficiary counts on live deployments
   13. document_cleanup_weekly       03:00 Sunday    -- expire document share links
   14. impact_snapshot_daily         01:00 daily     -- snapshot impact scores for longitudinal tracking
+  15. trust_continuous_verification every 30 min    -- refresh stale Trust Engine metadata contracts
 
 Run commands:
     celery -A workers.workers.celery worker --loglevel=info -Q ai_heavy,ai_light,scheduled
@@ -85,7 +86,7 @@ celery.conf.update(
     # Belt-and-suspenders import guarantee alongside include= above.
     # Both directives ensure Celery imports this module before inspecting
     # registered tasks, which is what makes `inspect registered` return
-    # all 14 tasks instead of an empty list.
+    # all tasks instead of an empty list.
     imports=["workers.workers"],
     # Route tasks to dedicated queues by workload type
     task_routes={
@@ -103,12 +104,13 @@ celery.conf.update(
         "workers.deployment_status_refresh":    {"queue": "scheduled"},
         "workers.document_cleanup_weekly":      {"queue": "scheduled"},
         "workers.impact_snapshot_daily":        {"queue": "scheduled"},
+        "workers.trust_continuous_verification": {"queue": "scheduled"},
     },
 )
 
 
 # ============================================================================
-# BEAT SCHEDULE -- 14 TASKS
+# BEAT SCHEDULE -- 15 TASKS
 # ============================================================================
 
 celery.conf.beat_schedule = {
@@ -167,6 +169,10 @@ celery.conf.beat_schedule = {
     "impact-snapshot-daily": {
         "task":     "workers.impact_snapshot_daily",
         "schedule": crontab(hour=1, minute=0),
+    },
+    "trust-continuous-verification": {
+        "task":     "workers.trust_continuous_verification",
+        "schedule": crontab(minute="*/30"),
     },
 }
 
@@ -526,6 +532,331 @@ def _fetch_anomaly_signals() -> List[Dict]:
     except Exception as e:
         logger.warning("fetch_anomaly_signals_unavailable", error=str(e))
         return []
+
+
+def _fetch_due_trust_verification_batches(limit: int = 500) -> List[Dict]:
+    """
+    Fetch latest Trust source states that need continuous verification handling.
+
+    The query reads only verification metadata and active badge references. It
+    does not fetch provider payloads, tokens, source code, logs, or analytics
+    events. Expiry intervals are enforced by `trust_verification_history.expires_at`,
+    which is source-specific in TrustEngineComputer.
+    """
+    try:
+        from sqlalchemy import text
+
+        capped = min(max(int(limit), 1), 5000)
+        with _get_db() as db:
+            rows = db.execute(text("""
+                WITH latest_history AS (
+                    SELECT DISTINCT ON (user_id, project_id, source)
+                        user_id,
+                        project_id,
+                        CAST(source AS TEXT) AS source,
+                        CAST(source AS TEXT) AS provider,
+                        CAST(status AS TEXT) AS status,
+                        confidence,
+                        created_at AS last_sync_at,
+                        expires_at
+                    FROM trust_verification_history
+                    ORDER BY user_id, project_id, source, created_at DESC
+                ),
+                active_badges AS (
+                    SELECT
+                        user_id,
+                        project_id,
+                        CAST(source AS TEXT) AS source,
+                        json_agg(json_build_object(
+                            'badge_type', badge_type,
+                            'label', label,
+                            'expires_at', expires_at
+                        )) AS active_badges
+                    FROM trust_badge_snapshots
+                    WHERE LOWER(CAST(status AS TEXT)) = 'verified'
+                      AND expires_at > NOW()
+                    GROUP BY user_id, project_id, source
+                )
+                SELECT
+                    latest_history.user_id,
+                    latest_history.project_id,
+                    latest_history.source,
+                    latest_history.provider,
+                    latest_history.status,
+                    latest_history.confidence,
+                    latest_history.last_sync_at,
+                    latest_history.expires_at,
+                    users.role,
+                    users.subscription_tier,
+                    projects.stage AS project_stage,
+                    projects.industry,
+                    COALESCE(active_badges.active_badges, '[]'::json) AS active_badges
+                FROM latest_history
+                LEFT JOIN active_badges
+                  ON active_badges.user_id = latest_history.user_id
+                 AND active_badges.project_id IS NOT DISTINCT FROM latest_history.project_id
+                 AND active_badges.source = latest_history.source
+                LEFT JOIN users ON users.id = latest_history.user_id
+                LEFT JOIN projects ON projects.id = latest_history.project_id
+                WHERE LOWER(latest_history.status) IN ('failed', 'pending', 'disconnected')
+                   OR latest_history.expires_at <= NOW()
+                ORDER BY latest_history.expires_at ASC NULLS FIRST
+                LIMIT :limit
+            """), {"limit": capped}).fetchall()
+        return _trust_connection_batches_from_rows(rows)
+    except Exception as e:
+        logger.warning("fetch_due_trust_verifications_unavailable", error=str(e))
+        return []
+
+
+def _trust_connection_batches_from_rows(rows: List[Any]) -> List[Dict]:
+    """Group Trust history rows into per-founder service calls."""
+    grouped: Dict[tuple, Dict[str, Any]] = {}
+    for row in rows:
+        user_id = str(_row_value(row, "user_id", "") or "")
+        if not user_id:
+            continue
+        project_id_value = _row_value(row, "project_id")
+        project_id = str(project_id_value) if project_id_value else None
+        key = (user_id, project_id)
+        batch = grouped.setdefault(
+            key,
+            {
+                "user_id": user_id,
+                "project_id": project_id,
+                "role": _trust_value(_row_value(row, "role", "founder")) or "founder",
+                "subscription_tier": _trust_value(_row_value(row, "subscription_tier", "free")) or "free",
+                "project_stage": _trust_value(_row_value(row, "project_stage")),
+                "industry": _row_value(row, "industry"),
+                "connections": [],
+            },
+        )
+
+        source = _trust_value(_row_value(row, "source"))
+        if not source:
+            continue
+        status = _trust_value(_row_value(row, "status", "pending")) or "pending"
+        provider = _trust_value(_row_value(row, "provider", source)) or source
+        batch["connections"].append({
+            "source": source,
+            "provider": provider,
+            "status": status,
+            "connected": status != "disconnected",
+            "last_sync_at": _iso(_row_value(row, "last_sync_at")),
+            "expires_at": _iso(_row_value(row, "expires_at")),
+            "confidence": float(_row_value(row, "confidence", 0.5) or 0.5),
+            "active_badges": _trust_badges(_row_value(row, "active_badges", [])),
+        })
+
+    return list(grouped.values())
+
+
+def _run_trust_continuous_verification_batch(
+    batch: Dict[str, Any],
+    *,
+    execute: bool,
+    db: Any = None,
+    service: Any = None,
+) -> Dict[str, Any]:
+    """Run one founder/project Trust continuous verification batch."""
+    if service is None:
+        from integration_guide import TrustVerificationService
+        service = TrustVerificationService(_get_brain())
+
+    user_context = _build_trust_user_context(batch)
+    result = service.run_continuous_verification(
+        user_context,
+        {
+            "execute": execute is True,
+            "connections": batch.get("connections") or [],
+            "adapter_payloads": {},
+        },
+        db if execute is True else None,
+    )
+    executed_results = result.get("executed_results") or []
+    notifications = result.get("notification_intents") or []
+    summary = result.get("summary") or {}
+    return {
+        "user_id": batch.get("user_id"),
+        "project_id": batch.get("project_id"),
+        "execute": execute is True,
+        "connections_seen": summary.get("connections_seen", 0),
+        "actions_prepared": summary.get("actions_prepared", 0),
+        "notifications_prepared": summary.get("notifications_prepared", 0),
+        "badge_notifications_prepared": summary.get("badge_notifications_prepared", 0),
+        "executed_actions": len(executed_results),
+        "executed_results": executed_results,
+        "notification_intents": notifications,
+        "notification_types": [note.get("notification_type") for note in notifications],
+        "privacy": result.get("privacy") or {},
+    }
+
+
+def _run_trust_continuous_verification_batches(
+    batches: List[Dict],
+    *,
+    execute: bool,
+    service_factory: Any = None,
+    db_factory: Any = None,
+) -> Dict[str, Any]:
+    """Aggregate Trust continuous verification worker results."""
+    service = service_factory() if service_factory else None
+    result = {
+        "execute": execute is True,
+        "batches_seen": len(batches),
+        "batches_processed": 0,
+        "failed_batches": 0,
+        "connections_seen": 0,
+        "actions_prepared": 0,
+        "notifications_prepared": 0,
+        "badge_notifications_prepared": 0,
+        "executed_actions": 0,
+        "batch_results": [],
+        "privacy": {
+            "metadata_only": True,
+            "raw_payload_stored": False,
+            "tokens_stored": False,
+            "provider_calls_executed": False,
+            "failure_deletes_existing_data": False,
+            "execute_required_for_mutation": True,
+        },
+    }
+
+    for batch in batches:
+        try:
+            if execute is True:
+                if db_factory:
+                    with db_factory() as db:
+                        batch_result = _run_trust_continuous_verification_batch(
+                            batch,
+                            execute=True,
+                            db=db,
+                            service=service,
+                        )
+                else:
+                    with _get_db() as db:
+                        batch_result = _run_trust_continuous_verification_batch(
+                            batch,
+                            execute=True,
+                            db=db,
+                            service=service,
+                        )
+            else:
+                batch_result = _run_trust_continuous_verification_batch(
+                    batch,
+                    execute=False,
+                    db=None,
+                    service=service,
+                )
+            result["batches_processed"] += 1
+            result["connections_seen"] += int(batch_result["connections_seen"])
+            result["actions_prepared"] += int(batch_result["actions_prepared"])
+            result["notifications_prepared"] += int(batch_result["notifications_prepared"])
+            result["badge_notifications_prepared"] += int(batch_result["badge_notifications_prepared"])
+            result["executed_actions"] += int(batch_result["executed_actions"])
+            result["batch_results"].append(batch_result)
+        except Exception as e:
+            result["failed_batches"] += 1
+            logger.warning(
+                "trust_continuous_verification_batch_failed",
+                user_id=batch.get("user_id"),
+                project_id=batch.get("project_id"),
+                error=str(e),
+            )
+
+    return result
+
+
+def _build_trust_user_context(batch: Dict[str, Any]) -> Any:
+    from ai_router_core import SubscriptionTier, UserContext, UserRole
+
+    role = _enum_for_value(UserRole, batch.get("role"), UserRole.FOUNDER)
+    tier = _enum_for_value(SubscriptionTier, batch.get("subscription_tier"), SubscriptionTier.FREE)
+    return UserContext(
+        user_id=str(batch.get("user_id")),
+        role=role,
+        subscription_tier=tier,
+        credits_remaining=0,
+        project_id=batch.get("project_id"),
+        project_stage=batch.get("project_stage"),
+        industry=batch.get("industry"),
+        tech_stack=[],
+        past_feedback=[],
+        training_progress={},
+        time_logged_today=0,
+        tasks_completed_week=0,
+    )
+
+
+def _enum_for_value(enum_cls: Any, value: Any, default: Any) -> Any:
+    normalized = _trust_value(value)
+    for member in enum_cls:
+        if member.value == normalized or member.name.lower() == normalized:
+            return member
+    return default
+
+
+def _trust_worker_execute_enabled(execute: Optional[bool]) -> bool:
+    if execute is not None:
+        return execute is True
+    return str(os.getenv("TRUST_CONTINUOUS_VERIFICATION_EXECUTE", "false")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _trust_badges(raw: Any) -> List[Dict[str, Any]]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+
+    badges = []
+    for badge in raw:
+        if not isinstance(badge, dict):
+            continue
+        badge_type = str(badge.get("badge_type") or badge.get("type") or "").strip()
+        label = str(badge.get("label") or badge_type).strip()
+        if not badge_type and not label:
+            continue
+        badges.append({
+            "badge_type": badge_type or label,
+            "label": label or badge_type,
+            "expires_at": _iso(badge.get("expires_at")),
+        })
+    return badges
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None and key in mapping:
+        return mapping[key]
+    return getattr(row, key, default)
+
+
+def _trust_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "value"):
+        value = value.value
+    return str(value).strip().lower()
+
+
+def _iso(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
 
 
 def _send_reengagement_notification(owner_id: str, project_title: str,
@@ -1508,3 +1839,45 @@ def impact_snapshot_daily(self):
     except Exception as exc:
         logger.error("impact_snapshot_task_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=300)
+
+
+# ============================================================================
+# TASK 15: Trust Continuous Verification
+# ============================================================================
+
+@celery.task(name="workers.trust_continuous_verification", bind=True, max_retries=2)
+def trust_continuous_verification(self, execute: Optional[bool] = None, limit: int = 500):
+    """
+    Process stale Trust Engine Lite verification metadata. Runs every 30 minutes.
+
+    This worker does not call GitHub, DNS, deployment, Firebase, Supabase, or
+    any other provider. It reads existing Trust metadata, prepares founder
+    notification intents for stale/failed/disconnected/badge-impact states, and
+    appends new verification history only when execute=true.
+    """
+    try:
+        execute_mode = _trust_worker_execute_enabled(execute)
+        batches = _fetch_due_trust_verification_batches(limit=limit)
+
+        logger.info(
+            "trust_continuous_verification_start",
+            batches=len(batches),
+            execute=execute_mode,
+        )
+        result = _run_trust_continuous_verification_batches(
+            batches,
+            execute=execute_mode,
+        )
+        logger.info(
+            "trust_continuous_verification_complete",
+            batches_seen=result["batches_seen"],
+            batches_processed=result["batches_processed"],
+            actions_prepared=result["actions_prepared"],
+            notifications_prepared=result["notifications_prepared"],
+            executed_actions=result["executed_actions"],
+            execute=execute_mode,
+        )
+        return result
+    except Exception as exc:
+        logger.error("trust_continuous_verification_task_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
