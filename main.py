@@ -753,6 +753,19 @@ async def trust_refresh_plan(
     return TrustVerificationService(brain).get_refresh_plan(user, body)
 
 
+@app.post("/api/v1/trust/continuous-verification/run", tags=["Trust Engine"])
+async def trust_continuous_verification_run(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Prepare or execute metadata-only continuous verification actions. 0 credits, Free+."""
+    try:
+        return TrustVerificationService(brain).run_continuous_verification(user, body, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/api/v1/trust/milestone", tags=["Trust Engine"])
 async def trust_submit_milestone(
     body: Dict[str, Any],
