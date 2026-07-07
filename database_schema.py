@@ -40,7 +40,7 @@ from enum import Enum
 
 from sqlalchemy import (
     ARRAY, Boolean, Column, DECIMAL, ForeignKey, Index, Integer,
-    Float, String, Text, TIMESTAMP,
+    Float, String, Text, TIMESTAMP, UniqueConstraint,
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSON, UUID
@@ -671,6 +671,28 @@ class InvestorWatchlist(Base):
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
 
     __table_args__ = (Index("idx_watchlist_investor", "investor_id"),)
+
+
+class InvestorTrustNote(Base):
+    """Private investor-only notes for the Trust Dashboard."""
+    __tablename__ = "investor_trust_notes"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investor_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    note        = Column(Text, default="", nullable=False)
+    internal_rating = Column(String(20), default="none", nullable=False)
+    follow_up_reminder = Column(String(255), default="", nullable=False)
+    checklist   = Column(JSON, default=lambda: [], nullable=False)
+    bookmarked  = Column(Boolean, default=False, nullable=False)
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at  = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("investor_id", "project_id", name="uq_investor_trust_note"),
+        Index("idx_investor_trust_notes_investor", "investor_id"),
+        Index("idx_investor_trust_notes_project", "project_id"),
+    )
 
 
 class InvestorAlert(Base):

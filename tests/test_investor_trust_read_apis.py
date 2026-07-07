@@ -21,8 +21,14 @@ os.environ.setdefault("ENVIRONMENT", "development")
 os.environ.setdefault("ALLOW_DEMO_AUTH", "true")
 
 from ai_router_core import SubscriptionTier, UserContext, UserRole  # noqa: E402
-from main import app, investor_trust_dashboard, investor_trust_startups  # noqa: E402
-from trust_investor_read_model import InvestorTrustReadService  # noqa: E402
+from main import (  # noqa: E402
+    app,
+    investor_trust_dashboard,
+    investor_trust_notes,
+    investor_trust_search,
+    investor_trust_startups,
+)
+from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound  # noqa: E402
 
 
 class FakeQuery:
@@ -38,6 +44,9 @@ class FakeQuery:
     def limit(self, limit: int) -> "FakeQuery":
         return FakeQuery(self.rows[:limit])
 
+    def first(self) -> Any:
+        return self.rows[0] if self.rows else None
+
     def all(self) -> List[Any]:
         return self.rows
 
@@ -45,14 +54,54 @@ class FakeQuery:
 class FakeSession:
     def __init__(self, rows_by_table: Dict[str, List[Any]]) -> None:
         self.rows_by_table = rows_by_table
+        self.added: List[Any] = []
+        self.deleted: List[Any] = []
+        self.commits = 0
+        self.rollbacks = 0
 
     def query(self, model: Any) -> FakeQuery:
         return FakeQuery(self.rows_by_table.get(getattr(model, "__tablename__", ""), []))
+
+    def add(self, row: Any) -> None:
+        table = getattr(row, "__tablename__", "")
+        self.rows_by_table.setdefault(table, [])
+        if row not in self.rows_by_table[table]:
+            self.rows_by_table[table].append(row)
+        self.added.append(row)
+
+    def delete(self, row: Any) -> None:
+        table = getattr(row, "__tablename__", "")
+        if row in self.rows_by_table.get(table, []):
+            self.rows_by_table[table].remove(row)
+        self.deleted.append(row)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 def _investor() -> UserContext:
     return UserContext(
         user_id="investor_001",
+        role=UserRole.INVESTOR,
+        subscription_tier=SubscriptionTier.INVESTOR,
+        credits_remaining=100,
+        project_id=None,
+        project_stage=None,
+        industry=None,
+        tech_stack=[],
+        past_feedback=[],
+        training_progress={},
+        time_logged_today=0,
+        tasks_completed_week=0,
+    )
+
+
+def _other_investor() -> UserContext:
+    return UserContext(
+        user_id="other_investor",
         role=UserRole.INVESTOR,
         subscription_tier=SubscriptionTier.INVESTOR,
         credits_remaining=100,
@@ -117,6 +166,7 @@ def _db() -> FakeSession:
             SimpleNamespace(investor_id="investor_001", project_id="startup_001", notes="private note must not leak"),
             SimpleNamespace(investor_id="other_investor", project_id="startup_002", notes="other private note"),
         ],
+        "investor_trust_notes": [],
         "trust_profiles": [
             SimpleNamespace(
                 project_id="startup_001",
@@ -274,6 +324,26 @@ def test_startup_list_is_current_investor_scoped_and_search_ready() -> None:
     _assert_no_sensitive_payload(result)
 
 
+def test_directory_search_finds_non_watchlist_and_returns_not_found_state() -> None:
+    service = InvestorTrustReadService()
+
+    result = service.search_startups(_investor(), "NeuralEdge", _db())
+
+    assert result["query"] == "NeuralEdge"
+    assert [startup["startupId"] for startup in result["startups"]] == ["startup_002"]
+    assert result["startups"][0]["watchlistIncluded"] is False
+    assert result["notFound"] is None
+    _assert_no_sensitive_payload(result)
+
+    missing = service.search_startups(_investor(), "No Such Verified Startup", _db())
+
+    assert missing["startups"] == []
+    assert missing["notFound"]["state"] == "not_found"
+    assert missing["notFound"]["requestAccessAllowed"] is True
+    assert missing["notFound"]["addToWatchlistAllowed"] is False
+    assert missing["privacy"]["investorNotesPrivate"] is True
+
+
 def test_selected_dashboard_matches_frontend_contract_without_sensitive_fields() -> None:
     result = InvestorTrustReadService().get_dashboard(_investor(), "startup_001", _db())
 
@@ -309,27 +379,151 @@ def test_selected_dashboard_matches_frontend_contract_without_sensitive_fields()
     _assert_no_sensitive_payload(result)
 
 
-def test_missing_trust_records_return_no_data_shape() -> None:
-    result = InvestorTrustReadService().get_dashboard(_investor(), "startup_missing", FakeSession({}))
+def test_missing_startup_returns_explicit_not_found_state() -> None:
+    try:
+        InvestorTrustReadService().get_dashboard(_investor(), "startup_missing", FakeSession({}))
+    except InvestorTrustStartupNotFound as exc:
+        state = exc.state
+    else:
+        raise AssertionError("missing startup returned a dashboard payload")
 
-    assert result["startup"]["startupId"] == "startup_missing"
-    assert result["startup"]["overallStatus"] == "Pending Verification"
-    assert result["trustSummary"]["verificationConfidence"] == 0
-    assert result["privacy"]["metadataOnly"] is True
-    assert result["verificationItems"]
-    _assert_no_sensitive_payload(result)
+    assert state["state"] == "not_found"
+    assert state["startupId"] == "startup_missing"
+    assert state["requestAccessAllowed"] is True
+    assert state["addToWatchlistAllowed"] is False
+    assert state["watchlistIncluded"] is False
+    assert state["privacy"]["metadataOnly"] is True
+
+
+def test_private_notes_persist_by_investor_and_sync_bookmark_watchlist() -> None:
+    db = _db()
+    service = InvestorTrustReadService()
+    payload = {
+        "note": "Partner review scheduled after diligence.",
+        "internalRating": "priority",
+        "followUpReminder": "Review on 2026-07-15",
+        "checklist": [
+            {"item": "Review verification sources", "done": True},
+            {"item": "Check milestone evidence", "done": False},
+        ],
+        "bookmarked": True,
+    }
+
+    saved = service.save_notes(_investor(), "startup_002", payload, db)
+
+    assert saved["ok"] is True
+    assert saved["investorNotes"]["note"] == "Partner review scheduled after diligence."
+    assert saved["investorNotes"]["internalRating"] == "priority"
+    assert saved["investorNotes"]["bookmarked"] is True
+    assert db.commits == 1
+    assert any(
+        row.investor_id == "investor_001" and row.project_id == "startup_002"
+        for row in db.rows_by_table["investor_trust_notes"]
+    )
+    assert any(
+        row.investor_id == "investor_001" and row.project_id == "startup_002"
+        for row in db.rows_by_table["investor_watchlist"]
+    )
+
+    dashboard = service.get_dashboard(_investor(), "startup_002", db)
+    assert dashboard["investorNotes"]["note"] == "Partner review scheduled after diligence."
+    assert dashboard["startup"]["watchlistIncluded"] is True
+
+    other_dashboard = service.get_dashboard(_other_investor(), "startup_002", db)
+    assert other_dashboard["investorNotes"]["note"] == ""
+    assert "Partner review scheduled" not in json.dumps(other_dashboard)
+    _assert_no_sensitive_payload(other_dashboard)
+
+    updated = service.save_notes(
+        _investor(),
+        "startup_002",
+        {**payload, "note": "Investment committee passed.", "internalRating": "pass", "bookmarked": False},
+        db,
+    )
+
+    assert updated["investorNotes"]["note"] == "Investment committee passed."
+    assert updated["investorNotes"]["internalRating"] == "pass"
+    assert updated["investorNotes"]["bookmarked"] is False
+    assert len([
+        row for row in db.rows_by_table["investor_trust_notes"]
+        if row.investor_id == "investor_001" and row.project_id == "startup_002"
+    ]) == 1
+    assert not any(
+        row.investor_id == "investor_001" and row.project_id == "startup_002"
+        for row in db.rows_by_table["investor_watchlist"]
+    )
+
+
+def test_private_notes_cannot_be_read_or_mutated_by_other_roles() -> None:
+    db = _db()
+    service = InvestorTrustReadService()
+    payload = {
+        "note": "Internal investor thesis only.",
+        "internalRating": "watch",
+        "followUpReminder": "",
+        "checklist": [],
+        "bookmarked": False,
+    }
+
+    service.save_notes(_investor(), "startup_001", payload, db)
+    service.save_notes(_other_investor(), "startup_001", {**payload, "note": "Other investor memo."}, db)
+
+    own = service.get_dashboard(_investor(), "startup_001", db)
+    other = service.get_dashboard(_other_investor(), "startup_001", db)
+
+    assert own["investorNotes"]["note"] == "Internal investor thesis only."
+    assert other["investorNotes"]["note"] == "Other investor memo."
+    assert "Other investor memo" not in json.dumps(own)
+    assert "Internal investor thesis" not in json.dumps(other)
+
+    try:
+        service.save_notes(_founder(), "startup_001", payload, db)
+    except PermissionError as exc:
+        assert "investor role" in str(exc).lower()
+    else:
+        raise AssertionError("founder note mutation was allowed")
 
 
 def test_fastapi_routes_are_registered_and_role_guarded() -> None:
-    routes = {getattr(route, "path", "") for route in app.routes}
+    route_paths = [getattr(route, "path", "") for route in app.routes]
+    routes = set(route_paths)
     assert "/api/v1/investor/trust/startups" in routes
+    assert "/api/v1/investor/trust/search" in routes
     assert "/api/v1/investor/trust/{startup_id}" in routes
+    assert "/api/v1/investor/trust/{startup_id}/notes" in routes
+    assert route_paths.index("/api/v1/investor/trust/search") < route_paths.index("/api/v1/investor/trust/{startup_id}")
 
     result = asyncio.run(investor_trust_startups(user=_investor(), db=_db()))
     assert result["watchlistStartupIds"] == ["startup_001"]
 
+    search = asyncio.run(investor_trust_search(query="NeuralEdge", user=_investor(), db=_db()))
+    assert [startup["startupId"] for startup in search["startups"]] == ["startup_002"]
+
     detail = asyncio.run(investor_trust_dashboard("startup_001", user=_investor(), db=_db()))
     assert detail["startup"]["startupId"] == "startup_001"
+
+    db = _db()
+    saved = asyncio.run(investor_trust_notes(
+        "startup_002",
+        notes={
+            "note": "Route-level note.",
+            "internalRating": "watch",
+            "followUpReminder": "",
+            "checklist": [],
+            "bookmarked": True,
+        },
+        user=_investor(),
+        db=db,
+    ))
+    assert saved["investorNotes"]["note"] == "Route-level note."
+
+    try:
+        asyncio.run(investor_trust_dashboard("startup_missing", user=_investor(), db=_db()))
+    except Exception as exc:  # noqa: BLE001
+        assert getattr(exc, "status_code", None) == 404
+        assert getattr(exc, "detail", {}).get("state") == "not_found"
+    else:
+        raise AssertionError("missing startup route did not return 404")
 
     try:
         asyncio.run(investor_trust_startups(user=_founder(), db=_db()))
@@ -343,8 +537,11 @@ def main() -> int:
     tests = [
         test_service_rejects_non_investor_context,
         test_startup_list_is_current_investor_scoped_and_search_ready,
+        test_directory_search_finds_non_watchlist_and_returns_not_found_state,
         test_selected_dashboard_matches_frontend_contract_without_sensitive_fields,
-        test_missing_trust_records_return_no_data_shape,
+        test_missing_startup_returns_explicit_not_found_state,
+        test_private_notes_persist_by_investor_and_sync_bookmark_watchlist,
+        test_private_notes_cannot_be_read_or_mutated_by_other_roles,
         test_fastapi_routes_are_registered_and_role_guarded,
     ]
     for test in tests:
