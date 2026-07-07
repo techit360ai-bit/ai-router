@@ -66,6 +66,7 @@ from runtime_config import (
     assert_runtime_ready,
     runtime_checks,
 )
+from trust_investor_read_model import InvestorTrustReadService
 
 logger = structlog.get_logger()
 
@@ -898,6 +899,32 @@ async def find_collaborators(
 # ============================================================================
 # INVESTOR SECTION
 # ============================================================================
+
+def _require_investor_role(user: UserContext) -> None:
+    if user.role != UserRole.INVESTOR:
+        raise HTTPException(status_code=403, detail="Investor role required.")
+
+
+@app.get("/api/v1/investor/trust/startups", tags=["Investor"])
+async def investor_trust_startups(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Investor-safe Trust startup list. 0 credits, Investor only."""
+    _require_investor_role(user)
+    return InvestorTrustReadService().get_startups(user, db)
+
+
+@app.get("/api/v1/investor/trust/{startup_id}", tags=["Investor"])
+async def investor_trust_dashboard(
+    startup_id: str,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Investor-safe Trust dashboard read model. 0 credits, Investor only."""
+    _require_investor_role(user)
+    return InvestorTrustReadService().get_dashboard(user, startup_id, db)
+
 
 @app.get("/api/v1/investor/deal-flow", tags=["Investor"])
 async def deal_flow(user: UserContext = Depends(get_user_context)):
