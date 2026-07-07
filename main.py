@@ -66,7 +66,7 @@ from runtime_config import (
     assert_runtime_ready,
     runtime_checks,
 )
-from trust_investor_read_model import InvestorTrustReadService
+from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
 
 logger = structlog.get_logger()
 
@@ -915,6 +915,18 @@ async def investor_trust_startups(
     return InvestorTrustReadService().get_startups(user, db)
 
 
+@app.get("/api/v1/investor/trust/search", tags=["Investor"])
+async def investor_trust_search(
+    query: str = "",
+    limit: int = 25,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Investor-safe startup directory search. 0 credits, Investor only."""
+    _require_investor_role(user)
+    return InvestorTrustReadService().search_startups(user, query, db, limit)
+
+
 @app.get("/api/v1/investor/trust/{startup_id}", tags=["Investor"])
 async def investor_trust_dashboard(
     startup_id: str,
@@ -923,7 +935,25 @@ async def investor_trust_dashboard(
 ):
     """Investor-safe Trust dashboard read model. 0 credits, Investor only."""
     _require_investor_role(user)
-    return InvestorTrustReadService().get_dashboard(user, startup_id, db)
+    try:
+        return InvestorTrustReadService().get_dashboard(user, startup_id, db)
+    except InvestorTrustStartupNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.state) from exc
+
+
+@app.post("/api/v1/investor/trust/{startup_id}/notes", tags=["Investor"])
+async def investor_trust_notes(
+    startup_id: str,
+    notes: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Persist investor-private Trust notes. 0 credits, Investor only."""
+    _require_investor_role(user)
+    try:
+        return InvestorTrustReadService().save_notes(user, startup_id, notes, db)
+    except InvestorTrustStartupNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.state) from exc
 
 
 @app.get("/api/v1/investor/deal-flow", tags=["Investor"])

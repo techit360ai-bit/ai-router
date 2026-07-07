@@ -16,6 +16,15 @@ from ai_router_core import UserContext, UserRole
 from trust_engine_lite import FounderTrustProfile, TrustEngineComputer, VerificationSource, VerificationStatus
 
 
+class InvestorTrustStartupNotFound(LookupError):
+    """Raised when a startup is not present in the investor-visible Trust directory."""
+
+    def __init__(self, startup_id: str, state: Dict[str, Any]) -> None:
+        super().__init__(state)
+        self.startup_id = startup_id
+        self.state = state
+
+
 class InvestorTrustReadService:
     """Builds investor-facing Trust read models from existing metadata rows."""
 
@@ -97,27 +106,46 @@ class InvestorTrustReadService:
         VerificationSource.PRODUCT_ANALYTICS.value,
     ]
 
+    DEFAULT_CHECKLIST = [
+        {"item": "Review verification sources", "done": False},
+        {"item": "Check milestone evidence", "done": False},
+        {"item": "Confirm continuous verification status", "done": False},
+        {"item": "Add partner notes", "done": False},
+    ]
+    INTERNAL_RATINGS = {"watch", "priority", "pass", "none"}
+
     def get_startups(self, investor_context: UserContext, db: Any = None, limit: int = 50) -> Dict[str, Any]:
         """GET /api/v1/investor/trust/startups -- read-only investor contract."""
         self._require_investor(investor_context)
-        projects = self._load_projects(db, limit)
-        profiles = self._load_profiles(db)
-        watchlist_ids = self._watchlist_project_ids(investor_context, db)
-
-        project_ids = self._ordered_project_ids(projects, profiles, watchlist_ids)
-        startups = [
-            self._startup_summary(
-                project=self._project_for(projects, project_id),
-                profile=self._profile_for(profiles, project_id),
-                project_id=project_id,
-                watchlist_ids=watchlist_ids,
-            )
-            for project_id in project_ids[: max(1, min(int(limit or 50), 100))]
-        ]
+        startups, watchlist_ids = self._build_startup_summaries(investor_context, db, limit)
 
         return {
             "startups": startups,
-            "watchlistStartupIds": [project_id for project_id in watchlist_ids if project_id in project_ids],
+            "watchlistStartupIds": [project_id for project_id in watchlist_ids if any(startup["startupId"] == project_id for startup in startups)],
+            "privacy": dict(self.PRIVACY),
+        }
+
+    def search_startups(
+        self,
+        investor_context: UserContext,
+        query: str = "",
+        db: Any = None,
+        limit: int = 25,
+    ) -> Dict[str, Any]:
+        """GET /api/v1/investor/trust/search -- server-side directory search."""
+        self._require_investor(investor_context)
+        startups, watchlist_ids = self._build_startup_summaries(investor_context, db, 100)
+        term = str(query or "").strip()
+        matches = [
+            startup for startup in startups
+            if not term or self._matches_query(startup, term)
+        ][: max(1, min(int(limit or 25), 100))]
+
+        return {
+            "query": term,
+            "startups": matches,
+            "watchlistStartupIds": [project_id for project_id in watchlist_ids if any(startup["startupId"] == project_id for startup in startups)],
+            "notFound": self._not_found_state(search_query=term) if term and not matches else None,
             "privacy": dict(self.PRIVACY),
         }
 
@@ -133,8 +161,11 @@ class InvestorTrustReadService:
         timelines = self._load_timeline(db, startup_id, 25)
         watchlist_ids = self._watchlist_project_ids(investor_context, db)
 
-        project = self._project_for(projects, startup_id)
+        project = self._project_for(projects, startup_id) or self._load_project_by_id(db, startup_id)
         profile_row = self._profile_for(profiles, startup_id)
+        if project is None and profile_row is None:
+            raise InvestorTrustStartupNotFound(startup_id, self._not_found_state(startup_id=startup_id))
+
         profile = self._profile_from_row(profile_row)
         computed = TrustEngineComputer.compute(profile)
         active_badges = self._badge_records(profile, badges)
@@ -171,7 +202,7 @@ class InvestorTrustReadService:
             "continuousVerification": self._continuous_verification(profile, histories, summary),
             "investmentReadiness": self._investment_readiness(profile, summary),
             "evidenceExplorer": self._evidence_explorer(verification_items),
-            "investorNotes": self._empty_private_notes(summary["watchlistIncluded"]),
+            "investorNotes": self._private_notes(investor_context, startup_id, db, summary["watchlistIncluded"]),
             "privacy": dict(self.PRIVACY),
             "sourceContract": {
                 "metadataOnly": True,
@@ -183,10 +214,87 @@ class InvestorTrustReadService:
             },
         }
 
+    def save_notes(
+        self,
+        investor_context: UserContext,
+        startup_id: str,
+        payload: Dict[str, Any],
+        db: Any = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/investor/trust/{startupId}/notes -- investor-private note persistence."""
+        self._require_investor(investor_context)
+        startup_id = str(startup_id)
+        projects = self._load_projects(db, 100)
+        profiles = self._load_profiles(db)
+        if (
+            self._project_for(projects, startup_id) is None
+            and self._load_project_by_id(db, startup_id) is None
+            and self._profile_for(profiles, startup_id) is None
+        ):
+            raise InvestorTrustStartupNotFound(startup_id, self._not_found_state(startup_id=startup_id))
+
+        existing_note = self._investor_note_for(investor_context, startup_id, db)
+        current_bookmark = startup_id in set(self._watchlist_project_ids(investor_context, db))
+        normalized = self._normalize_note_payload(payload, current_bookmark)
+
+        if db is None:
+            return {"ok": True, "investorNotes": normalized, "privacy": dict(self.PRIVACY)}
+
+        try:
+            from database_schema import InvestorTrustNote
+
+            row = existing_note or InvestorTrustNote(
+                investor_id=investor_context.user_id,
+                project_id=startup_id,
+            )
+            row.note = normalized["note"]
+            row.internal_rating = normalized["internalRating"]
+            row.follow_up_reminder = normalized["followUpReminder"]
+            row.checklist = normalized["checklist"]
+            row.bookmarked = normalized["bookmarked"]
+            row.updated_at = datetime.utcnow()
+
+            if existing_note is None:
+                db.add(row)
+            self._sync_watchlist_bookmark(investor_context, startup_id, normalized["bookmarked"], db)
+            db.commit()
+        except Exception:
+            self._rollback(db)
+            raise
+
+        refreshed_bookmark = startup_id in set(self._watchlist_project_ids(investor_context, db))
+        return {
+            "ok": True,
+            "investorNotes": self._private_notes(investor_context, startup_id, db, refreshed_bookmark),
+            "privacy": dict(self.PRIVACY),
+        }
+
     @staticmethod
     def _require_investor(user_context: UserContext) -> None:
         if user_context.role != UserRole.INVESTOR:
             raise PermissionError("Investor Trust Dashboard requires investor role.")
+
+    def _build_startup_summaries(
+        self,
+        investor_context: UserContext,
+        db: Any,
+        limit: int,
+    ) -> tuple[List[Dict[str, Any]], List[str]]:
+        projects = self._load_projects(db, limit)
+        profiles = self._load_profiles(db)
+        watchlist_ids = self._watchlist_project_ids(investor_context, db)
+        project_ids = self._ordered_project_ids(projects, profiles, watchlist_ids)
+        capped = project_ids[: max(1, min(int(limit or 50), 100))]
+        startups = [
+            self._startup_summary(
+                project=self._project_for(projects, project_id) or self._load_project_by_id(db, project_id),
+                profile=self._profile_for(profiles, project_id),
+                project_id=project_id,
+                watchlist_ids=watchlist_ids,
+            )
+            for project_id in capped
+        ]
+        return startups, watchlist_ids
 
     def _load_projects(self, db: Any, limit: int = 50) -> List[Any]:
         if db is None:
@@ -198,6 +306,18 @@ class InvestorTrustReadService:
             return list(query.all())
         except Exception:
             return []
+
+    def _load_project_by_id(self, db: Any, project_id: str) -> Any:
+        if db is None or not self._uuid_like(project_id):
+            return None
+        try:
+            from database_schema import Project
+
+            row = db.query(Project).filter(Project.id == project_id).first()
+            return row if row is not None and self._id(getattr(row, "id", None)) == str(project_id) else None
+        except Exception:
+            self._rollback(db)
+            return None
 
     def _load_profiles(self, db: Any) -> List[Any]:
         return self._load_all(db, "TrustProfile")
@@ -236,6 +356,124 @@ class InvestorTrustReadService:
             if self._id(getattr(row, "investor_id", None)) == str(investor_context.user_id)
         ]
         return self._unique([self._id(getattr(row, "project_id", None)) for row in rows if getattr(row, "project_id", None)])
+
+    def _investor_note_for(self, investor_context: UserContext, project_id: str, db: Any) -> Any:
+        rows = [
+            row for row in self._load_all(db, "InvestorTrustNote")
+            if self._id(getattr(row, "investor_id", None)) == str(investor_context.user_id)
+            and self._id(getattr(row, "project_id", None)) == str(project_id)
+        ]
+        rows.sort(key=lambda row: getattr(row, "updated_at", datetime.min) or datetime.min, reverse=True)
+        return rows[0] if rows else None
+
+    def _watchlist_row_for(self, investor_context: UserContext, project_id: str, db: Any) -> Any:
+        rows = [
+            row for row in self._load_all(db, "InvestorWatchlist")
+            if self._id(getattr(row, "investor_id", None)) == str(investor_context.user_id)
+            and self._id(getattr(row, "project_id", None)) == str(project_id)
+        ]
+        return rows[0] if rows else None
+
+    def _sync_watchlist_bookmark(self, investor_context: UserContext, project_id: str, bookmarked: bool, db: Any) -> None:
+        row = self._watchlist_row_for(investor_context, project_id, db)
+        if bookmarked and row is None:
+            from database_schema import InvestorWatchlist
+
+            db.add(InvestorWatchlist(investor_id=investor_context.user_id, project_id=project_id))
+        if not bookmarked and row is not None and hasattr(db, "delete"):
+            db.delete(row)
+
+    def _private_notes(self, investor_context: UserContext, project_id: str, db: Any, bookmarked: bool) -> Dict[str, Any]:
+        row = self._investor_note_for(investor_context, project_id, db)
+        if row is None:
+            return self._empty_private_notes(bookmarked)
+
+        checklist = getattr(row, "checklist", None)
+        if not isinstance(checklist, list):
+            checklist = self._default_checklist()
+
+        return {
+            "note": str(getattr(row, "note", "") or ""),
+            "internalRating": self._rating(getattr(row, "internal_rating", "none")),
+            "followUpReminder": str(getattr(row, "follow_up_reminder", "") or ""),
+            "checklist": self._normalize_checklist(checklist),
+            "bookmarked": bool(bookmarked),
+        }
+
+    def _normalize_note_payload(self, payload: Dict[str, Any], current_bookmark: bool) -> Dict[str, Any]:
+        payload = payload or {}
+        return {
+            "note": self._bounded_string(payload.get("note"), 5000),
+            "internalRating": self._rating(payload.get("internalRating")),
+            "followUpReminder": self._bounded_string(payload.get("followUpReminder"), 255),
+            "checklist": self._normalize_checklist(payload.get("checklist")),
+            "bookmarked": bool(payload.get("bookmarked", current_bookmark)),
+        }
+
+    def _normalize_checklist(self, checklist: Any) -> List[Dict[str, Any]]:
+        source = checklist if isinstance(checklist, list) and checklist else self._default_checklist()
+        normalized: List[Dict[str, Any]] = []
+        for item in source[:12]:
+            if not isinstance(item, dict):
+                continue
+            text = self._bounded_string(item.get("item"), 120)
+            if not text:
+                continue
+            normalized.append({"item": text, "done": bool(item.get("done", False))})
+        return normalized or self._default_checklist()
+
+    def _matches_query(self, startup: Dict[str, Any], query: str) -> bool:
+        term = query.strip().lower()
+        values = [
+            startup.get("startupId"),
+            startup.get("name"),
+            startup.get("industry"),
+            startup.get("country"),
+            startup.get("stage"),
+            startup.get("fundingStage"),
+            startup.get("overallStatus"),
+        ]
+        return any(term in str(value or "").lower() for value in values)
+
+    def _not_found_state(self, startup_id: str = "", search_query: str = "") -> Dict[str, Any]:
+        return {
+            "state": "not_found",
+            "startupId": str(startup_id or ""),
+            "query": str(search_query or ""),
+            "message": "Startup was not found in the investor-visible Trust directory.",
+            "requestAccessAllowed": True,
+            "addToWatchlistAllowed": False,
+            "watchlistIncluded": False,
+            "privacy": dict(self.PRIVACY),
+        }
+
+    @classmethod
+    def _default_checklist(cls) -> List[Dict[str, Any]]:
+        return [{"item": item["item"], "done": bool(item["done"])} for item in cls.DEFAULT_CHECKLIST]
+
+    @classmethod
+    def _rating(cls, value: Any) -> str:
+        rating = str(value or "none").strip().lower()
+        return rating if rating in cls.INTERNAL_RATINGS else "none"
+
+    @staticmethod
+    def _bounded_string(value: Any, limit: int) -> str:
+        return str(value or "").strip()[:limit]
+
+    @staticmethod
+    def _uuid_like(value: Any) -> bool:
+        try:
+            from uuid import UUID
+
+            UUID(str(value))
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _rollback(db: Any) -> None:
+        if hasattr(db, "rollback"):
+            db.rollback()
 
     def _load_all(self, db: Any, model_name: str) -> List[Any]:
         if db is None:
@@ -562,12 +800,7 @@ class InvestorTrustReadService:
             "note": "",
             "internalRating": "none",
             "followUpReminder": "",
-            "checklist": [
-                {"item": "Review verification sources", "done": False},
-                {"item": "Check milestone evidence", "done": False},
-                {"item": "Confirm continuous verification status", "done": False},
-                {"item": "Add partner notes", "done": False},
-            ],
+            "checklist": InvestorTrustReadService._default_checklist(),
             "bookmarked": bookmarked,
         }
 
