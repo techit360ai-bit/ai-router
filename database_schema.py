@@ -670,7 +670,10 @@ class InvestorWatchlist(Base):
     notes      = Column(Text)
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
 
-    __table_args__ = (Index("idx_watchlist_investor", "investor_id"),)
+    __table_args__ = (
+        Index("idx_watchlist_investor", "investor_id"),
+        Index("idx_watchlist_investor_project", "investor_id", "project_id"),
+    )
 
 
 class InvestorTrustNote(Base):
@@ -692,6 +695,7 @@ class InvestorTrustNote(Base):
         UniqueConstraint("investor_id", "project_id", name="uq_investor_trust_note"),
         Index("idx_investor_trust_notes_investor", "investor_id"),
         Index("idx_investor_trust_notes_project", "project_id"),
+        Index("idx_investor_trust_notes_investor_updated", "investor_id", "updated_at"),
     )
 
 
@@ -1244,6 +1248,8 @@ class TrustProfile(Base):
         Index("idx_trust_profile_project", "project_id"),
         Index("idx_trust_profile_status", "verification_status"),
         Index("idx_trust_profile_score", "trust_score"),
+        Index("idx_trust_profile_project_status", "project_id", "verification_status"),
+        Index("idx_trust_profile_status_score", "verification_status", "trust_score"),
     )
 
 
@@ -1273,8 +1279,10 @@ class TrustVerificationHistory(Base):
 
     __table_args__ = (
         Index("idx_trust_history_user_created", "user_id", "created_at"),
+        Index("idx_trust_history_project_created", "project_id", "created_at"),
         Index("idx_trust_history_subject", "subject_type", "subject_id", "created_at"),
         Index("idx_trust_history_source_status", "source", "status"),
+        Index("idx_trust_history_source_expiry", "source", "expires_at"),
         Index("idx_trust_history_expiry", "expires_at"),
         Index("idx_trust_history_hash", "metadata_hash"),
     )

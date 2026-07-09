@@ -47,7 +47,9 @@ except ModuleNotFoundError:
 
 from integration_guide import TechITAIBrain, TrustVerificationService  # noqa: E402
 from trust_engine_lite import VerificationStatus  # noqa: E402
+import workers.workers as workers_module  # noqa: E402
 from workers.workers import (  # noqa: E402
+    _fetch_due_trust_verification_batches,
     _run_trust_continuous_verification_batch,
     _run_trust_continuous_verification_batches,
     _trust_connection_batches_from_rows,
@@ -98,6 +100,21 @@ class FakeSession:
 
     def rollback(self) -> None:
         self.rollbacks += 1
+
+
+class FakeDbContext:
+    def __init__(self, captured: dict[str, Any]) -> None:
+        self.captured = captured
+
+    def __enter__(self) -> "FakeDbContext":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+    def execute(self, _statement: Any, params: dict[str, Any]) -> Any:
+        self.captured.update(params)
+        return SimpleNamespace(fetchall=lambda: [])
 
 
 def _service() -> TrustVerificationService:
@@ -245,6 +262,51 @@ def test_worker_aggregates_dry_run_metrics() -> None:
     assert result["privacy"]["execute_required_for_mutation"] is True
 
 
+def test_worker_isolates_failed_batches_and_continues() -> None:
+    class FlakyService:
+        def run_continuous_verification(self, user_context: Any, payload: dict[str, Any], _db: Any) -> dict[str, Any]:
+            if user_context.user_id == "u_fail":
+                raise RuntimeError("simulated batch failure")
+            return {
+                "summary": {
+                    "connections_seen": len(payload["connections"]),
+                    "actions_prepared": 1,
+                    "notifications_prepared": 0,
+                    "badge_notifications_prepared": 0,
+                },
+                "executed_results": [],
+                "notification_intents": [],
+                "privacy": {"metadata_only": True},
+            }
+
+    good_batch = _expired_github_batch()
+    bad_batch = {**_expired_github_batch(), "user_id": "u_fail"}
+    result = _run_trust_continuous_verification_batches(
+        [bad_batch, good_batch],
+        execute=False,
+        service_factory=lambda: FlakyService(),
+    )
+
+    assert result["batches_seen"] == 2
+    assert result["failed_batches"] == 1
+    assert result["batches_processed"] == 1
+    assert result["actions_prepared"] == 1
+    assert result["privacy"]["failure_deletes_existing_data"] is False
+
+
+def test_due_trust_fetch_caps_batch_size_for_backpressure() -> None:
+    captured: dict[str, Any] = {}
+    original_get_db = workers_module._get_db
+    workers_module._get_db = lambda: FakeDbContext(captured)
+    try:
+        result = _fetch_due_trust_verification_batches(limit=999_999)
+    finally:
+        workers_module._get_db = original_get_db
+
+    assert result == []
+    assert captured["limit"] == 5000
+
+
 def test_trust_worker_is_registered_on_scheduled_queue() -> None:
     schedule = celery.conf.beat_schedule
     assert "trust-continuous-verification" in schedule
@@ -258,6 +320,8 @@ def main() -> int:
         test_worker_dry_run_prepares_expiry_and_badge_notifications_without_mutation,
         test_worker_execute_appends_history_without_deleting_existing_data,
         test_worker_aggregates_dry_run_metrics,
+        test_worker_isolates_failed_batches_and_continues,
+        test_due_trust_fetch_caps_batch_size_for_backpressure,
         test_trust_worker_is_registered_on_scheduled_queue,
     ]
     for test in tests:
