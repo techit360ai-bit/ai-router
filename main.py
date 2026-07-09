@@ -45,6 +45,7 @@ from integration_guide import (
     DocumentGenerationService,
     IPProtectionService,
     AppScaffoldService,
+    TrustVerificationService,
     EquityService,
     PayoutService,
     CapitalPoolService,
@@ -65,6 +66,7 @@ from runtime_config import (
     assert_runtime_ready,
     runtime_checks,
 )
+from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
 
 logger = structlog.get_logger()
 
@@ -638,6 +640,193 @@ async def compute_gsis(
 
 
 # ============================================================================
+# TRUST ENGINE LITE
+# ============================================================================
+
+@app.get("/api/v1/trust/profile", tags=["Trust Engine"])
+async def trust_profile(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Current metadata-only trust profile. 0 credits, Free+."""
+    return TrustVerificationService(brain).get_profile(user, db)
+
+
+@app.get("/api/v1/trust/badges", tags=["Trust Engine"])
+async def trust_badges(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Derived expiring trust badges. 0 credits, Free+."""
+    return TrustVerificationService(brain).get_badges(user, db)
+
+
+@app.get("/api/v1/trust/history", tags=["Trust Engine"])
+async def trust_history(
+    limit: int = 50,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Append-only verification history. 0 credits, Free+."""
+    return TrustVerificationService(brain).get_history(user, db, limit)
+
+
+@app.post("/api/v1/trust/share-profile/preview", tags=["Trust Engine"])
+async def trust_share_profile_preview(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Build an investor-safe Trust Profile preview after explicit founder opt-in. 0 credits, Free+."""
+    return TrustVerificationService(brain).build_share_profile(user, body, db)
+
+
+@app.get("/api/v1/trust/integrations", tags=["Trust Engine"])
+async def trust_integrations(
+    provider: Optional[str] = None,
+    user: UserContext = Depends(get_user_context),
+):
+    """Provider integration manifests with permissions and metadata-only storage policy. 0 credits, Free+."""
+    try:
+        return TrustVerificationService(brain).get_integration_manifests(provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/verify/{source}", tags=["Trust Engine"])
+async def trust_verify_source(
+    source: str,
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """
+    Submit metadata-only verification result for a source. 1 credit, Free+.
+
+    This endpoint accepts provider adapter metadata only; it never accepts or
+    stores raw provider payloads, OAuth tokens, source code, analytics events,
+    contact lists, or document blobs.
+    """
+    try:
+        return TrustVerificationService(brain).verify_source(user, source, body, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/adapters/{provider}/verify", tags=["Trust Engine"])
+async def trust_verify_adapter_payload(
+    provider: str,
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Normalize provider metadata through a privacy adapter, then append a Trust verification row. 1 credit, Free+."""
+    try:
+        return TrustVerificationService(brain).verify_adapter_payload(user, provider, body, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/disconnect/{source}", tags=["Trust Engine"])
+async def trust_disconnect_source(
+    source: str,
+    body: Dict[str, Any] | None = None,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Disconnect a trust source and append a disconnected history row. 0 credits, Free+."""
+    try:
+        return TrustVerificationService(brain).disconnect_source(user, source, body, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/refresh/{source}", tags=["Trust Engine"])
+async def trust_refresh_source(
+    source: str,
+    body: Dict[str, Any] | None = None,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Trigger a metadata-only manual re-verification contract. 1 credit, Free+."""
+    try:
+        return TrustVerificationService(brain).refresh_source(user, source, body, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/refresh-plan", tags=["Trust Engine"])
+async def trust_refresh_plan(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Compute continuous-verification refresh states without mutating history. 0 credits, Free+."""
+    return TrustVerificationService(brain).get_refresh_plan(user, body)
+
+
+@app.post("/api/v1/trust/continuous-verification/run", tags=["Trust Engine"])
+async def trust_continuous_verification_run(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Prepare or execute metadata-only continuous verification actions. 0 credits, Free+."""
+    try:
+        return TrustVerificationService(brain).run_continuous_verification(user, body, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/trust/milestone", tags=["Trust Engine"])
+async def trust_submit_milestone(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Submit milestone evidence metadata for review. 1 credit, Free+."""
+    return TrustVerificationService(brain).submit_milestone(user, body, db)
+
+
+@app.post("/api/v1/trust/milestone/review", tags=["Trust Engine"])
+async def trust_review_milestone(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Review milestone evidence metadata and append approved/rejected Trust state. 1 credit."""
+    return TrustVerificationService(brain).review_milestone(user, body, db)
+
+
+@app.post("/api/v1/trust/team/invite", tags=["Trust Engine"])
+async def trust_invite_team_member(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Prepare a metadata-only team invitation notification intent. 0 credits, Free+."""
+    return TrustVerificationService(brain).invite_team_member(user, body, db)
+
+
+@app.post("/api/v1/trust/team/verify", tags=["Trust Engine"])
+async def trust_verify_team_member(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Verify a team member through metadata-only Trust state. 1 credit, Free+."""
+    return TrustVerificationService(brain).verify_team_member(user, body, db)
+
+
+@app.post("/api/v1/trust/notifications/preview", tags=["Trust Engine"])
+async def trust_notifications_preview(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Build founder-only Trust notification intents without executing delivery. 0 credits, Free+."""
+    return TrustVerificationService(brain).preview_notifications(user, body)
+
+
+# ============================================================================
 # TOUR GUIDE
 # ============================================================================
 
@@ -713,6 +902,62 @@ async def find_collaborators(
 # ============================================================================
 # INVESTOR SECTION
 # ============================================================================
+
+def _require_investor_role(user: UserContext) -> None:
+    if user.role != UserRole.INVESTOR:
+        raise HTTPException(status_code=403, detail="Investor role required.")
+
+
+@app.get("/api/v1/investor/trust/startups", tags=["Investor"])
+async def investor_trust_startups(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Investor-safe Trust startup list. 0 credits, Investor only."""
+    _require_investor_role(user)
+    return InvestorTrustReadService().get_startups(user, db)
+
+
+@app.get("/api/v1/investor/trust/search", tags=["Investor"])
+async def investor_trust_search(
+    query: str = "",
+    limit: int = 25,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Investor-safe startup directory search. 0 credits, Investor only."""
+    _require_investor_role(user)
+    return InvestorTrustReadService().search_startups(user, query, db, limit)
+
+
+@app.get("/api/v1/investor/trust/{startup_id}", tags=["Investor"])
+async def investor_trust_dashboard(
+    startup_id: str,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Investor-safe Trust dashboard read model. 0 credits, Investor only."""
+    _require_investor_role(user)
+    try:
+        return InvestorTrustReadService().get_dashboard(user, startup_id, db)
+    except InvestorTrustStartupNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.state) from exc
+
+
+@app.post("/api/v1/investor/trust/{startup_id}/notes", tags=["Investor"])
+async def investor_trust_notes(
+    startup_id: str,
+    notes: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Persist investor-private Trust notes. 0 credits, Investor only."""
+    _require_investor_role(user)
+    try:
+        return InvestorTrustReadService().save_notes(user, startup_id, notes, db)
+    except InvestorTrustStartupNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.state) from exc
+
 
 @app.get("/api/v1/investor/deal-flow", tags=["Investor"])
 async def deal_flow(user: UserContext = Depends(get_user_context)):
