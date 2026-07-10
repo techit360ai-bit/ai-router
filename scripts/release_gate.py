@@ -42,6 +42,7 @@ def release_gates() -> list[tuple[str, list[str], dict[str, str] | None]]:
     return [
         ("compile", [sys.executable, "-m", "compileall", "-q", "."], None),
         ("deployment-env-contract", [sys.executable, "scripts/validate_env.py"], ENV_CONTRACT),
+        ("scalability-readiness", [sys.executable, "scripts/scalability_check.py"], TEST_ENV),
         ("pytest", [sys.executable, "-m", "pytest", "-q"], TEST_ENV),
     ]
 
