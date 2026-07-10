@@ -9,9 +9,12 @@ def test_release_gate_runs_compile_env_contract_and_pytest_in_order() -> None:
     assert [name for name, _, _ in gates] == [
         "compile",
         "deployment-env-contract",
+        "scalability-readiness",
         "pytest",
     ]
     assert gates[1][2]["ENVIRONMENT"] == "production"
     assert gates[1][2]["ALLOW_DEMO_AUTH"] == "false"
+    assert gates[2][1][-1] == "scripts/scalability_check.py"
     assert gates[2][2]["ENVIRONMENT"] == "development"
-    assert gates[2][1][-2:] == ["pytest", "-q"]
+    assert gates[3][2]["ENVIRONMENT"] == "development"
+    assert gates[3][1][-2:] == ["pytest", "-q"]
