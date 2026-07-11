@@ -64,6 +64,7 @@ from runtime_config import (
     RuntimeCheck,
     RuntimeConfigError,
     assert_runtime_ready,
+    database_engine_options,
     runtime_checks,
 )
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
@@ -366,12 +367,8 @@ def _db_session_factory():
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
 
-        _db_engine = create_engine(
-            os.getenv("DATABASE_URL", "postgresql://techit:password@postgres:5432/techit_db"),
-            pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=5,
-        )
+        database_url = os.getenv("DATABASE_URL", "postgresql://techit:password@postgres:5432/techit_db")
+        _db_engine = create_engine(database_url, **database_engine_options(database_url))
         _DBSession = sessionmaker(bind=_db_engine, expire_on_commit=False)
     return _DBSession
 

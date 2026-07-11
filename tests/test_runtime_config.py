@@ -10,7 +10,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from runtime_config import PROD_ENVS, RuntimeConfigError, assert_runtime_ready, runtime_checks  # noqa: E402
+from runtime_config import (  # noqa: E402
+    PROD_ENVS,
+    RuntimeConfigError,
+    assert_runtime_ready,
+    database_engine_options,
+    read_positive_int,
+    runtime_checks,
+)
 
 
 BASE_PROD_ENV = {
@@ -89,6 +96,22 @@ def test_development_allows_demo_auth_and_missing_provider_keys() -> None:
     assert _failed_names(env) == set()
 
 
+def test_database_engine_options_bound_readiness_timeouts() -> None:
+    env = {
+        "DATABASE_CONNECT_TIMEOUT_SECONDS": "999",
+        "DATABASE_POOL_TIMEOUT_SECONDS": "0",
+    }
+    options = database_engine_options(
+        "postgresql://techit:secret@postgres.example:5432/techit_db",
+        env,
+    )
+
+    assert options["pool_pre_ping"] is True
+    assert options["pool_timeout"] == 1
+    assert options["connect_args"] == {"connect_timeout": 60}
+    assert read_positive_int({"EXAMPLE": "not-a-number"}, "EXAMPLE", 5, 60) == 5
+
+
 def main() -> int:
     tests = [
         test_valid_production_runtime_passes,
@@ -96,6 +119,7 @@ def main() -> int:
         test_production_requires_provider_and_billing_keys,
         test_production_rejects_local_dependency_urls,
         test_development_allows_demo_auth_and_missing_provider_keys,
+        test_database_engine_options_bound_readiness_timeouts,
     ]
     for test in tests:
         try:
