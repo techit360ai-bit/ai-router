@@ -23,6 +23,20 @@ class RuntimeConfigError(RuntimeError):
     pass
 
 
+def read_positive_int(
+    env: Mapping[str, str] | None,
+    name: str,
+    default: int,
+    cap: int,
+) -> int:
+    values = env or os.environ
+    try:
+        value = int(values.get(name, str(default)))
+    except ValueError:
+        return default
+    return min(max(value, 1), cap)
+
+
 def environment(env: Mapping[str, str] | None = None) -> str:
     values = env or os.environ
     return values.get("ENVIRONMENT", "development").strip().lower()
@@ -101,3 +115,23 @@ def assert_runtime_ready(env: Mapping[str, str] | None = None) -> None:
     if failed:
         details = "; ".join(f"{check.name}: {check.detail}" for check in failed)
         raise RuntimeConfigError(details)
+
+
+def database_engine_options(database_url: str, env: Mapping[str, str] | None = None) -> dict[str, object]:
+    """Build bounded SQLAlchemy options for production readiness probes.
+
+    The readiness endpoint must fail quickly when Postgres is unreachable. These
+    defaults keep a bad database connection from holding /ready open for tens of
+    seconds while still allowing operators to loosen the timeout temporarily.
+    """
+    values = env or os.environ
+    connect_timeout = read_positive_int(values, "DATABASE_CONNECT_TIMEOUT_SECONDS", 5, 60)
+    options: dict[str, object] = {
+        "pool_pre_ping": True,
+        "pool_size": 5,
+        "max_overflow": 5,
+        "pool_timeout": read_positive_int(values, "DATABASE_POOL_TIMEOUT_SECONDS", 5, 60),
+    }
+    if urlparse(database_url).scheme.startswith("postgres"):
+        options["connect_args"] = {"connect_timeout": connect_timeout}
+    return options
