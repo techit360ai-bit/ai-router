@@ -268,6 +268,7 @@ class Project(Base):
     # Compliance & transparency
     compliance_items   = Column(JSON, default=lambda: {})
     transparency_items = Column(JSON, default=lambda: {})
+    origin = Column(JSON)  # e.g. {"kind": "venture_intake" | "hackathon", ...}
 
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
     updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -2461,6 +2462,44 @@ class ProjectAnalysis(Base):
     )
 
 
+class VentureIntake(Base):
+    """A persisted Incubation Hub intake/diagnostic submission."""
+    __tablename__ = "venture_intakes"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    status      = Column(String(30), default="draft")
+    submission  = Column(JSON, default=lambda: {})
+    structured_profile = Column(JSON, default=lambda: {})
+    promoted_project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at  = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_venture_intake_owner", "owner_id", "created_at"),
+        Index("idx_venture_intake_status", "status"),
+    )
+
+
+class VenturePipelineRun(Base):
+    """A durable record of a single Incubation Hub pipeline/module run."""
+    __tablename__ = "venture_pipeline_runs"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
+    module      = Column(String(80), nullable=False)
+    input_payload = Column(JSON, default=lambda: {})
+    blueprint   = Column(JSON, default=lambda: {})
+    status      = Column(String(30), default="completed")
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_venture_pipeline_owner", "owner_id", "created_at"),
+        Index("idx_venture_pipeline_project", "project_id", "created_at"),
+    )
+
+
 # ============================================================================
 # HACKATHON INTELLIGENCE  (org host + team/founder real-time + idea→workspace)
 # ============================================================================
@@ -2560,6 +2599,27 @@ class HackathonScore(Base):
     updated_at    = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (Index("idx_hscore_hackathon", "hackathon_id", "composite"),)
+
+
+class HackathonTeamReport(Base):
+    """A submitted team report for organizer review and incubation promotion."""
+    __tablename__ = "hackathon_team_reports"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    hackathon_id  = Column(UUID(as_uuid=True), ForeignKey("hackathons.id"), nullable=False)
+    team_id       = Column(UUID(as_uuid=True), ForeignKey("hackathon_teams.id"), nullable=False)
+    workspace_id  = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"))
+    idea          = Column(JSON)
+    team          = Column(JSON)
+    artifacts     = Column(JSON)
+    stage         = Column(String(80))
+    reported_by   = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_at    = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_hreport_hackathon", "hackathon_id", "created_at"),
+        Index("idx_hreport_team", "team_id", "created_at"),
+    )
 
 
 if __name__ == "__main__":

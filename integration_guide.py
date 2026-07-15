@@ -61,6 +61,7 @@ from trust_team_notifications import (
     TrustNotificationPreviewService,
     TrustTeamVerificationService as TrustTeamContract,
 )
+from live_domain_repository import LiveDomainRepository
 
 
 # ============================================================================
@@ -122,6 +123,7 @@ class IncubationHubService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def run_full_venture_pipeline(
         self, user_context: UserContext, venture_data: Dict
@@ -158,7 +160,7 @@ class IncubationHubService:
           UPDATE projects SET unicorn_potential_score=..., investment_score=...,
               updated_at=now() WHERE id = project_id
         """
-        return venture_data.get("project_id") or "proj_new"
+        return self.repo.persist_analysis(user_context.user_id, venture_data, blueprint, "pipeline")
 
     def _compile_blueprint(self, venture_data: Dict, results: Dict) -> Dict:
         def safe(key: str, field: str):
@@ -188,19 +190,26 @@ class IncubationHubService:
         """POST /api/v1/incubation/idea/diagnose -- 1 credit, Free+"""
         ctx = AgentContext(user_context=user_context, trigger_event=idea_data)
         r   = await self.brain.trigger_agent(AgentType.VENTURE_INTAKE, ctx)
-        return {"structured_profile": r.output.get("venture_profile"),
-                "next_steps": r.next_steps}
+        structured = r.output.get("venture_profile")
+        persisted = self.repo.persist_intake(user_context.user_id, idea_data, structured)
+        return {"structured_profile": structured,
+                "next_steps": r.next_steps,
+                "intake": persisted.get("intake")}
 
     async def run_unicorn_analysis(self, user_context: UserContext, venture_data: Dict) -> Dict:
         """POST /api/v1/incubation/unicorn/analyze -- 2 credits, Builder+"""
         ctx = AgentContext(user_context=user_context, trigger_event=venture_data)
         r   = await self.brain.trigger_agent(AgentType.UNICORN_EVALUATOR, ctx)
+        if venture_data.get("project_id") or venture_data.get("projectId"):
+            self.repo.persist_analysis(user_context.user_id, venture_data, r.output, "unicorn")
         return r.output
 
     async def run_market_intelligence(self, user_context: UserContext, venture_data: Dict) -> Dict:
         """POST /api/v1/incubation/market/analyze -- 2 credits, Builder+"""
         ctx = AgentContext(user_context=user_context, trigger_event=venture_data)
         r   = await self.brain.trigger_agent(AgentType.MARKET_INTELLIGENCE, ctx)
+        if venture_data.get("project_id") or venture_data.get("projectId"):
+            self.repo.persist_analysis(user_context.user_id, venture_data, r.output, "market")
         return r.output
 
     async def generate_business_plan(self, user_context: UserContext, venture_data: Dict) -> Dict:
@@ -208,6 +217,8 @@ class IncubationHubService:
         ctx = AgentContext(user_context=user_context, trigger_event=venture_data,
                            shared_memory={"venture_profile": venture_data})
         r   = await self.brain.trigger_agent(AgentType.BUSINESS_PLAN_GEN, ctx)
+        if venture_data.get("project_id") or venture_data.get("projectId"):
+            self.repo.persist_analysis(user_context.user_id, venture_data, r.output, "business_plan")
         return r.output
 
     async def run_tech_stack_design(
@@ -230,6 +241,8 @@ class IncubationHubService:
                            "venture_profile": venture_data},
         )
         r = await self.brain.trigger_agent(AgentType.PIVOT_INTELLIGENCE, ctx)
+        if venture_data.get("project_id") or venture_data.get("projectId"):
+            self.repo.persist_analysis(user_context.user_id, venture_data, r.output, "pivot")
         return r.output
 
     async def generate_investor_readiness_report(
@@ -240,6 +253,8 @@ class IncubationHubService:
             TaskType.INVESTOR_READINESS, user_context, venture_data,
             ip_protected=True, max_tokens=3000,
         ))
+        if venture_data.get("project_id") or venture_data.get("projectId"):
+            self.repo.persist_analysis(user_context.user_id, venture_data, resp.output, "investor_readiness")
         return {"readiness_report": resp.output, "cost": resp.cost}
 
 
@@ -256,11 +271,14 @@ class DashboardIntelligenceService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def get_dashboard_intelligence(
         self, user_context: UserContext, project_scores: Optional[Dict] = None
     ) -> Dict:
         """GET /api/v1/dashboard/intelligence -- 0 credits"""
+        if project_scores is None:
+            return self.repo.dashboard_intelligence(user_context.user_id)
         ctx = AgentContext(
             user_context=user_context,
             trigger_event={"scores": project_scores or {}},
@@ -655,6 +673,7 @@ class InvestorSectionService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def get_investor_evi(
         self, investor_context: UserContext, startup_data: Dict
@@ -717,21 +736,7 @@ class InvestorSectionService:
         self, investor_context: UserContext, filters: Optional[Dict] = None
     ) -> Dict:
         """GET /api/v1/investor/deal-flow -- 0 credits"""
-        return {
-            "deal_flow": [],   # Production: SELECT FROM projects ORDER BY gsis_score DESC
-            "ranking_formula": {
-                "gsis_weights": {
-                    "product_progress": "15%", "execution_velocity": "15%",
-                    "market_readiness": "20%", "beta_satisfaction": "10%",
-                    "revenue_growth":   "10%", "founder_reputation": "10%",
-                    "community_influence": "5%", "investor_interest": "10%",
-                    "compliance": "5%",
-                },
-                "evi_i_signal": "6-dimensional investor execution signal",
-                "decay_anti_gaming": "e^(−0.02×d) -- inactive projects rank lower automatically",
-            },
-            "filters_applied": filters or {},
-        }
+        return self.repo.investor_deal_flow(investor_context.user_id, filters)
 
     async def generate_deep_evaluation(
         self, investor_context: UserContext, startup_data: Dict
@@ -761,11 +766,14 @@ class InvestorSectionService:
 class FeedIntelligenceService:
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def curate_feed(
         self, user_context: UserContext, raw_feed: List[Dict], limit: int = 30
     ) -> Dict:
         """GET /api/v1/feed/curated -- 0 credits"""
+        if not raw_feed:
+            return self.repo.feed_posts(user_context.user_id, limit)
         ctx = AgentContext(user_context=user_context,
                            trigger_event={"feed_items": raw_feed[:50], "limit": limit})
         r   = await self.brain.trigger_agent(AgentType.FEED_INTELLIGENCE, ctx)
@@ -813,6 +821,11 @@ class AIProfileService:
 class OrgSphereService:
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
+
+    async def get_dashboard(self, user_context: UserContext) -> Dict[str, Any]:
+        """GET /api/v1/organization/dashboard -- 0 credits"""
+        return self.repo.organization_dashboard(user_context.user_id)
 
     async def analyze_organization(
         self, user_context: UserContext, org_data: Dict
@@ -3083,16 +3096,12 @@ class EquityService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     # ── public API ────────────────────────────────────────────────────────
     async def get_collaborator_equity(self, user_context: UserContext) -> Dict[str, Any]:
         """GET /api/v1/collaborator/equity -- 0 credits, Free+"""
-        holdings = self._load_holdings(user_context)
-        return {
-            "holdings": holdings,
-            "totals":   self._totals(holdings),
-            "vestingTimeline": [self._vesting_series(h) for h in holdings],
-        }
+        return self.repo.collaborator_equity(user_context.user_id)
 
     async def record_dilution_event(
         self, user_context: UserContext, event: Dict[str, Any]
@@ -3102,86 +3111,11 @@ class EquityService:
         Honors dilution protection: already-vested equity is shielded unless the
         collaborator consented. Returns the protected/effective dilution.
         """
-        holding = next(
-            (h for h in self._load_holdings(user_context)
-             if h["projectId"] == event.get("projectId")),
-            None,
-        )
-        new_shares = float(event.get("newSharesPercent", 0) or 0)
-        consent    = bool(event.get("consentGiven", False))
-        vested_pct = float(holding["vestedPercent"]) if holding else 0.0
-        equity     = float(holding["equityPercent"]) if holding else 0.0
-
-        # Protected portion of the grant = the vested fraction (cannot be diluted
-        # without consent). Unvested equity dilutes normally.
-        vested_equity   = equity * (vested_pct / 100.0)
-        unvested_equity = equity - vested_equity
-        if consent:
-            diluted = equity * (new_shares / 100.0)
-            protected = False
-        else:
-            diluted = unvested_equity * (new_shares / 100.0)  # vested shielded
-            protected = True
-        return {
-            "projectId":        event.get("projectId"),
-            "newSharesPercent": new_shares,
-            "consentGiven":     consent,
-            "protectedApplied": protected,
-            "equityBefore":     round(equity, 4),
-            "equityAfter":      round(max(0.0, equity - diluted), 4),
-            "shieldedEquity":   round(vested_equity, 4),
-        }
+        return self.repo.record_dilution_event(user_context.user_id, event)
 
     # ── helpers ───────────────────────────────────────────────────────────
     def _load_holdings(self, user_context: UserContext) -> List[Dict[str, Any]]:
-        # Production: SELECT * FROM equity_grants JOIN projects WHERE user_id = :uid
-        return [
-            {
-                "projectId": "1", "projectName": "NeuralSync AI", "projectLogo": "🧠",
-                "equityPercent": 0.8, "valueUSD": 24000, "vestedPercent": 50,
-                "vestingSchedule": {"years": 4, "cliffMonths": 12},
-                "grantDate": "2025-01-15",
-                "nextVest": {"date": "2026-06-12", "deltaPercent": 0.2},
-                "dilutionProtected": True,
-                "capTable": [
-                    {"label": "Founders", "percent": 65},
-                    {"label": "Collaborator pool", "percent": 12},
-                    {"label": "You", "percent": 0.8, "highlighted": True},
-                    {"label": "Investors", "percent": 18},
-                    {"label": "Treasury", "percent": 4.2},
-                ],
-            },
-            {
-                "projectId": "2", "projectName": "FinFlow", "projectLogo": "💰",
-                "equityPercent": 0.5, "valueUSD": 15000, "vestedPercent": 25,
-                "vestingSchedule": {"years": 4, "cliffMonths": 12},
-                "grantDate": "2025-03-01",
-                "nextVest": {"date": "2026-09-01", "deltaPercent": 0.15},
-                "dilutionProtected": True,
-                "capTable": [
-                    {"label": "Founders", "percent": 70},
-                    {"label": "Collaborator pool", "percent": 10},
-                    {"label": "You", "percent": 0.5, "highlighted": True},
-                    {"label": "Investors", "percent": 17},
-                    {"label": "Treasury", "percent": 2.5},
-                ],
-            },
-            {
-                "projectId": "3", "projectName": "HealthTrack Pro", "projectLogo": "🏥",
-                "equityPercent": 0.3, "valueUSD": 9200, "vestedPercent": 0,
-                "vestingSchedule": {"years": 4, "cliffMonths": 12},
-                "grantDate": "2025-08-10",
-                "nextVest": {"date": "2026-08-10", "deltaPercent": 0.075},
-                "dilutionProtected": True,
-                "capTable": [
-                    {"label": "Founders", "percent": 72},
-                    {"label": "Collaborator pool", "percent": 8},
-                    {"label": "You", "percent": 0.3, "highlighted": True},
-                    {"label": "Investors", "percent": 17},
-                    {"label": "Treasury", "percent": 2.7},
-                ],
-            },
-        ]
+        return self.repo.collaborator_equity(user_context.user_id)["holdings"]
 
     @staticmethod
     def _totals(holdings: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -3248,16 +3182,11 @@ class PayoutService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def get_collaborator_earnings(self, user_context: UserContext) -> Dict[str, Any]:
         """GET /api/v1/collaborator/earnings -- 0 credits, Free+"""
-        earnings = self._load_earnings(user_context)
-        payouts  = self._load_payouts(user_context)
-        return {
-            "cashEarnings": earnings,
-            "payouts":      payouts,
-            "totals":       self._totals(earnings, payouts),
-        }
+        return self.repo.collaborator_earnings(user_context.user_id)
 
     async def request_withdrawal(
         self, user_context: UserContext, body: Dict[str, Any]
@@ -3267,51 +3196,14 @@ class PayoutService:
         Body: { amount, destination? }. Creates a 'processing' payout.
         Production: INSERT payouts; debit pending balance atomically.
         """
-        amount = float(body.get("amount", 0) or 0)
-        totals = self._totals(self._load_earnings(user_context),
-                              self._load_payouts(user_context))
-        if amount <= 0 or amount > float(totals["pendingUSD"]):
-            return {"ok": False, "error": "invalid_amount",
-                    "available": totals["pendingUSD"]}
-        # month/id are stamped by caller/DB in production (no clock in this layer).
-        return {
-            "ok": True,
-            "payout": {
-                "id": body.get("idemKey", "pending"),
-                "monthIso": body.get("monthIso", ""),
-                "amount": amount,
-                "status": "processing",
-            },
-            "destination": body.get("destination", "•••1234"),
-            "newPendingUSD": round(float(totals["pendingUSD"]) - amount, 2),
-        }
+        return self.repo.request_withdrawal(user_context.user_id, body)
 
     # ── helpers ───────────────────────────────────────────────────────────
     def _load_earnings(self, user_context: UserContext) -> List[Dict[str, Any]]:
-        return [
-            {"projectId": "1", "projectName": "NeuralSync AI",  "earned": 45000,
-             "pending": 5000, "revenueSharePercent": 2.5,
-             "contributionNote": "Dashboard feature increased user retention by 18%"},
-            {"projectId": "2", "projectName": "FinFlow", "earned": 38000,
-             "pending": 4500, "revenueSharePercent": 1.8,
-             "contributionNote": "Payment integration enabled $500K in transactions"},
-            {"projectId": "3", "projectName": "HealthTrack Pro", "earned": 22000,
-             "pending": 2850, "revenueSharePercent": 1.2,
-             "contributionNote": "ML model improved prediction accuracy by 12%"},
-        ]
+        return self.repo.collaborator_earnings(user_context.user_id)["cashEarnings"]
 
     def _load_payouts(self, user_context: UserContext) -> List[Dict[str, Any]]:
-        rows = [
-            ("p12", "2025-06", 8200), ("p11", "2025-07", 9100),
-            ("p10", "2025-08", 10400), ("p9", "2025-09", 11200),
-            ("p8", "2025-10", 10800), ("p7", "2025-11", 12400),
-            ("p6", "2025-12", 11900), ("p5", "2026-01", 13200),
-            ("p4", "2026-02", 13800), ("p3", "2026-03", 14100),
-            ("p2", "2026-04", 14600), ("p1", "2026-05", 12350),
-        ]
-        out = [{"id": i, "monthIso": m, "amount": a, "status": "paid"} for i, m, a in rows]
-        out[-1]["status"] = "processing"
-        return out
+        return self.repo.collaborator_earnings(user_context.user_id)["payouts"]
 
     @staticmethod
     def _totals(earnings: List[Dict[str, Any]],
@@ -3342,32 +3234,17 @@ class CapitalPoolService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def get_capital_pools(self, user_context: UserContext) -> Dict[str, Any]:
         """GET /api/v1/investor/capital-pools -- 0 credits, Investor+"""
-        return {"pools": self._load_pools(user_context)}
+        return {"pools": self.repo.capital_pools(user_context.user_id)}
 
     async def create_pool(
         self, user_context: UserContext, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         """POST /api/v1/investor/capital-pools -- 0 credits. Body: pool definition."""
-        rules = body.get("rules", {})
-        pool = {
-            "id": body.get("id", "new"),
-            "name": body.get("name", "Untitled Pool"),
-            "totalCapital": float(body.get("totalCapital", 0) or 0),
-            "deployed": 0,
-            "startups": 0,
-            "milestonesHit": 0,
-            "fundsReleased": 0,
-            "roiSimulation": 0,
-            "rules": {
-                "minReadiness": int(rules.get("minReadiness", 80)),
-                "maxPerStartup": float(rules.get("maxPerStartup", 20)),
-                "milestoneTrigger": bool(rules.get("milestoneTrigger", True)),
-            },
-        }
-        return {"ok": True, "pool": pool}
+        return self.repo.create_capital_pool(user_context.user_id, body)
 
     async def release_on_milestone(
         self, user_context: UserContext, body: Dict[str, Any]
@@ -3377,27 +3254,10 @@ class CapitalPoolService:
         Release escrowed capital for a startup that hit a milestone.
         Body: { projectId, milestone, amount }
         """
-        amount = float(body.get("amount", 0) or 0)
-        return {
-            "ok": amount > 0,
-            "poolId": body.get("poolId"),
-            "projectId": body.get("projectId"),
-            "milestone": body.get("milestone"),
-            "amountReleased": amount,
-            "released": amount > 0,
-        }
+        return self.repo.release_pool_milestone(user_context.user_id, body)
 
     def _load_pools(self, user_context: UserContext) -> List[Dict[str, Any]]:
-        return [
-            {"id": "1", "name": "TechIT Micro Fund Alpha", "totalCapital": 500000,
-             "deployed": 380000, "startups": 8, "milestonesHit": 24,
-             "fundsReleased": 280000, "roiSimulation": 3.2,
-             "rules": {"minReadiness": 85, "maxPerStartup": 20, "milestoneTrigger": True}},
-            {"id": "2", "name": "AI Governance Fund", "totalCapital": 750000,
-             "deployed": 520000, "startups": 10, "milestonesHit": 31,
-             "fundsReleased": 420000, "roiSimulation": 4.1,
-             "rules": {"minReadiness": 80, "maxPerStartup": 15, "milestoneTrigger": True}},
-        ]
+        return self.repo.capital_pools(user_context.user_id)
 
 
 # ============================================================================
@@ -3420,10 +3280,11 @@ class DealRoomService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def get_deal_rooms(self, user_context: UserContext) -> Dict[str, Any]:
         """GET /api/v1/investor/deal-rooms -- 0 credits, Investor+"""
-        return {"dealMeta": self._load_deal_meta(), "stageOrder": self.STAGE_ORDER}
+        return self.repo.deal_rooms(user_context.user_id)
 
     async def get_deal_room(
         self, user_context: UserContext, project_id: str, startup: Dict[str, Any] | None = None
@@ -3433,55 +3294,10 @@ class DealRoomService:
         Returns term-sheet defaults, valuation (ARR×8), milestone tranches,
         documents, and the negotiation stepper.
         """
-        mrr = float((startup or {}).get("mrr", 0) or 0)
-        valuation = mrr * 12 * 8  # ARR × 8 multiple (mirrors frontend)
-        meta = self._load_deal_meta().get(project_id, {
-            "status": "pending", "stage": "Intro Call", "daysOpen": 0,
-            "messages": 0, "docs": 0, "lastActivity": "just now",
-        })
-        return {
-            "projectId": project_id,
-            "meta": meta,
-            "valuationUSD": valuation,
-            "termSheet": {
-                "valuationUSD": valuation,
-                "investmentUSD": 250000,
-                "equityPercent": 5.2,
-                "instrument": "SAFE",
-                "discountPercent": 20,
-                "valuationCapUSD": valuation,
-                "extraTerms": {"rights": "Observer Rights"},
-            },
-            "milestones": [
-                {"milestone": "Initial Tranche",   "amount": 100000, "condition": "On signing",          "status": "pending"},
-                {"milestone": "Product Milestone", "amount": 75000,  "condition": "Ship v2 / 1k users",   "status": "pending"},
-                {"milestone": "Revenue Milestone", "amount": 75000,  "condition": "Reach $150K MRR",      "status": "pending"},
-            ],
-            "documents": [
-                {"name": "Simple Agreement for Future Equity (SAFE)", "status": "ready"},
-                {"name": "Subscription Agreement",                    "status": "ready"},
-                {"name": "Investor Rights Agreement",                 "status": "draft"},
-                {"name": "Right of First Refusal Agreement",          "status": "draft"},
-            ],
-            "negotiation": [
-                {"step": "Initial Discussion", "state": "completed"},
-                {"step": "Term Sheet Draft",   "state": "completed"},
-                {"step": "Due Diligence",      "state": "active"},
-                {"step": "Final Agreement",    "state": "todo"},
-                {"step": "Funds Transfer",     "state": "todo"},
-            ],
-            "stageOrder": self.STAGE_ORDER,
-        }
+        return self.repo.deal_room_detail(user_context.user_id, project_id, startup)
 
     def _load_deal_meta(self) -> Dict[str, Any]:
-        return {
-            "1": {"status": "active",  "stage": "Term Sheet",     "daysOpen": 12, "messages": 34,  "docs": 7,  "lastActivity": "2h ago"},
-            "2": {"status": "active",  "stage": "Due Diligence",  "daysOpen": 8,  "messages": 52,  "docs": 11, "lastActivity": "45m ago"},
-            "3": {"status": "pending", "stage": "NDA Signed",     "daysOpen": 3,  "messages": 9,   "docs": 2,  "lastActivity": "1d ago"},
-            "4": {"status": "active",  "stage": "Negotiation",    "daysOpen": 21, "messages": 78,  "docs": 14, "lastActivity": "3h ago"},
-            "5": {"status": "closed",  "stage": "Deal Closed",    "daysOpen": 45, "messages": 120, "docs": 22, "lastActivity": "5d ago"},
-            "6": {"status": "pending", "stage": "Intro Call",     "daysOpen": 1,  "messages": 4,   "docs": 1,  "lastActivity": "6h ago"},
-        }
+        return {}
 
 
 # ============================================================================
@@ -3504,21 +3320,11 @@ class DataRoomService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def get_data_rooms(self, user_context: UserContext) -> Dict[str, Any]:
         """GET /api/v1/investor/data-rooms -- 0 credits, Investor+"""
-        rooms = self._load_rooms(user_context)
-        verified = sum(1 for r in rooms if r["complianceVerified"])
-        return {
-            "rooms": rooms,
-            "sections": self.SECTIONS,
-            "totals": {
-                "activeRooms": len(rooms),
-                "totalDocs": len(rooms) * len(self.SECTIONS),
-                "complianceVerified": verified,
-                "aiSummaries": len(rooms),
-            },
-        }
+        return self.repo.data_rooms(user_context.user_id)
 
     async def grant_access(
         self, user_context: UserContext, body: Dict[str, Any]
@@ -3528,33 +3334,10 @@ class DataRoomService:
         Share a data room with an investor. Body: { investorId, canDownload }
         Production: upsert data_room_access.
         """
-        return {
-            "ok": True,
-            "projectId": body.get("projectId"),
-            "investorId": body.get("investorId"),
-            "canDownload": bool(body.get("canDownload", False)),
-            "granted": True,
-        }
+        return self.repo.grant_data_room_access(user_context.user_id, body)
 
     def _load_rooms(self, user_context: UserContext) -> List[Dict[str, Any]]:
-        # Production: SELECT data_rooms JOIN projects for this investor's pipeline.
-        # Returns per-startup vault metadata keyed by projectId.
-        seed = [
-            ("1", True,  True),  ("2", True,  False),
-            ("3", False, True),  ("4", True,  True),
-            ("5", True,  False), ("6", False, False),
-        ]
-        return [
-            {
-                "projectId": pid,
-                "sections": self.SECTIONS,
-                "docCount": len(self.SECTIONS),
-                "complianceVerified": comp,
-                "aiGovernanceVerified": gov,
-                "updatedLabel": "today",
-            }
-            for pid, comp, gov in seed
-        ]
+        return self.repo.data_rooms(user_context.user_id)["rooms"]
 
 
 # ============================================================================
@@ -3578,42 +3361,17 @@ class InvestorReputationService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def get_reputation(self, user_context: UserContext) -> Dict[str, Any]:
         """GET /api/v1/investor/reputation -- 0 credits, Investor+"""
-        metrics = self._metrics(user_context)
-        score = round(sum(m["score"] * self.WEIGHTS[m["key"]] for m in metrics))
-        level = "Elite" if score >= 85 else "Established" if score >= 70 else "Building"
-        return {
-            "score": score,
-            "level": level,
-            "monthChange": 3,
-            "metrics": metrics,
-            "reviews": self._reviews(user_context),
-            "progression": [
-                {"month": "Feb 2026", "score": 87, "change": 3},
-                {"month": "Jan 2026", "score": 84, "change": 2},
-                {"month": "Dec 2025", "score": 82, "change": 4},
-                {"month": "Nov 2025", "score": 78, "change": 1},
-            ],
-            "leaderboard": {"rank": 12, "total": 284, "percentile": 4.2},
-        }
+        return self.repo.investor_reputation(user_context.user_id)
 
     def _metrics(self, user_context: UserContext) -> List[Dict[str, Any]]:
-        return [
-            {"key": "responseSpeed",       "label": "Response Speed",            "score": 92, "description": "Average response time: 4.2 hours"},
-            {"key": "founderRating",       "label": "Founder Rating",            "score": 88, "description": "Based on 12 founder reviews"},
-            {"key": "followThrough",       "label": "Follow-Through Consistency", "score": 85, "description": "Commitments kept: 94%"},
-            {"key": "valueAdd",            "label": "Value-Add Contributions",   "score": 81, "description": "Active portfolio support"},
-            {"key": "portfolioEngagement", "label": "Portfolio Engagement",      "score": 90, "description": "Monthly check-ins: 100%"},
-        ]
+        return self.repo.investor_reputation(user_context.user_id)["metrics"]
 
     def _reviews(self, user_context: UserContext) -> List[Dict[str, Any]]:
-        return [
-            {"founderName": "Sarah Chen",      "startup": "QuantumAPI",   "rating": 5, "comment": "Incredibly responsive and provided valuable strategic guidance. Made the funding process smooth and transparent.", "date": "Feb 8, 2026"},
-            {"founderName": "Marcus Rodriguez", "startup": "NeuralEdge AI", "rating": 5, "comment": "Goes beyond capital. Opened doors to key partnerships and actively helps with hiring. True value-add investor.", "date": "Feb 1, 2026"},
-            {"founderName": "Aisha Patel",     "startup": "CloudMesh",    "rating": 4, "comment": "Professional and fair terms. Would have appreciated faster turnaround on due diligence.", "date": "Jan 24, 2026"},
-        ]
+        return self.repo.investor_reputation(user_context.user_id)["reviews"]
 
 
 # ============================================================================
@@ -3631,24 +3389,11 @@ class GeoSignalService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def get_heatmap(self, user_context: UserContext) -> Dict[str, Any]:
         """GET /api/v1/investor/heatmap -- 0 credits, Investor+"""
-        return {
-            "regions": [
-                {"name": "North America", "avgReadiness": 84, "complianceRate": 78, "color": "text-emerald-400"},
-                {"name": "Europe",        "avgReadiness": 86, "complianceRate": 82, "color": "text-blue-400"},
-                {"name": "Asia",          "avgReadiness": 78, "complianceRate": 64, "color": "text-purple-400"},
-            ],
-            "sectors": [
-                {"sector": "SaaS",           "avgGrowth": 42},
-                {"sector": "AI/ML",          "avgGrowth": 58},
-                {"sector": "FinTech",        "avgGrowth": 47},
-                {"sector": "BioTech",        "avgGrowth": 31},
-                {"sector": "Infrastructure", "avgGrowth": 38},
-                {"sector": "Security",       "avgGrowth": 44},
-            ],
-        }
+        return self.repo.heatmap()
 
 
 # ============================================================================
@@ -3666,10 +3411,11 @@ class ProjectService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def list_founder_projects(self, user_context: UserContext) -> Dict[str, Any]:
         """GET /api/v1/founder/projects -- 0 credits, Free+"""
-        return {"projects": self._load_projects(user_context)}
+        return {"projects": self.repo.list_founder_projects(user_context.user_id)}
 
     async def create_project(
         self, user_context: UserContext, body: Dict[str, Any]
@@ -3680,38 +3426,10 @@ class ProjectService:
         Production: INSERT projects (+ project_origins row when hackathonId+teamId
         are present, so the venture knows it was promoted from a hackathon team).
         """
-        title = (body.get("title") or "").strip()
-        if not title:
-            return {"ok": False, "error": "title_required"}
-        hackathon_id = body.get("hackathonId") or body.get("hackathon_id")
-        team_id = body.get("teamId") or body.get("team_id")
-        project: Dict[str, Any] = {
-            "id": body.get("id", "proj_new"),
-            "title": title,
-            "tagline": body.get("tagline", ""),
-            "industry": body.get("industry", ""),
-            "stage": body.get("stage", "idea"),
-            "isPrimary": False,
-            "gsisScore": 0,
-            "hasWorkspace": False,
-        }
-        if hackathon_id and team_id:
-            project["origin"] = {
-                "kind": "hackathon_promote",
-                "hackathonId": hackathon_id,
-                "teamId": team_id,
-            }
-        return {"ok": True, "project": project}
+        return self.repo.create_project(user_context.user_id, body)
 
     def _load_projects(self, user_context: UserContext) -> List[Dict[str, Any]]:
-        # Production: SELECT id,title,tagline,industry,stage,gsis_score FROM projects
-        # WHERE owner_id = :uid ORDER BY created_at.
-        return [
-            {"id": "proj_demo_001", "title": "AI Task Manager", "tagline": "Execution OS for builders",
-             "industry": "saas", "stage": "mvp", "isPrimary": True,  "gsisScore": 88, "hasWorkspace": True},
-            {"id": "proj_demo_002", "title": "MicroMint", "tagline": "Stablecoin rails for SMEs",
-             "industry": "fintech", "stage": "idea", "isPrimary": False, "gsisScore": 72, "hasWorkspace": False},
-        ]
+        return self.repo.list_founder_projects(user_context.user_id)
 
 
 # ============================================================================
@@ -3729,10 +3447,11 @@ class WorkspaceService:
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     async def list_workspaces(self, user_context: UserContext) -> Dict[str, Any]:
         """GET /api/v1/workspaces -- 0 credits, Free+"""
-        return {"workspaces": self._load_workspaces(user_context)}
+        return {"workspaces": self.repo.list_workspaces(user_context.user_id)}
 
     async def provision_workspace(
         self, user_context: UserContext, body: Dict[str, Any]
@@ -3742,19 +3461,7 @@ class WorkspaceService:
         Body: { projectId, name? }. Creates (or returns existing) a workspace
         bound to the analyzed project, seeded from its latest analysis.
         """
-        project_id = body.get("projectId")
-        if not project_id:
-            return {"ok": False, "error": "projectId_required"}
-        return {
-            "ok": True,
-            "workspace": {
-                "id": body.get("id", f"ws_{project_id}"),
-                "projectId": project_id,
-                "name": body.get("name", "Venture Workspace"),
-                "status": "active",
-                "seededFromAnalysis": True,
-            },
-        }
+        return self.repo.provision_workspace(user_context.user_id, body)
 
     async def get_workspace_context(
         self, user_context: UserContext, workspace_id: str, project_id: Optional[str] = None
@@ -3764,77 +3471,15 @@ class WorkspaceService:
         Loads the bound project's latest analysis/blueprint so the workspace AI
         is scoped to the specific analyzed venture (not a context-free blob).
         """
-        analysis = ProjectService(self.brain)._load_projects(user_context)
-        primary = next((p for p in analysis if p["id"] == project_id), analysis[0] if analysis else None)
-        return {
-            "workspaceId": workspace_id,
-            "projectId": project_id or (primary["id"] if primary else None),
-            "venture": primary,
-            # Blueprint would come from project_analyses.blueprint (latest row).
-            "blueprintAvailable": bool(primary and primary.get("hasWorkspace")),
-        }
+        return self.repo.workspace_context(user_context.user_id, workspace_id, project_id)
 
     def _load_workspaces(self, user_context: UserContext) -> List[Dict[str, Any]]:
-        return [
-            {"id": "ws_proj_demo_001", "projectId": "proj_demo_001",
-             "name": "AI Task Manager", "status": "active", "seededFromAnalysis": True},
-        ]
+        return self.repo.list_workspaces(user_context.user_id)
 
 
 # ============================================================================
 # HACKATHON SERVICE  (org host intelligence + team/founder + idea→workspace)
 # ============================================================================
-
-# Process-level store: hackathon_id -> { team_id -> team dict }. This makes the
-# org↔team loop functionally LIVE in-process: a brief or check-in posted by a
-# team immediately surfaces in the org overview / velocity / leaderboard.
-# Caveat: ephemeral (resets on restart) and NOT shared across multiple workers —
-# the durable layer is the hackathon_* tables in database_schema.py.
-_HACKATHON_STORE: Dict[str, Dict[str, Dict[str, Any]]] = {}
-
-# Per-hackathon asyncio.Lock so concurrent register / submit_brief / log_check_in
-# / provision_team_workspace / report_team_to_organizers can't race-mutate the
-# same team dict. Without this lock, two simultaneous check-ins read the same
-# (activity, checkIns) tuple → compute different running means → last write
-# wins → one check-in is silently lost. Python yields on every await in the
-# request handlers, so this IS a real race (unlike the file-store case in
-# Node where write() is await-free).
-#
-# The lock dict itself is mutated only inside _store_lock() which is also
-# guarded by the module's GIL for the dict-write step — fine for the
-# single-process FastAPI deploy. Multi-process gunicorn workers would need
-# a Redis lock; the existing "ephemeral, not shared across workers" caveat
-# above applies.
-import asyncio as _asyncio
-_HACKATHON_LOCKS: Dict[str, _asyncio.Lock] = {}
-
-# Seed teams so the org command-centre renders before any live activity arrives.
-# Now gated: production traffic must not see Loom Health / Solaris / Verdant /
-# Northwind appearing on the org dashboard before any real team has registered.
-# Set HACKATHON_SEED_TEAMS=true to opt back into seeding (the dev/test default).
-_SEED_TEAMS: List[Dict[str, Any]] = [
-    {"id": "team_001", "name": "Loom Health", "isSolo": False, "status": "building",
-     "hasBrief": True, "composite": 88, "checkIns": 5, "hasWorkspace": True},
-    {"id": "team_002", "name": "Solaris", "isSolo": False, "status": "building",
-     "hasBrief": True, "composite": 76, "checkIns": 3, "hasWorkspace": True},
-    {"id": "team_003", "name": "Verdant", "isSolo": True, "status": "registered",
-     "hasBrief": False, "composite": 41, "checkIns": 1, "hasWorkspace": False},
-    {"id": "team_004", "name": "Northwind", "isSolo": False, "status": "submitted",
-     "hasBrief": True, "composite": 91, "checkIns": 7, "hasWorkspace": True},
-]
-
-
-def _seed_teams_enabled() -> bool:
-    """Seeding is on for dev/test, off for staging/production by default.
-    Override either way with HACKATHON_SEED_TEAMS=true|false.
-    """
-    import os
-    explicit = os.getenv("HACKATHON_SEED_TEAMS")
-    if explicit is not None:
-        return explicit.strip().lower() in ("1", "true", "yes")
-    env = os.getenv("ENVIRONMENT", "development").strip().lower()
-    return env in ("development", "dev", "local", "test")
-
 
 class HackathonService:
     """
@@ -3846,21 +3491,22 @@ class HackathonService:
     Composite scoring mirrors the frontend formula:
       platformAvg = avg(problem_clarity, team_momentum, min(100, demo_hours*6))
       composite   = judgePct*0.5 + platformAvg*0.5
-    Reads/writes go through an in-process store (_HACKATHON_STORE) so the loop is
-    live; production swaps that for queries over hackathons / hackathon_teams /
-    hackathon_briefs / hackathon_check_ins / hackathon_scores (database_schema.py).
+    Reads/writes go through the live domain repository: PostgreSQL in deployed
+    environments and empty in-memory state only for local contract tests.
     """
 
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
 
     # ── org host facing ───────────────────────────────────────────────────
     async def list_hackathons(self, user_context: UserContext) -> Dict[str, Any]:
         """GET /api/v1/hackathons -- 0 credits."""
-        return {"hackathons": [
-            {"id": "hack_001", "name": "TechIT Global AI Hackathon", "theme": "AI for Good",
-             "status": "live", "registrants": 420, "teamsFormed": 87},
-        ]}
+        return {"hackathons": self.repo.list_hackathons(user_context.user_id)}
+
+    async def create_hackathon(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/v1/hackathons -- 0 credits."""
+        return self.repo.create_hackathon(user_context.user_id, body)
 
     async def get_overview(self, user_context: UserContext, hackathon_id: str) -> Dict[str, Any]:
         """
@@ -3869,18 +3515,15 @@ class HackathonService:
         Production: COUNT/aggregate over hackathon_teams + hackathon_briefs +
         hackathon_check_ins.
         """
-        teams = self._teams(hackathon_id)
-        solo = sum(1 for t in teams if t["isSolo"])
-        briefs_in = sum(1 for t in teams if t["hasBrief"])
-        return {
+        return self.repo.hackathon_overview(hackathon_id) or {
             "hackathonId": hackathon_id,
-            "status": "live",
-            "registrants": 420 + max(0, len(teams) - len(_SEED_TEAMS)),
-            "teamsFormed": sum(1 for t in teams if not t["isSolo"]),
-            "stillSolo": solo,
-            "ideaSubmissions": briefs_in,
-            "totalTeams": len(teams),
-            "avgBuildVelocity": round(self._avg_velocity(hackathon_id), 1),
+            "status": "not_found",
+            "registrants": 0,
+            "teamsFormed": 0,
+            "stillSolo": 0,
+            "ideaSubmissions": 0,
+            "totalTeams": 0,
+            "avgBuildVelocity": 0,
         }
 
     async def get_velocity_heatmap(
@@ -3892,53 +3535,24 @@ class HackathonService:
         Production: aggregate activity_score from hackathon_check_ins per team
         over the recent window.
         """
-        return {"hackathonId": hackathon_id, "teams": self._velocity_cells(hackathon_id)}
+        return self.repo.hackathon_velocity(hackathon_id)
 
     async def get_leaderboard(
         self, user_context: UserContext, hackathon_id: str
     ) -> Dict[str, Any]:
         """GET /api/v1/hackathons/{id}/leaderboard -- 0 credits. Composite-ranked."""
-        teams = self._teams(hackathon_id)
-        ranked = sorted(
-            [{"teamId": t["id"], "name": t["name"], "composite": t["composite"],
-              "crsBand": self._crs_band(t["composite"] / 10.0)} for t in teams],
-            key=lambda x: x["composite"], reverse=True,
-        )
-        return {"hackathonId": hackathon_id, "leaderboard": ranked}
+        return self.repo.hackathon_leaderboard(hackathon_id)
 
     async def get_pipeline(
         self, user_context: UserContext, hackathon_id: str
     ) -> Dict[str, Any]:
         """GET /api/v1/hackathons/{id}/pipeline -- 0 credits. CRS bucket counts."""
-        teams = self._teams(hackathon_id)
-        crs = [t["composite"] / 10.0 for t in teams]
-        return {
-            "hackathonId": hackathon_id,
-            "buckets": {
-                "incubationInvites": sum(1 for c in crs if c > 7),    # CRS > 7
-                "prototypeTrack":    sum(1 for c in crs if 4 <= c <= 6),
-                "backToLearning":    sum(1 for c in crs if c < 4),
-            },
-        }
+        return self.repo.hackathon_pipeline(hackathon_id)
 
     # ── team / founder facing ─────────────────────────────────────────────
     async def register(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
         """POST /api/v1/hackathons/{id}/register -- 0 credits. Body: { name?, members? }"""
-        members = body.get("members", [])
-        is_solo = len(members) <= 1
-        team_id = body.get("teamId", "team_new")
-        hackathon_id = body.get("hackathonId")
-        async with self._lock(hackathon_id):
-            store = self._store(hackathon_id)
-            team = store.get(team_id) or self._new_team(team_id, body.get("name", "Solo"))
-            team.update({"name": body.get("name", team["name"]), "isSolo": is_solo,
-                         "status": "registered"})
-            store[team_id] = team
-            snapshot = {
-                "id": team["id"], "name": team["name"],
-                "isSolo": team["isSolo"], "status": team["status"],
-            }
-        return {"ok": True, "team": snapshot}
+        return self.repo.register_hackathon_team(user_context.user_id, body)
 
     async def submit_brief(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -3958,29 +3572,17 @@ class HackathonService:
         judge_pct = (sum(judge_scores.values()) / len(judge_scores) / 10.0 * 100.0) if judge_scores else platform_avg
         composite = round(judge_pct * 0.5 + platform_avg * 0.5)
 
-        team_id = body.get("teamId")
-        if team_id:
-            hackathon_id = body.get("hackathonId")
-            async with self._lock(hackathon_id):
-                store = self._store(hackathon_id)
-                team = store.get(team_id) or self._new_team(team_id)
-                team.update({"hasBrief": True, "composite": composite,
-                             "status": "building" if team["status"] == "registered" else team["status"]})
-                store[team_id] = team
-
-        return {
-            "ok": True,
-            "score": {
-                "problemClarityScore": round(problem_clarity),
-                "teamMomentumScore": round(team_momentum),
-                "demoReadinessHours": demo_hours,
-                "platformAvg": round(platform_avg),
-                "judgePct": round(judge_pct),
-                "composite": composite,
-                "crsBand": self._crs_band(composite / 10.0),
-            },
-            "critiques": self._critiques(problem, solution),
+        score = {
+            "problemClarityScore": round(problem_clarity),
+            "teamMomentumScore": round(team_momentum),
+            "demoReadinessHours": demo_hours,
+            "platformAvg": round(platform_avg),
+            "judgePct": round(judge_pct),
+            "composite": composite,
+            "crsBand": self._crs_band(composite / 10.0),
         }
+        critiques = self._critiques(problem, solution)
+        return self.repo.submit_hackathon_brief(user_context.user_id, body, score, critiques)
 
     async def log_check_in(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -3992,34 +3594,20 @@ class HackathonService:
         progress = float(body.get("progressDelta", 10))
         activity = min(100.0, max(0.0, progress * 5))
 
-        team_id = body.get("teamId")
-        if team_id:
-            hackathon_id = body.get("hackathonId")
-            async with self._lock(hackathon_id):
-                store = self._store(hackathon_id)
-                team = store.get(team_id) or self._new_team(team_id)
-                n = team["checkIns"]
-                team["activity"] = round((team["activity"] * n + activity) / (n + 1), 1)
-                team["checkIns"] = n + 1
-                if team["status"] == "registered":
-                    team["status"] = "building"
-                store[team_id] = team
-
-        return {"ok": True, "checkIn": {
-            "teamId": team_id, "note": body.get("note", ""),
-            "activityScore": round(activity)}}
+        return self.repo.log_hackathon_check_in(user_context.user_id, body, activity)
 
     async def get_team_status(
         self, user_context: UserContext, hackathon_id: str, team_id: str
     ) -> Dict[str, Any]:
         """GET /api/v1/hackathons/{id}/teams/{tid}/status -- 0 credits."""
-        teams = self._teams(hackathon_id)
-        team = next((t for t in teams if t["id"] == team_id), teams[0])
-        return {
-            "hackathonId": hackathon_id, "teamId": team["id"], "name": team["name"],
-            "status": team["status"], "hasBrief": team["hasBrief"],
-            "composite": team["composite"], "checkIns": team["checkIns"],
-            "hasWorkspace": team["hasWorkspace"],
+        return self.repo.hackathon_team_status(hackathon_id, team_id) or {
+            "hackathonId": hackathon_id,
+            "teamId": team_id,
+            "status": "not_found",
+            "hasBrief": False,
+            "composite": 0,
+            "checkIns": 0,
+            "hasWorkspace": False,
         }
 
     async def provision_team_workspace(
@@ -4031,16 +3619,12 @@ class HackathonService:
         WorkspaceService) and mark the team's workspace live in the store.
         Body: { projectId? }.
         """
-        project_id = body.get("projectId") or f"proj_hack_{team_id}"
-        ws = await WorkspaceService(self.brain).provision_workspace(
-            user_context, {"projectId": project_id, "name": body.get("name", "Hackathon Team")},
-        )
-        async with self._lock(hackathon_id):
-            store = self._store(hackathon_id)
-            team = store.get(team_id) or self._new_team(team_id)
-            team.update({"hasWorkspace": True, "projectId": project_id})
-            store[team_id] = team
-        return {"ok": True, "hackathonId": hackathon_id, "teamId": team_id, **ws}
+        return self.repo.provision_hackathon_workspace(user_context.user_id, hackathon_id, team_id, body) or {
+            "ok": False,
+            "error": "team_not_found",
+            "hackathonId": hackathon_id,
+            "teamId": team_id,
+        }
 
     async def report_team_to_organizers(
         self, user_context: UserContext, hackathon_id: str, team_id: str, body: Dict[str, Any]
@@ -4051,70 +3635,7 @@ class HackathonService:
         on the team so org dashboards can surface it. Production: INSERT into
         hackathon_team_reports keyed by (hackathon_id, team_id, created_at).
         """
-        report = {
-            "workspaceId": body.get("workspaceId"),
-            "idea": body.get("idea"),
-            "team": body.get("team"),
-            "artifacts": body.get("artifacts"),
-            "stage": body.get("stage"),
-            "reportedBy": user_context.user_id,
-        }
-        async with self._lock(hackathon_id):
-            store = self._store(hackathon_id)
-            team = store.get(team_id) or self._new_team(team_id)
-            # Keep last N reports per team; here N=10.
-            history = team.get("reports") or []
-            history.append(report)
-            team["reports"] = history[-10:]
-            store[team_id] = team
-        return {"ok": True, "hackathonId": hackathon_id, "teamId": team_id, "report": report}
-
-    # ── helpers ───────────────────────────────────────────────────────────
-    @staticmethod
-    def _lock(hackathon_id: Optional[str]) -> _asyncio.Lock:
-        """Return (lazy-allocating) the asyncio.Lock guarding this hackathon's
-        store. Dict-write of the lock itself is atomic under the GIL — safe."""
-        key = hackathon_id or "_default"
-        lock = _HACKATHON_LOCKS.get(key)
-        if lock is None:
-            lock = _asyncio.Lock()
-            _HACKATHON_LOCKS[key] = lock
-        return lock
-
-    @staticmethod
-    def _store(hackathon_id: Optional[str]) -> Dict[str, Dict[str, Any]]:
-        """Return (seeding on first touch) the team store for a hackathon.
-
-        Seed teams are only inserted when `_seed_teams_enabled()` returns True
-        (dev/test, or HACKATHON_SEED_TEAMS=true). Production gets an empty
-        store so org dashboards don't render Loom Health / Solaris / Verdant /
-        Northwind before any real team has registered.
-        """
-        key = hackathon_id or "_default"
-        store = _HACKATHON_STORE.get(key)
-        if store is None:
-            store = {}
-            if _seed_teams_enabled():
-                for seed in _SEED_TEAMS:
-                    team = dict(seed)
-                    # Seed a deterministic baseline activity (never random);
-                    # real check-ins blend into this running mean via
-                    # log_check_in.
-                    team["activity"] = float(
-                        min(100, 30 + team["checkIns"] * 12 + int(team["composite"]) % 25)
-                    )
-                    store[team["id"]] = team
-            _HACKATHON_STORE[key] = store
-        return store
-
-    @staticmethod
-    def _new_team(team_id: str, name: str = "Team") -> Dict[str, Any]:
-        return {"id": team_id, "name": name, "isSolo": True, "status": "registered",
-                "hasBrief": False, "composite": 0, "checkIns": 0,
-                "hasWorkspace": False, "activity": 0.0}
-
-    def _teams(self, hackathon_id: str) -> List[Dict[str, Any]]:
-        return list(self._store(hackathon_id).values())
+        return self.repo.report_hackathon_team(user_context.user_id, hackathon_id, team_id, body)
 
     @staticmethod
     def _clarity_score(text: str) -> float:
@@ -4141,18 +3662,6 @@ class HackathonService:
     @staticmethod
     def _crs_band(crs10: float) -> str:
         return ">7" if crs10 > 7 else "4-6" if crs10 >= 4 else "<4"
-
-    def _avg_velocity(self, hackathon_id: str) -> float:
-        cells = self._velocity_cells(hackathon_id)
-        return sum(c["activity"] for c in cells) / len(cells) if cells else 0.0
-
-    def _velocity_cells(self, hackathon_id: str) -> List[Dict[str, Any]]:
-        # Live: per-team running-mean activity from posted check-ins (maintained
-        # in log_check_in). Seeded from a deterministic baseline (never random)
-        # in _store so the heatmap renders before any check-in arrives.
-        return [{"teamId": t["id"], "name": t["name"], "activity": round(t["activity"])}
-                for t in self._teams(hackathon_id)]
-
 
 # ============================================================================
 # DEMO

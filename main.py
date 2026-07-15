@@ -205,7 +205,7 @@ def _demo_user_context() -> UserContext:
         role=UserRole.FOUNDER,
         subscription_tier=SubscriptionTier.FOUNDER_PRO,
         credits_remaining=150,
-        project_id="proj_demo_001",
+        project_id=None,
         project_stage="idea",
         industry="edtech",
         tech_stack=["React", "Node.js", "PostgreSQL"],
@@ -627,6 +627,12 @@ async def dashboard_intelligence(user: UserContext = Depends(get_user_context)):
     return await DashboardIntelligenceService(brain).get_dashboard_intelligence(user)
 
 
+@app.get("/api/v1/organization/dashboard", tags=["Organization"])
+async def organization_dashboard(user: UserContext = Depends(get_user_context)):
+    """Organization dashboard metrics from persisted org/program records. 0 credits."""
+    return await OrgSphereService(brain).get_dashboard(user)
+
+
 @app.post("/api/v1/gsis/compute", tags=["Dashboard"])
 async def compute_gsis(
     scores: Dict[str, Any],
@@ -894,6 +900,19 @@ async def find_collaborators(
 ):
     """Find compatible collaborators via vector + rules + LLM. 1 credit, Builder+"""
     return await MatchingEngineService(brain).find_collaborators(user, criteria)
+
+
+# ============================================================================
+# FEED
+# ============================================================================
+
+@app.get("/api/v1/feed/curated", tags=["Feed"])
+async def feed_curated(
+    limit: int = 30,
+    user: UserContext = Depends(get_user_context),
+):
+    """Curated community feed from persisted feed posts. 0 credits."""
+    return await FeedIntelligenceService(brain).curate_feed(user, [], limit)
 
 
 # ============================================================================
@@ -1189,6 +1208,15 @@ async def workspace_context(
 async def list_hackathons(user: UserContext = Depends(get_user_context)):
     """List hackathons. 0 credits."""
     return await HackathonService(brain).list_hackathons(user)
+
+
+@app.post("/api/v1/hackathons", tags=["Hackathon"])
+async def create_hackathon(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Create a hackathon/program event. 0 credits."""
+    return await HackathonService(brain).create_hackathon(user, body)
 
 
 @app.get("/api/v1/hackathons/{hackathon_id}/overview", tags=["Hackathon"])
