@@ -14,7 +14,7 @@ Start (production, via Docker):
     uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 """
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, Body
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, Body, UploadFile, File as FastAPIFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -1927,6 +1927,55 @@ async def general_error_handler(request: Request, exc: Exception):
         status_code=500,
         content={"error": "internal_server_error", "detail": "An unexpected error occurred"},
     )
+
+
+# ============================================================================
+# FILE UPLOAD ENDPOINTS
+# ============================================================================
+
+from file_storage import file_storage
+
+
+@app.post("/api/v1/files/upload", tags=["File Storage"])
+async def upload_file(
+    file: UploadFile = FastAPIFile(...),
+    ctx=Depends(get_user_context),
+):
+    """Upload a file to storage. Returns URL, key, size, content_type."""
+    contents = await file.read()
+    result = file_storage.upload_file(
+        contents,
+        file.filename or "untitled",
+        file.content_type or "application/octet-stream",
+    )
+    return result
+
+
+@app.post("/api/v1/incubation/document/upload", tags=["Incubation Hub"])
+async def incubation_document_upload(
+    file: UploadFile = FastAPIFile(...),
+    ctx=Depends(get_user_context),
+):
+    """Upload a document, extract text, and run idea diagnosis."""
+    contents = await file.read()
+    text = file_storage.extract_text(contents, file.filename or "document")
+    if not text.strip():
+        raise HTTPException(400, "Could not extract text from the uploaded document")
+
+    stored = file_storage.upload_file(
+        contents,
+        file.filename or "document",
+        file.content_type or "application/octet-stream",
+    )
+
+    service = IncubationHubService(brain)
+    diagnosis = await service.diagnose_idea(ctx, {
+        "startup_name": file.filename or "Uploaded Venture",
+        "solution": text[:5000],
+        "source": "document_upload",
+        "document_url": stored["url"],
+    })
+    return {**diagnosis, "document": stored}
 
 
 # ============================================================================
