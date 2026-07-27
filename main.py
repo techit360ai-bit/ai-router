@@ -1201,6 +1201,155 @@ async def workspace_context(
 
 
 # ============================================================================
+# CONTEXTUAL INTELLIGENCE LAYER
+# ============================================================================
+
+
+@app.post("/api/v1/context/suggestions/generate", tags=["Context Intelligence"])
+async def generate_suggestions(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Generate personalized suggestions for a user. 0 credits (WORKSPACE_ASSISTANT).
+
+    Called by background job to pre-compute suggestions. Body accepts:
+    { currentState, role, gsisScore, gsisBreakdown, recentAgentRuns, openTasks }
+    """
+    role = body.get("role", user.role.value if user.role else "founder")
+    current_state = body.get("currentState", "idea")
+    gsis_score = body.get("gsisScore", 0)
+    gsis_breakdown = body.get("gsisBreakdown", {})
+
+    # Find weakest GSIS component
+    weakest_component = None
+    weakest_score = 100
+    for component, score in (gsis_breakdown or {}).items():
+        if isinstance(score, (int, float)) and score < weakest_score:
+            weakest_score = score
+            weakest_component = component
+
+    # Generate Do Now suggestion based on role and state
+    do_now = _compute_do_now(role, current_state, weakest_component, weakest_score, gsis_score)
+    weekly_priority = _compute_weekly_priority(role, current_state, gsis_score)
+
+    return {
+        "doNow": do_now,
+        "weeklyPriority": weekly_priority,
+    }
+
+
+def _compute_do_now(role, state, weakest_component, weakest_score, gsis_score):
+    if role == "founder":
+        if weakest_component and weakest_score < 50:
+            action_map = {
+                "market_readiness": ("Run Market Intelligence", "/incubation-hub", 2),
+                "product_feasibility": ("Run Feasibility Analysis", "/incubation-hub", 2),
+                "team_strength": ("Connect GitHub or invite a collaborator", "/founder/trust", 0),
+                "financial_viability": ("Run Finance Strategy Analysis", "/incubation-hub", 2),
+                "innovation_score": ("Run Unicorn Potential Analysis", "/incubation-hub", 2),
+            }
+            entry = action_map.get(weakest_component)
+            if entry:
+                return {
+                    "action": entry[0],
+                    "reason": f"Your {weakest_component.replace('_', ' ')} is {int(weakest_score)}/100 — your lowest GSIS component.",
+                    "timeEstimate": "15 min",
+                    "credits": entry[2],
+                    "url": entry[1],
+                }
+        if state == "idea":
+            return {
+                "action": "Run your first venture analysis",
+                "reason": "Transform your idea into a structured startup profile with AI-powered insights.",
+                "timeEstimate": "10 min",
+                "credits": 2,
+                "url": "/incubation-hub",
+            }
+        if state == "validating":
+            return {
+                "action": "Generate your business plan",
+                "reason": "You have analysis results — turn them into a structured plan for investors.",
+                "timeEstimate": "20 min",
+                "credits": 3,
+                "url": "/incubation-hub",
+            }
+    elif role == "collaborator":
+        if state == "browsing_roles":
+            return {
+                "action": "Apply to your first project",
+                "reason": "Your CBS score builds from real contributions. Apply to start building your portfolio.",
+                "timeEstimate": "10 min",
+                "credits": 0,
+                "url": "/collaborator/opportunities",
+            }
+        if state == "applied":
+            return {
+                "action": "Connect your GitHub to boost visibility",
+                "reason": "Founders prioritize collaborators with verified technical credentials.",
+                "timeEstimate": "5 min",
+                "credits": 0,
+                "url": "/collaborator/reputation",
+            }
+    elif role == "investor":
+        if state == "onboarding":
+            return {
+                "action": "Set your investment thesis",
+                "reason": "TechIT matches startups to your criteria. Define your thesis to get relevant deal flow.",
+                "timeEstimate": "10 min",
+                "credits": 0,
+                "url": "/investor/deal-intelligence",
+            }
+        if state == "actively_monitoring":
+            return {
+                "action": "Review your watchlist movements",
+                "reason": "Startups on your watchlist may have new milestones or decay signals.",
+                "timeEstimate": "5 min",
+                "credits": 0,
+                "url": "/investor/watchlist",
+            }
+    elif role == "organisation":
+        if state == "cohort_active":
+            return {
+                "action": "Check cohort health dashboard",
+                "reason": "Monitor team progress and identify teams that need intervention.",
+                "timeEstimate": "10 min",
+                "credits": 0,
+                "url": "/org/analytics",
+            }
+    return None
+
+
+def _compute_weekly_priority(role, state, gsis_score):
+    if role == "founder":
+        if gsis_score < 40:
+            return {
+                "goal": "Raise your GSIS above 40 to become visible to investors",
+                "deadline": "This week",
+                "velocityContext": "Run 2-3 analyses and connect a verification source.",
+            }
+        if state in ("idea", "validating"):
+            return {
+                "goal": "Move from validation to MVP — ship one verifiable milestone",
+                "deadline": "End of week",
+                "velocityContext": "Create a workspace and mark your first task as done.",
+            }
+    elif role == "collaborator":
+        if state == "browsing_roles":
+            return {
+                "goal": "Apply to one project and deliver a first contribution",
+                "deadline": "This week",
+                "velocityContext": "This is the single most important thing to build a credible portfolio.",
+            }
+    elif role == "investor":
+        return {
+            "goal": "Review deal flow and update your watchlist",
+            "deadline": "This week",
+            "velocityContext": "Active investors see more matched startups surfaced to their feed.",
+        }
+    return None
+
+
+# ============================================================================
 # HACKATHON INTELLIGENCE  (org host + team/founder + idea→workspace)
 # ============================================================================
 
