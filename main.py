@@ -463,6 +463,97 @@ async def run_pipeline(
     return await IncubationHubService(brain).run_full_venture_pipeline(user, venture_data)
 
 
+@app.post("/api/v1/incubation/fast-track/run", tags=["Incubation Hub"])
+async def fast_track_run(
+    venture_data: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """
+    Fast-Track Intake — enriched pipeline for startups with existing codebases.
+    Accepts repo_url and document_id alongside standard venture fields.
+    Fetches public repo metadata (languages, README, file tree) to enrich the
+    analysis context before running the full 10-agent pipeline.
+
+    Cost: 12 credits. Min tier: Builder+
+    """
+    enriched = dict(venture_data)
+
+    # Enrich with codebase signals if a repo URL was provided
+    repo_url = venture_data.get("repo_url", "").strip()
+    if repo_url:
+        codebase_context = await _fetch_repo_metadata(repo_url)
+        if codebase_context:
+            enriched["codebase_context"] = codebase_context
+            enriched["has_existing_codebase"] = True
+            enriched["solution"] = (
+                enriched.get("solution", "")
+                + f"\n\n[Codebase signals: {codebase_context.get('languages', 'N/A')} "
+                + f"| {codebase_context.get('file_count', 0)} files "
+                + f"| README: {codebase_context.get('readme_snippet', 'N/A')[:200]}]"
+            )
+
+    # Mark the stage from the intake (so agents can calibrate expectations)
+    if venture_data.get("stage"):
+        enriched["current_stage"] = venture_data["stage"]
+
+    return await IncubationHubService(brain).run_full_venture_pipeline(user, enriched)
+
+
+async def _fetch_repo_metadata(repo_url: str) -> Dict[str, Any] | None:
+    """Fetch public GitHub repo metadata via the GitHub REST API."""
+    import httpx
+
+    # Extract owner/repo from URL
+    parts = repo_url.rstrip("/").split("/")
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[-2], parts[-1]
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Repo info (languages, description, stars)
+            resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}",
+                headers={"Accept": "application/vnd.github+json"},
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+
+            # Languages breakdown
+            lang_resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/languages",
+                headers={"Accept": "application/vnd.github+json"},
+            )
+            languages = lang_resp.json() if lang_resp.status_code == 200 else {}
+
+            # README snippet
+            readme_snippet = ""
+            readme_resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/readme",
+                headers={"Accept": "application/vnd.github.raw+json"},
+            )
+            if readme_resp.status_code == 200:
+                readme_snippet = readme_resp.text[:1500]
+
+            return {
+                "description": data.get("description", ""),
+                "languages": ", ".join(languages.keys()) if languages else "Unknown",
+                "language_breakdown": languages,
+                "stars": data.get("stargazers_count", 0),
+                "forks": data.get("forks_count", 0),
+                "open_issues": data.get("open_issues_count", 0),
+                "created_at": data.get("created_at", ""),
+                "pushed_at": data.get("pushed_at", ""),
+                "default_branch": data.get("default_branch", "main"),
+                "topics": data.get("topics", []),
+                "file_count": data.get("size", 0),
+                "readme_snippet": readme_snippet,
+            }
+    except Exception:
+        return None
+
+
 @app.post("/api/v1/incubation/idea/diagnose", tags=["Incubation Hub"])
 async def diagnose_idea(
     idea_data: Dict[str, Any],
