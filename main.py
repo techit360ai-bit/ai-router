@@ -17,7 +17,7 @@ Start (production, via Docker):
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, Body, UploadFile, File as FastAPIFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 import os
@@ -461,6 +461,40 @@ async def run_pipeline(
     Cost: 12 credits. Min tier: Investor+
     """
     return await IncubationHubService(brain).run_full_venture_pipeline(user, venture_data)
+
+
+@app.get("/api/v1/incubation/projects/{project_id}/export", tags=["Incubation Hub"])
+async def export_incubation_analysis(
+    project_id: str,
+    user: UserContext = Depends(get_user_context),
+):
+    """Download the requesting founder's latest persisted idea analysis."""
+    import json
+    try:
+        analysis = IncubationHubService(brain).export_analysis(user, project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    filename = f"idea-analysis-{project_id}.json"
+    return Response(
+        content=json.dumps(analysis, indent=2, default=str),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/v1/incubation/analysis/persist", tags=["Incubation Hub"])
+async def persist_incubation_analysis(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Persist an individual analysis so it can seed a project workspace."""
+    venture_data = body.get("venture_data") or {}
+    analysis = body.get("analysis") or {}
+    module = str(body.get("module") or "individual")
+    if not venture_data or not analysis:
+        raise HTTPException(status_code=422, detail="venture_data_and_analysis_required")
+    project_id = IncubationHubService(brain).persist_individual_analysis(user, venture_data, analysis, module)
+    return {"project_id": project_id}
 
 
 @app.post("/api/v1/incubation/fast-track/run", tags=["Incubation Hub"])

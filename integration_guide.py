@@ -162,6 +162,17 @@ class IncubationHubService:
         """
         return self.repo.persist_analysis(user_context.user_id, venture_data, blueprint, "pipeline")
 
+    def export_analysis(self, user_context: UserContext, project_id: str) -> Dict[str, Any]:
+        analysis = self.repo.latest_project_analysis(user_context.user_id, project_id)
+        if analysis is None:
+            raise ValueError("analysis_not_found")
+        return analysis
+
+    def persist_individual_analysis(
+        self, user_context: UserContext, venture_data: Dict[str, Any], analysis: Dict[str, Any], module: str
+    ) -> str:
+        return self.repo.persist_analysis(user_context.user_id, venture_data, analysis, module)
+
     def _compile_blueprint(self, venture_data: Dict, results: Dict) -> Dict:
         def safe(key: str, field: str):
             r = results.get(key)
