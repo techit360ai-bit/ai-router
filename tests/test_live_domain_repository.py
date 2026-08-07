@@ -57,11 +57,15 @@ def test_project_analysis_workspace_pipeline_is_persisted() -> None:
     })
     workspace = repo.provision_workspace("u1", {"projectId": project_id, "name": "Live Workspace"})
     context = repo.workspace_context("u1", workspace["workspace"]["id"])
+    exported = repo.latest_project_analysis("u1", project_id)
 
     assert repo.list_founder_projects("u1")[0]["title"] == "Live Venture"
     assert workspace["workspace"]["seededFromAnalysis"] is True
     assert context["blueprintAvailable"] is True
     assert context["venture"]["venture_name"] == "Live Venture"
+    assert exported is not None
+    assert exported["projectId"] == project_id
+    assert exported["blueprint"]["investment_score"] == 82
 
 
 def test_investor_and_collaborator_mutations_are_persisted() -> None:

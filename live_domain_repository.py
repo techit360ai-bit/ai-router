@@ -406,6 +406,28 @@ class LiveDomainRepository:
             db.flush()
             return str(project.id)
 
+    def latest_project_analysis(self, user_id: str, project_id: str) -> Optional[Dict[str, Any]]:
+        """Return the latest persisted analysis owned by the requesting user."""
+        if not self.database_backed:
+            row = next((a for a in reversed(_MEMORY["projectAnalyses"]) if a.get("ownerId") == user_id and a.get("projectId") == project_id), None)
+            return deepcopy(row) if row else None
+        uid, pid = _uuid(user_id), _uuid(project_id)
+        if uid is None or pid is None:
+            return None
+        with self._session() as db:
+            row = db.query(ProjectAnalysis).filter(
+                ProjectAnalysis.owner_id == uid,
+                ProjectAnalysis.project_id == pid,
+            ).order_by(ProjectAnalysis.created_at.desc()).first()
+            if row is None:
+                return None
+            return {
+                "projectId": str(row.project_id),
+                "ventureName": row.venture_name,
+                "blueprint": row.blueprint or {},
+                "createdAt": _iso(row.created_at),
+            }
+
     def dashboard_intelligence(self, user_id: str) -> Dict[str, Any]:
         projects = self.list_founder_projects(user_id)
         primary = projects[0] if projects else None
