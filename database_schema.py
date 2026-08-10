@@ -9,7 +9,7 @@ Design Principles
 2. Three-tier memory: Redis (short-term) | PostgreSQL (structured) | Vector DB (semantic)
 3. Event-driven -- every significant action is a logged event
 4. IP protection built-in -- idea fingerprinting + leak detection
-5. Hybrid billing -- subscription + PAYG credit ledger, immutable
+5. Execution telemetry -- provider attempts, tokens, latency, and health
 6. All scores snapshotted -- trend analysis, investor reports, decay tracking
 7. Training is adaptive -- no fixed week numbers, time-to-MVP driven
 
@@ -17,7 +17,7 @@ Table Groups
 ────────────
   Core Users & Projects
   AI Prompt Registry
-  Hybrid Billing & Credits
+  Execution Telemetry
   AI Execution Log
   Scoring Engine (GSIS, UPS, EVI-I, WCRS, all components)
   Evaluation Engine
@@ -60,14 +60,6 @@ class RoleEnum(str, Enum):
     INVESTOR        = "investor"
     ADMIN           = "admin"
     ACCELERATOR_MGR = "accelerator_manager"
-
-
-class SubscriptionTierEnum(str, Enum):
-    FREE         = "free"
-    BUILDER      = "builder"
-    FOUNDER_PRO  = "founder_pro"
-    INVESTOR     = "investor"
-    ENTERPRISE   = "enterprise"
 
 
 class ProjectStageEnum(str, Enum):
@@ -152,20 +144,6 @@ class VerificationSourceEnum(str, Enum):
     MILESTONE         = "milestone"
 
 
-class BillingEventTypeEnum(str, Enum):
-    SUBSCRIPTION_STARTED   = "subscription_started"
-    SUBSCRIPTION_RENEWED   = "subscription_renewed"
-    SUBSCRIPTION_UPGRADED  = "subscription_upgraded"
-    SUBSCRIPTION_CANCELLED = "subscription_cancelled"
-    CREDITS_PURCHASED      = "credits_purchased"
-    CREDITS_DEDUCTED       = "credits_deducted"
-    CREDITS_RESET_MONTHLY  = "credits_reset_monthly"
-    CREDITS_REFUNDED       = "credits_refunded"
-    PAYWALL_HIT            = "paywall_hit"
-    PAYWALL_CONVERTED      = "paywall_converted"
-    REFERRAL_CREDIT_EARNED = "referral_credit_earned"
-
-
 class TrainingZoneEnum(str, Enum):
     PRE_MVP  = "pre_mvp"
     POST_MVP = "post_mvp"
@@ -195,8 +173,8 @@ class VoiceProviderEnum(str, Enum):
 
 class User(Base):
     """
-    Core user. Subscription tier controls AI access and credit allocation.
-    Both subscription_credits_remaining and payg_credits_balance tracked.
+    Core user identity and role. Feature authorization is supplied by the
+    platform backend, not by the execution-only AI Router.
     """
     __tablename__ = "users"
 
@@ -204,16 +182,6 @@ class User(Base):
     email             = Column(String(255), unique=True, nullable=False)
     full_name         = Column(String(255))
     role              = Column(SQLEnum(RoleEnum), nullable=False)
-    subscription_tier = Column(SQLEnum(SubscriptionTierEnum), nullable=False,
-                               default=SubscriptionTierEnum.FREE)
-    plan_id           = Column(String(50))  # FK to plan registry (billing_system.py)
-
-    # Hybrid credit system (subscription + PAYG running simultaneously)
-    subscription_credits_remaining = Column(Integer, default=5, nullable=False)
-    subscription_resets_at         = Column(TIMESTAMP)
-    payg_credits_balance           = Column(Integer, default=0, nullable=False)
-    total_credits_used             = Column(Integer, default=0, nullable=False)
-
     # Profile signals
     profile_completeness_pct = Column(Float, default=0.0)
     github_connected         = Column(Boolean, default=False)
@@ -226,9 +194,7 @@ class User(Base):
     ai_outputs       = relationship("AIOutput",             back_populates="user")
     prompts_created  = relationship("AIPrompt",             back_populates="creator")
     skill_embeddings = relationship("UserSkillEmbedding",   back_populates="user")
-    credit_ledger    = relationship("CreditLedger",         back_populates="user")
     score_snapshots  = relationship("ScoreSnapshot",        back_populates="user")
-    paywall_hits     = relationship("PaywallHit",           back_populates="user")
     referrals_made   = relationship("ReferralEvent",        back_populates="referrer",
                                     foreign_keys="ReferralEvent.referrer_id")
 
@@ -306,12 +272,10 @@ class AIPrompt(Base):
     name         = Column(String(255), nullable=False)
     prompt_type  = Column(SQLEnum(PromptTypeEnum), nullable=False)
     target_role  = Column(SQLEnum(RoleEnum), nullable=False)
-    min_tier     = Column(SQLEnum(SubscriptionTierEnum), default=SubscriptionTierEnum.FREE)
     description  = Column(Text)
     system_prompt         = Column(Text, nullable=False)
     user_prompt_template  = Column(Text, nullable=False)
     output_format         = Column(Text)
-    credit_cost           = Column(Integer, default=1)
     version    = Column(Integer, default=1, nullable=False)
     is_active  = Column(Boolean, default=True, nullable=False)
     ab_group   = Column(String(10))  # "A" or "B"
@@ -329,85 +293,6 @@ class AIPrompt(Base):
     )
 
 
-# ============================================================================
-# HYBRID BILLING & CREDIT SYSTEM
-# ============================================================================
-
-class CreditLedger(Base):
-    """
-    Immutable ledger of every credit transaction.
-    Both subscription and PAYG credits logged here.
-
-    Resolution order (enforced by HybridCreditEngine):
-      subscription_credits deducted first -> overflow into payg_credits.
-    """
-    __tablename__ = "credit_ledger"
-
-    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id          = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    event_type       = Column(SQLEnum(BillingEventTypeEnum), nullable=False)
-    credits_delta    = Column(Integer, nullable=False)     # negative = deduction
-    credits_after    = Column(Integer, nullable=False)     # total after transaction
-    from_subscription = Column(Integer, default=0)         # credits taken from sub allocation
-    from_payg        = Column(Integer, default=0)           # credits taken from PAYG balance
-    usd_charged_payg = Column(DECIMAL(10, 4), default=0)   # cost for PAYG portion
-    task_type        = Column(String(100))
-    operation_id     = Column(String(100))
-    plan_id          = Column(String(50))
-    description      = Column(Text)
-    created_at       = Column(TIMESTAMP, default=datetime.utcnow)
-
-    user = relationship("User", back_populates="credit_ledger")
-
-    __table_args__ = (
-        Index("idx_credit_user_created", "user_id", "created_at"),
-        Index("idx_credit_event_type",   "event_type", "created_at"),
-    )
-
-
-class CreditPurchase(Base):
-    """PAYG credit pack purchases -- for billing reconciliation."""
-    __tablename__ = "credit_purchases"
-
-    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id     = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    credits_qty = Column(Integer, nullable=False)
-    amount_usd  = Column(DECIMAL(10, 2), nullable=False)
-    stripe_id   = Column(String(255))
-    status      = Column(String(20), default="completed")
-    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
-
-    __table_args__ = (Index("idx_purchase_user", "user_id"),)
-
-
-class PaywallHit(Base):
-    """
-    Every paywall hit logged for conversion analytics and A/B testing.
-    converted + converted_at updated when user upgrades after hitting paywall.
-    """
-    __tablename__ = "paywall_hits"
-
-    id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id        = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    role           = Column(SQLEnum(RoleEnum))
-    plan_id        = Column(String(50))
-    operation_id   = Column(String(100))
-    paywall_copy   = Column(Text)
-    upgrade_cta    = Column(Text)
-    upgrade_plan_id = Column(String(50))
-    context_vars   = Column(JSON, default=lambda: {})
-    converted      = Column(Boolean, default=False)
-    converted_at   = Column(TIMESTAMP)
-    hit_at         = Column(TIMESTAMP, default=datetime.utcnow)
-
-    user = relationship("User", back_populates="paywall_hits")
-
-    __table_args__ = (
-        Index("idx_paywall_user",       "user_id", "hit_at"),
-        Index("idx_paywall_operation",  "operation_id", "converted"),
-    )
-
-
 class ReferralEvent(Base):
     """Referral rewards earned through invites and viral locks."""
     __tablename__ = "referral_events"
@@ -416,8 +301,6 @@ class ReferralEvent(Base):
     referrer_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     referred_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     action_type    = Column(String(50))   # invite_collaborator / invite_founder / invite_org
-    credits_earned = Column(Integer, default=0)
-    usd_credit     = Column(DECIMAL(10, 2), default=0)
     credibility_pts = Column(Integer, default=0)
     free_months    = Column(Integer, default=0)
     created_at     = Column(TIMESTAMP, default=datetime.utcnow)
@@ -435,7 +318,7 @@ class ReferralEvent(Base):
 class AIOutput(Base):
     """
     Every single AI execution recorded.
-    Cost, credits, model, tokens, and user feedback all tracked.
+    Provider execution, tokens, latency, and user feedback are tracked.
     """
     __tablename__ = "ai_outputs"
 
@@ -451,12 +334,7 @@ class AIOutput(Base):
     model_used       = Column(String(100), nullable=False)
     tokens_used      = Column(Integer)
     execution_time_ms = Column(Integer)
-    cost             = Column(DECIMAL(10, 6))
-    credits_consumed = Column(Integer, default=0)
-    from_subscription = Column(Integer, default=0)
-    from_payg        = Column(Integer, default=0)
-    usd_charged_payg = Column(DECIMAL(10, 4), default=0)
-    subscription_tier = Column(String(20))
+    provider_cost_usd = Column(DECIMAL(10, 6))
     ip_protected     = Column(Boolean, default=False)
     cached           = Column(Boolean, default=False)
     user_rating      = Column(Integer)
@@ -473,7 +351,7 @@ class AIOutput(Base):
         Index("idx_output_user_created", "user_id",    "created_at"),
         Index("idx_output_project",      "project_id"),
         Index("idx_output_task_type",    "task_type"),
-        Index("idx_output_cost",         "cost"),
+        Index("idx_output_provider_cost", "provider_cost_usd"),
     )
 
 
@@ -481,13 +359,13 @@ class AIUsageLedger(Base):
     """Provider execution ledger keyed by request id.
 
     This is intentionally narrower than `ai_outputs`: every provider attempt
-    that returns a response can be audited by user, provider, model, token
-    usage, cost, credit cost, and request id without requiring an AIPrompt row.
+    every provider attempt can be audited by user, provider, model, token
+    usage, status, and request id without requiring an AIPrompt row.
     """
     __tablename__ = "ai_usage_ledger"
 
     id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    request_id        = Column(String(64), unique=True, nullable=False)
+    request_id        = Column(String(64), nullable=False)
     user_id           = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     workspace_id      = Column(String(100))
     provider          = Column(String(64), nullable=False)
@@ -496,10 +374,14 @@ class AIUsageLedger(Base):
     tokens_used       = Column(Integer, default=0, nullable=False)
     prompt_tokens     = Column(Integer)
     completion_tokens = Column(Integer)
-    cost_usd          = Column(DECIMAL(10, 6), default=0)
-    credits_consumed  = Column(Integer, default=0, nullable=False)
+    provider_cost_usd  = Column(DECIMAL(10, 6), default=0)
     latency_ms        = Column(Integer)
     status            = Column(String(32), default="success", nullable=False)
+    attempt_number    = Column(Integer, default=1, nullable=False)
+    error_type        = Column(String(100))
+    error_message     = Column(Text)
+    cache_hit         = Column(Boolean, default=False, nullable=False)
+    ip_protected      = Column(Boolean, default=False, nullable=False)
     metadata_         = Column("metadata", JSON)
     created_at        = Column(TIMESTAMP, default=datetime.utcnow)
 
@@ -1124,7 +1006,7 @@ class PromptMetric(Base):
 # ============================================================================
 
 class AgentExecutionLog(Base):
-    """Every agent run logged. Enables success rate tracking, cost per agent, alerts."""
+    """Every agent run logged for reliability and infrastructure FinOps."""
     __tablename__ = "agent_execution_logs"
 
     id           = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -1140,8 +1022,7 @@ class AgentExecutionLog(Base):
     execution_time_ms = Column(Integer)
     models_called = Column(ARRAY(String))
     total_tokens  = Column(Integer)
-    total_cost    = Column(DECIMAL(10, 6))
-    credits_consumed = Column(Integer, default=0)
+    provider_cost_usd = Column(DECIMAL(10, 6))
     started_at    = Column(TIMESTAMP, nullable=False)
     completed_at  = Column(TIMESTAMP)
 
@@ -1636,7 +1517,7 @@ class GeneratedDocument(Base):
     page_estimate   = Column(Integer, default=0)
     investor_mode   = Column(Boolean, default=False)
     model_used      = Column(String(100))
-    credits_consumed = Column(Integer, default=0)
+    tokens_used     = Column(Integer, default=0)
     shareable_link  = Column(Text)
     export_urls     = Column(JSON)                                 # {format: url}
     version         = Column(Integer, default=1)
@@ -1767,7 +1648,7 @@ class AppScaffold(Base):
     estimated_build_hours = Column(Integer, default=4)
     ip_protected        = Column(Boolean, default=True)
     version             = Column(Integer, default=1)
-    credits_consumed    = Column(Integer, default=0)
+    tokens_used         = Column(Integer, default=0)
     model_used          = Column(String(100))
     generated_at        = Column(TIMESTAMP, default=datetime.utcnow)
     deployed_at         = Column(TIMESTAMP, nullable=True)
@@ -1795,32 +1676,6 @@ REFERENCE_QUERIES = {
         WHERE p.wcrs_score > 0
         ORDER BY p.gsis_score DESC, p.wcrs_score DESC
         LIMIT :limit;
-    """,
-
-    "monthly_credit_burn": """
-        SELECT u.id, u.subscription_tier,
-               u.subscription_credits_remaining,
-               u.payg_credits_balance,
-               SUM(ABS(cl.credits_delta)) FILTER (WHERE cl.event_type = 'credits_deducted')
-                   AS credits_burned,
-               SUM(cl.usd_charged_payg) AS payg_usd_spent
-        FROM users u
-        LEFT JOIN credit_ledger cl ON cl.user_id = u.id
-            AND cl.created_at >= date_trunc('month', NOW())
-        GROUP BY u.id, u.subscription_tier,
-                 u.subscription_credits_remaining, u.payg_credits_balance;
-    """,
-
-    "paywall_conversion_rates": """
-        SELECT operation_id,
-               COUNT(*) AS hits,
-               SUM(CASE WHEN converted THEN 1 ELSE 0 END) AS conversions,
-               ROUND(SUM(CASE WHEN converted THEN 1 ELSE 0 END)::numeric / COUNT(*) * 100, 1)
-                   AS conversion_pct
-        FROM paywall_hits
-        WHERE hit_at >= NOW() - INTERVAL '30 days'
-        GROUP BY operation_id
-        ORDER BY conversion_pct DESC;
     """,
 
     "idea_similarity_check": """
@@ -1878,8 +1733,8 @@ REFERENCE_QUERIES = {
                AVG(execution_time_ms) AS avg_ms,
                ROUND(SUM(CASE WHEN success THEN 1 ELSE 0 END)::numeric / COUNT(*) * 100, 1)
                    AS success_pct,
-               SUM(credits_consumed) AS total_credits,
-               SUM(total_cost) AS total_cost_usd
+               SUM(total_tokens) AS total_tokens,
+               SUM(provider_cost_usd) AS provider_cost_usd
         FROM agent_execution_logs
         WHERE started_at >= NOW() - INTERVAL '7 days'
         GROUP BY agent_type
@@ -1931,7 +1786,7 @@ REFERENCE_QUERIES = {
                 / NULLIF(COUNT(*),0) * 100, 1
             ) AS deploy_conversion_pct,
             AVG(estimated_build_hours) AS avg_estimated_hours,
-            AVG(credits_consumed) AS avg_credits
+            AVG(tokens_used) AS avg_tokens
         FROM app_scaffolds
         WHERE generated_at >= NOW() - INTERVAL '30 days'
         GROUP BY scaffold_type
@@ -1943,7 +1798,7 @@ REFERENCE_QUERIES = {
         SELECT document_type, audience, style,
                COUNT(*) AS documents_generated,
                AVG(word_count) AS avg_word_count,
-               AVG(credits_consumed) AS avg_credits,
+               AVG(tokens_used) AS avg_tokens,
                SUM(CASE WHEN investor_mode THEN 1 ELSE 0 END) AS investor_mode_uses,
                COUNT(DISTINCT project_id) AS unique_projects
         FROM generated_documents
@@ -1978,8 +1833,6 @@ ALTER TABLE grant_applications      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE evaluations             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE score_snapshots         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE investor_evi_snapshots  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE credit_ledger           ENABLE ROW LEVEL SECURITY;
-ALTER TABLE paywall_hits            ENABLE ROW LEVEL SECURITY;
 
 -- ── Project isolation: users see only their own projects ─────────────────────
 -- current_setting('app.user_id') is set by the application per request.
@@ -2016,14 +1869,6 @@ CREATE POLICY solution_owner_policy ON solution_projects
 -- ── Grant applications: creator-only ─────────────────────────────────────────
 CREATE POLICY grant_owner_policy ON grant_applications
     USING (created_by = current_setting('app.user_id')::uuid);
-
--- ── Billing records: user can only see their own ledger ──────────────────────
-CREATE POLICY credit_ledger_owner_policy ON credit_ledger
-    USING (user_id = current_setting('app.user_id')::uuid);
-
--- ── Paywall hits: user can only see their own ────────────────────────────────
-CREATE POLICY paywall_owner_policy ON paywall_hits
-    USING (user_id = current_setting('app.user_id')::uuid);
 
 -- ── Admin bypass: superuser and admin role bypass all RLS ───────────────────
 -- The 'techit_admin' role is used only for scheduled jobs and admin panel.
@@ -2094,7 +1939,7 @@ def setup_extensions(engine) -> None:
 # ============================================================================
 # Backs the collaborator Equity dashboard: per-startup grants, vesting schedules
 # with cliffs, dilution protection, and cap-table snapshots. Money-as-ownership,
-# distinct from cash payouts (see Payouts section below) and from billing credits.
+# distinct from cash payouts (see Payouts section below).
 
 class EquityGrant(Base):
     """
@@ -2166,7 +2011,7 @@ class DilutionEvent(Base):
 # ============================================================================
 # PAYOUTS & EARNINGS  (Collaborator cash layer — money going OUT)
 # ============================================================================
-# Distinct from billing credits (money coming in). Backs the collaborator
+# Backs the collaborator
 # Earnings dashboard: per-project cash earned + pending, revenue share, and the
 # payout ledger with withdrawals.
 
@@ -2630,8 +2475,7 @@ if __name__ == "__main__":
 ║ Core:        users, projects                                 ║
 ║ AI:          ai_prompts, ai_outputs, ai_audio_outputs        ║
 ║              prompt_metrics                                  ║
-║ Billing:     credit_ledger, credit_purchases                 ║
-║              paywall_hits, referral_events                   ║
+║ Execution:   ai_outputs, ai_usage_ledger, agent_execution_logs║
 ║ Scoring:     score_snapshots, wcrs_history                   ║
 ║ Investor:    investor_evi_snapshots, investor_watchlist       ║
 ║              investor_alerts                                 ║

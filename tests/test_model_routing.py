@@ -1,106 +1,82 @@
-"""
-WS4 routing smoke test. Standalone (no pytest dependency): run with
-    python3 tests/test_model_routing.py
-Exit 0 = all asserts passed. Imports ai_router_core directly (no external deps).
-"""
+"""Configuration-driven routing contracts."""
+
+from __future__ import annotations
+
 import os
-import sys
 
-# allow running from repo root or tests/
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
 
-from ai_router_core import (  # noqa: E402
-    ModelRouter, ModelProvider, ComplexityTier, TaskType,
-    AIRequest, UserContext, UserRole, SubscriptionTier,
-)
+from ai_router_core import AIRequest, ModelRouter, TaskType, UserContext, UserRole
+from model_registry import RegistryError
 
 
-def _req(task: TaskType, tier: SubscriptionTier = SubscriptionTier.FOUNDER_PRO) -> AIRequest:
-    ctx = UserContext(
-        user_id="u_test", role=UserRole.FOUNDER, subscription_tier=tier,
-        credits_remaining=100, project_id="p_test", project_stage="mvp",
-        industry="saas", tech_stack=[], past_feedback=[], training_progress={},
-        time_logged_today=0, tasks_completed_week=0,
+def _ctx() -> UserContext:
+    return UserContext(
+        user_id="u_test", role=UserRole.FOUNDER, project_id="p_test",
+        project_stage="mvp", industry="saas", tech_stack=[], past_feedback=[],
+        training_progress={}, time_logged_today=0, tasks_completed_week=0,
     )
-    return AIRequest(task_type=task, user_context=ctx, input_data={})
 
 
-def test_construction_validates():
-    ModelRouter()  # must not raise (exercises _validate_coverage)
+def _req(task: TaskType, **kwargs) -> AIRequest:
+    return AIRequest(task_type=task, user_context=_ctx(), input_data={}, **kwargs)
 
 
-def test_every_task_resolves_nonempty():
-    r = ModelRouter()
+def test_registry_covers_every_task() -> None:
+    router = ModelRouter()
+    assert set(router.registry.task_policies) == {task.value for task in TaskType}
     for task in TaskType:
-        chain = r.select_chain(_req(task))
-        assert chain, f"empty chain for {task}"
+        assert router.select_chain(_req(task))
 
 
-def test_trivial_is_free_first_when_keyed():
-    os.environ["OPENROUTER_API_KEY"] = "test-key"
+def test_modern_models_are_registered() -> None:
+    models = ModelRouter().registry.models
+    for model_id in (
+        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
+        "gpt-5.4", "gpt-5.3-codex", "claude-fable-5", "claude-opus-5",
+        "claude-sonnet-5", "kimi-k2.5", "mistral-large-latest", "codestral-latest",
+    ):
+        assert model_id in models
+
+
+def test_user_can_select_eligible_model() -> None:
+    router = ModelRouter()
+    selected = router.select_chain(_req(TaskType.CODE_REVIEW, requested_model="gpt-5.3-codex"))
+    assert [item.id for item in selected] == ["gpt-5.3-codex"]
+
+
+def test_non_selectable_or_ineligible_model_is_rejected() -> None:
+    router = ModelRouter()
+    with pytest.raises(RegistryError):
+        router.select_chain(_req(TaskType.CHAT, requested_model="openrouter-llama-free"))
+    with pytest.raises(RegistryError):
+        router.select_chain(_req(TaskType.EMBEDDINGS, requested_model="gpt-5.6-sol"))
+
+
+def test_embeddings_have_cohere_then_openai_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("COHERE_API_KEY", "test")
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    router = ModelRouter()
+    chain = router.select_chain(_req(TaskType.EMBEDDINGS))
+    assert [item.id for item in chain] == [
+        "cohere-embed-english-v3", "openai-text-embedding-3-large"
+    ]
+
+
+def test_quality_floor_never_silently_downgrades() -> None:
+    router = ModelRouter()
+    request = _req(TaskType.UNICORN_ANALYSIS)
+    floor = router.policy_for(request).minimum_quality_score
+    assert all(item.quality_score >= floor for item in router.select_chain(request))
+
+
+def test_profitability_and_quality_profiles_rank_differently() -> None:
+    os.environ["OPENAI_API_KEY"] = "test"
     try:
-        r = ModelRouter()
-        chain = r.select_chain(_req(TaskType.MATCHING))  # TRIVIAL
-        assert chain[0].provider == ModelProvider.OPENROUTER_FREE, chain[0].provider
+        router = ModelRouter()
+        quality = router.select_chain(_req(TaskType.MARKET_INTELLIGENCE, execution_profile="quality"))[0]
+        economy = router.select_chain(_req(TaskType.MARKET_INTELLIGENCE, execution_profile="profitability"))[0]
+        assert quality.id != economy.id
+        assert quality.quality_score >= economy.quality_score
     finally:
-        del os.environ["OPENROUTER_API_KEY"]
-
-
-def test_trivial_nonempty_when_unkeyed():
-    os.environ.pop("OPENROUTER_API_KEY", None)
-    os.environ.pop("GEMINI_API_KEY", None)
-    r = ModelRouter()
-    chain = r.select_chain(_req(TaskType.MATCHING))
-    assert chain, "chain must be non-empty even with no keys"
-
-
-def test_free_subscription_never_premium():
-    r = ModelRouter()
-    chain = r.select_chain(_req(TaskType.UNICORN_ANALYSIS, SubscriptionTier.FREE))
-    providers = {c.provider for c in chain}
-    assert ModelProvider.OPENAI_GPT4 not in providers
-    assert ModelProvider.ANTHROPIC_CLAUDE not in providers
-
-
-def test_embeddings_routes_to_cohere():
-    r = ModelRouter()
-    chain = r.select_chain(_req(TaskType.EMBEDDINGS))
-    assert chain[0].provider == ModelProvider.COHERE_EMBED
-
-
-def test_select_model_is_chain_head():
-    r = ModelRouter()
-    req = _req(TaskType.CHAT)
-    assert r.select_model(req).provider == r.select_chain(req)[0].provider
-
-
-def test_ineligible_providers_appended_not_dropped():
-    # With no keys set, TRIVIAL chain must still contain ALL four providers
-    # (eligible-first ordering must never DROP a provider).
-    for var in ("OPENROUTER_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-        os.environ.pop(var, None)
-    r = ModelRouter()
-    chain = r.select_chain(_req(TaskType.MATCHING))  # TRIVIAL
-    providers = [c.provider for c in chain]
-    assert ModelProvider.OPENROUTER_FREE in providers
-    assert ModelProvider.GEMINI_FLASH_LITE in providers
-    assert ModelProvider.ANTHROPIC_HAIKU in providers
-    assert ModelProvider.OPENAI_GPT4_MINI in providers
-    assert len(providers) == len(set(providers)), "chain must be deduped"
-
-
-def test_heavy_tier_prefers_gpt4_head():
-    # A HEAVY task for a paid user heads the chain with the strongest model.
-    for var in ("OPENROUTER_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-        os.environ.pop(var, None)
-    r = ModelRouter()
-    chain = r.select_chain(_req(TaskType.UNICORN_ANALYSIS))  # HEAVY, FOUNDER_PRO
-    assert chain[0].provider == ModelProvider.OPENAI_GPT4, chain[0].provider
-
-
-if __name__ == "__main__":
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    for fn in fns:
-        fn()
-        print(f"PASS {fn.__name__}")
-    print(f"\nAll {len(fns)} routing tests passed.")
+        os.environ.pop("OPENAI_API_KEY", None)

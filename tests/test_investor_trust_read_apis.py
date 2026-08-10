@@ -20,7 +20,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("ENVIRONMENT", "development")
 os.environ.setdefault("ALLOW_DEMO_AUTH", "true")
 
-from ai_router_core import SubscriptionTier, UserContext, UserRole  # noqa: E402
+from ai_router_core import UserContext, UserRole  # noqa: E402
 from main import (  # noqa: E402
     app,
     investor_trust_dashboard,
@@ -86,8 +86,6 @@ def _investor() -> UserContext:
     return UserContext(
         user_id="investor_001",
         role=UserRole.INVESTOR,
-        subscription_tier=SubscriptionTier.INVESTOR,
-        credits_remaining=100,
         project_id=None,
         project_stage=None,
         industry=None,
@@ -103,8 +101,6 @@ def _other_investor() -> UserContext:
     return UserContext(
         user_id="other_investor",
         role=UserRole.INVESTOR,
-        subscription_tier=SubscriptionTier.INVESTOR,
-        credits_remaining=100,
         project_id=None,
         project_stage=None,
         industry=None,
@@ -120,8 +116,6 @@ def _founder() -> UserContext:
     return UserContext(
         user_id="founder_001",
         role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FOUNDER_PRO,
-        credits_remaining=100,
         project_id="startup_001",
         project_stage="beta",
         industry="saas",

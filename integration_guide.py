@@ -22,8 +22,7 @@ Services
  12.  OrgSphereService           -- organization structure intelligence
  13.  MarketReadinessService     -- stage-gate tracking + certification
  14.  AdminMonitorService        -- abuse detection + stagnation roster
- 15.  HybridBillingService       -- credit resolution + paywall enforcement
- 16.  GSISService                -- global startup intelligence score
+ 15.  GSISService                -- global startup intelligence score
 """
 
 from __future__ import annotations
@@ -36,8 +35,7 @@ from uuid import uuid4
 from ai_router_core import (
     AICommandLayer, ModelRouter, PromptEngine, SafetyEngine,
     AIRequest, UserContext, TaskType, UserRole,
-    SubscriptionTier, ScoringEngine, CreditCost,
-    SubscriptionAccessControl,
+    ScoringEngine,
 )
 from agent_orchestration import (
     AgentOrchestrator, AgentType, AgentContext, VenturePipeline,
@@ -117,8 +115,8 @@ class IncubationHubService:
     """
     Transforms a raw idea or existing MVP into investor-grade startup infrastructure.
 
-    Full pipeline: 12 credits (Investor+ required)
-    Individual modules: 1–4 credits each (see CreditCost table)
+    Full pipeline: 12 execution budget units (Investor+ required)
+    Individual modules are authorized by backend execution grants.
     """
 
     def __init__(self, brain: TechITAIBrain) -> None:
@@ -128,13 +126,7 @@ class IncubationHubService:
     async def run_full_venture_pipeline(
         self, user_context: UserContext, venture_data: Dict
     ) -> Dict:
-        """POST /api/v1/incubation/pipeline/run -- 12 credits, Investor+"""
-        if not SubscriptionAccessControl.is_allowed(
-            user_context.subscription_tier, TaskType.BUSINESS_PLAN
-        ):
-            return {"error": "full_pipeline_requires_investor_plan",
-                    "upgrade_url": "/billing/upgrade"}
-
+        """POST /api/v1/incubation/pipeline/run -- 12 execution budget units, Investor+"""
         pipeline = self.brain.venture_pipeline()
         results  = await pipeline.run(user_context, venture_data)
         blueprint = self._compile_blueprint(venture_data, results)
@@ -198,7 +190,7 @@ class IncubationHubService:
         }
 
     async def run_idea_diagnostic(self, user_context: UserContext, idea_data: Dict) -> Dict:
-        """POST /api/v1/incubation/idea/diagnose -- 1 credit, Free+"""
+        """POST /api/v1/incubation/idea/diagnose -- 1 execution budget unit, Free+"""
         ctx = AgentContext(user_context=user_context, trigger_event=idea_data)
         r   = await self.brain.trigger_agent(AgentType.VENTURE_INTAKE, ctx)
         structured = r.output.get("venture_profile")
@@ -208,7 +200,7 @@ class IncubationHubService:
                 "intake": persisted.get("intake")}
 
     async def run_unicorn_analysis(self, user_context: UserContext, venture_data: Dict) -> Dict:
-        """POST /api/v1/incubation/unicorn/analyze -- 2 credits, Builder+"""
+        """POST /api/v1/incubation/unicorn/analyze -- 2 execution budget units, Builder+"""
         ctx = AgentContext(user_context=user_context, trigger_event=venture_data)
         r   = await self.brain.trigger_agent(AgentType.UNICORN_EVALUATOR, ctx)
         if venture_data.get("project_id") or venture_data.get("projectId"):
@@ -216,7 +208,7 @@ class IncubationHubService:
         return r.output
 
     async def run_market_intelligence(self, user_context: UserContext, venture_data: Dict) -> Dict:
-        """POST /api/v1/incubation/market/analyze -- 2 credits, Builder+"""
+        """POST /api/v1/incubation/market/analyze -- 2 execution budget units, Builder+"""
         ctx = AgentContext(user_context=user_context, trigger_event=venture_data)
         r   = await self.brain.trigger_agent(AgentType.MARKET_INTELLIGENCE, ctx)
         if venture_data.get("project_id") or venture_data.get("projectId"):
@@ -224,7 +216,7 @@ class IncubationHubService:
         return r.output
 
     async def generate_business_plan(self, user_context: UserContext, venture_data: Dict) -> Dict:
-        """POST /api/v1/incubation/business-plan/generate -- 6 credits, Investor+"""
+        """POST /api/v1/incubation/business-plan/generate -- 6 execution budget units, Investor+"""
         ctx = AgentContext(user_context=user_context, trigger_event=venture_data,
                            shared_memory={"venture_profile": venture_data})
         r   = await self.brain.trigger_agent(AgentType.BUSINESS_PLAN_GEN, ctx)
@@ -235,7 +227,7 @@ class IncubationHubService:
     async def run_tech_stack_design(
         self, user_context: UserContext, venture_data: Dict, scale_target: str = "1M users"
     ) -> Dict:
-        """POST /api/v1/incubation/tech-stack/design -- 2 credits, Founder Pro+"""
+        """POST /api/v1/incubation/tech-stack/design -- 2 execution budget units, Founder Pro+"""
         ctx = AgentContext(user_context=user_context,
                            trigger_event={**venture_data, "scale_target": scale_target})
         r   = await self.brain.trigger_agent(AgentType.TECH_ARCHITECT, ctx)
@@ -244,7 +236,7 @@ class IncubationHubService:
     async def run_pivot_intelligence(
         self, user_context: UserContext, venture_data: Dict, unicorn_score: float
     ) -> Dict:
-        """POST /api/v1/incubation/pivot/analyze -- 2 credits, Builder+"""
+        """POST /api/v1/incubation/pivot/analyze -- 2 execution budget units, Builder+"""
         ctx = AgentContext(
             user_context=user_context,
             trigger_event=venture_data,
@@ -259,7 +251,7 @@ class IncubationHubService:
     async def generate_investor_readiness_report(
         self, user_context: UserContext, venture_data: Dict
     ) -> Dict:
-        """POST /api/v1/incubation/investor-readiness/generate -- 2 credits, Investor+"""
+        """POST /api/v1/incubation/investor-readiness/generate -- 2 execution budget units, Investor+"""
         resp = await self.brain.process(AIRequest(
             TaskType.INVESTOR_READINESS, user_context, venture_data,
             ip_protected=True, max_tokens=3000,
@@ -276,7 +268,7 @@ class IncubationHubService:
 class DashboardIntelligenceService:
     """
     Powers the Dashboard with the GSIS composite score and real-time alerts.
-    Zero credit cost -- operational task.
+    Zero execution budget unit cost -- operational task.
     Triggered on login and every 30-minute polling cycle.
     """
 
@@ -287,7 +279,7 @@ class DashboardIntelligenceService:
     async def get_dashboard_intelligence(
         self, user_context: UserContext, project_scores: Optional[Dict] = None
     ) -> Dict:
-        """GET /api/v1/dashboard/intelligence -- 0 credits"""
+        """GET /api/v1/dashboard/intelligence -- 0 execution budget units"""
         if project_scores is None:
             return self.repo.dashboard_intelligence(user_context.user_id)
         ctx = AgentContext(
@@ -307,7 +299,7 @@ class DashboardIntelligenceService:
     async def get_gsis(
         self, user_context: UserContext, component_scores: Dict
     ) -> Dict:
-        """GET /api/v1/dashboard/gsis/{project_id} -- 1 credit"""
+        """GET /api/v1/dashboard/gsis/{project_id} -- 1 execution budget unit"""
         ctx = AgentContext(
             user_context=user_context,
             trigger_event={"scores": component_scores},
@@ -320,7 +312,7 @@ class DashboardIntelligenceService:
         self, project_id: str, project_scores: Dict
     ) -> Dict:
         """
-        GET /api/v1/dashboard/infographic/{project_id} -- 0 credits
+        GET /api/v1/dashboard/infographic/{project_id} -- 0 execution budget units
 
         Data for auto-generated startup infographics:
           - Startup Progress Dashboard (GSIS + component scores)
@@ -367,7 +359,7 @@ class WorkspaceAIService:
         workspace_data: Dict,
         user_token: Optional[str] = None,
     ) -> Dict:
-        """POST /api/v1/workspace/tasks/suggest -- 0 credits.
+        """POST /api/v1/workspace/tasks/suggest -- 0 execution budget units.
 
         When the caller forwards their bearer token, we pull the MCP tool
         catalogue from BACKEND/api/mcp and include it in the agent's prompt
@@ -390,21 +382,21 @@ class WorkspaceAIService:
         }
 
     async def review_code(self, user_context: UserContext, code_payload: Dict) -> Dict:
-        """POST /api/v1/workspace/code/review -- 1 credit, Founder Pro+"""
+        """POST /api/v1/workspace/code/review -- 1 execution budget unit, Founder Pro+"""
         resp = await self.brain.process(
             AIRequest(TaskType.CODE_REVIEW, user_context, code_payload)
         )
         return {"review": resp.output, "cost": resp.cost}
 
     async def plan_sprint(self, user_context: UserContext, sprint_data: Dict) -> Dict:
-        """POST /api/v1/workspace/sprint/plan -- 0 credits"""
+        """POST /api/v1/workspace/sprint/plan -- 0 execution budget units"""
         ctx = AgentContext(user_context=user_context,
                            trigger_event={"workspace_data": sprint_data, "mode": "sprint_planning"})
         r   = await self.brain.trigger_agent(AgentType.WORKSPACE_ASSISTANT, ctx)
         return r.output
 
     async def list_tools(self, user_context: UserContext, user_token: str) -> Dict[str, Any]:
-        """GET /api/v1/workspace/tools -- 0 credits.
+        """GET /api/v1/workspace/tools -- 0 execution budget units.
 
         Catalogue of plugin tools the user can invoke via BACKEND/api/mcp.
         Forwarded bearer is the only authority — BACKEND verifies and audits.
@@ -424,7 +416,7 @@ class WorkspaceAIService:
         tool: str,
         params: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """POST /api/v1/workspace/tools/invoke -- 0 credits.
+        """POST /api/v1/workspace/tools/invoke -- 0 execution budget units.
 
         Executes a plugin tool as the authenticated user (no service identity).
         BACKEND/api/mcp enforces role and audit using the same JWT_SECRET this
@@ -456,7 +448,7 @@ class TourGuideService:
     """
     AI momentum enforcer. NOT a motivational chatbot.
     Assesses execution discipline, penalises inactivity via decay factor.
-    Zero credits -- Free tier, unlimited access.
+    Zero execution budget units -- Free tier, unlimited access.
     """
 
     def __init__(self, brain: TechITAIBrain) -> None:
@@ -465,7 +457,7 @@ class TourGuideService:
     async def daily_check_in(
         self, user_context: UserContext, activity_data: Optional[Dict] = None
     ) -> Dict:
-        """POST /api/v1/tour-guide/daily-check-in -- 0 credits"""
+        """POST /api/v1/tour-guide/daily-check-in -- 0 execution budget units"""
         ctx = AgentContext(user_context=user_context, trigger_event=activity_data or {})
         r   = await self.brain.trigger_agent(AgentType.TOUR_GUIDE, ctx)
         return {
@@ -478,7 +470,7 @@ class TourGuideService:
         }
 
     async def weekly_summary(self, user_context: UserContext, week_data: Dict) -> Dict:
-        """Scheduled: 0 18 * * 0 (Sunday 18:00) -- 1 credit"""
+        """Scheduled: 0 18 * * 0 (Sunday 18:00) -- 1 execution budget unit"""
         resp = await self.brain.process(AIRequest(
             TaskType.SUMMARY, user_context,
             {"week_data": week_data, "summary_type": "weekly_tour_guide"},
@@ -487,7 +479,7 @@ class TourGuideService:
         return {"weekly_summary": resp.output, "cost": resp.cost}
 
     async def get_audio_briefing(self, user_context: UserContext, briefing_text: str) -> Dict:
-        """POST /api/v1/tour-guide/audio-briefing -- 0 credits"""
+        """POST /api/v1/tour-guide/audio-briefing -- 0 execution budget units"""
         # Production: call ElevenLabs API -> store in ai_audio_outputs
         return {
             "audio_url":        f"https://cdn.techit.io/audio/{user_context.user_id}/briefing.mp3",
@@ -523,7 +515,7 @@ class AdaptiveTrainingService:
         investor_interest:        bool  = False,
     ) -> Dict:
         """
-        POST /api/v1/training/curriculum/generate -- 1 credit, Free+
+        POST /api/v1/training/curriculum/generate -- 1 execution budget unit, Free+
 
         Duration is NOT 12 weeks. It is calculated from:
           - project stage (how far from MVP)
@@ -568,7 +560,7 @@ class AdaptiveTrainingService:
         self, user_context: UserContext, trigger_event: str, event_data: Dict
     ) -> Dict:
         """
-        POST /api/v1/training/curriculum/adapt -- 0 credits
+        POST /api/v1/training/curriculum/adapt -- 0 execution budget units
 
         Adaptation triggers:
           mvp_shipped               -> Activate full post-MVP curriculum
@@ -588,7 +580,7 @@ class AdaptiveTrainingService:
         self, user_context: UserContext, module_id: str,
         quiz_score: Optional[float] = None,
     ) -> Dict:
-        """POST /api/v1/training/progress/update -- 0 credits"""
+        """POST /api/v1/training/progress/update -- 0 execution budget units"""
         await self.brain.handle_event({
             "type":         "training_completed",
             "user_context": user_context,
@@ -601,7 +593,7 @@ class AdaptiveTrainingService:
     async def ask_ai_tutor(
         self, user_context: UserContext, question: str, lesson_context: str
     ) -> Dict:
-        """POST /api/v1/training/tutor/ask -- 0 credits"""
+        """POST /api/v1/training/tutor/ask -- 0 execution budget units"""
         resp = await self.brain.process(AIRequest(
             TaskType.CHAT, user_context,
             {"question": question, "lesson_context": lesson_context, "mode": "ai_tutor"},
@@ -618,7 +610,7 @@ class MatchingEngineService:
         self.brain = brain
 
     async def find_collaborators(self, user_context: UserContext, criteria: Dict) -> Dict:
-        """POST /api/v1/matching/find-collaborators -- 1 credit, Builder+"""
+        """POST /api/v1/matching/find-collaborators -- 1 execution budget unit, Builder+"""
         ctx = AgentContext(user_context=user_context,
                            trigger_event={"criteria": criteria, "match_type": "founder_builder"})
         r   = await self.brain.trigger_agent(AgentType.MATCHING, ctx)
@@ -627,7 +619,7 @@ class MatchingEngineService:
                 "total_found": len(r.output.get("matches", []))}
 
     async def find_investors(self, user_context: UserContext, startup_profile: Dict) -> Dict:
-        """POST /api/v1/matching/find-investors -- 2 credits, Investor+"""
+        """POST /api/v1/matching/find-investors -- 2 execution budget units, Investor+"""
         ctx = AgentContext(user_context=user_context,
                            trigger_event={"criteria": {"match_type": "startup_investor"},
                                           "startup_profile": startup_profile})
@@ -637,7 +629,7 @@ class MatchingEngineService:
     def compute_compatibility(
         self, seeker_profile: Dict, candidate_profile: Dict
     ) -> Dict:
-        """GET /api/v1/matching/compatibility -- 0 credits"""
+        """GET /api/v1/matching/compatibility -- 0 execution budget units"""
         score = ScoringEngine.compute_match_score(
             seeker_profile.get("skill_similarity", 0.7),
             seeker_profile.get("goal_similarity",  0.7),
@@ -659,7 +651,7 @@ class RiskEvaluatorService:
         self.brain = brain
 
     async def evaluate_idea_risk(self, user_context: UserContext, idea_data: Dict) -> Dict:
-        """POST /api/v1/risk/evaluate -- 2 credits, Builder+"""
+        """POST /api/v1/risk/evaluate -- 2 execution budget units, Builder+"""
         ctx = AgentContext(user_context=user_context, trigger_event={"idea": idea_data})
         r   = await self.brain.trigger_agent(AgentType.RISK_EVALUATOR, ctx)
         ra  = r.output.get("risk_analysis", {})
@@ -690,7 +682,7 @@ class InvestorSectionService:
         self, investor_context: UserContext, startup_data: Dict
     ) -> Dict:
         """
-        GET /api/v1/investor/evi/{project_id} -- 2 credits, Investor+
+        GET /api/v1/investor/evi/{project_id} -- 2 execution budget units, Investor+
 
         Returns the full EVI-I signal: 6 dimension scores, decay-adjusted composite,
         signal classification, strengths, red flags, headline narrative.
@@ -717,7 +709,7 @@ class InvestorSectionService:
     async def get_investor_readiness(
         self, user_context: UserContext, project_scores: Dict
     ) -> Dict:
-        """GET /api/v1/investor/readiness/{project_id} -- 0 + 2 credits"""
+        """GET /api/v1/investor/readiness/{project_id} -- 0 + 2 execution budget units"""
         invest_score = ScoringEngine.compute_investment_score(
             market_readiness=project_scores.get("market_readiness_score", 50),
             traction_score=min(100.0, project_scores.get("beta_users_count", 0) * 2),
@@ -746,13 +738,13 @@ class InvestorSectionService:
     async def get_deal_flow_ranking(
         self, investor_context: UserContext, filters: Optional[Dict] = None
     ) -> Dict:
-        """GET /api/v1/investor/deal-flow -- 0 credits"""
+        """GET /api/v1/investor/deal-flow -- 0 execution budget units"""
         return self.repo.investor_deal_flow(investor_context.user_id, filters)
 
     async def generate_deep_evaluation(
         self, investor_context: UserContext, startup_data: Dict
     ) -> Dict:
-        """POST /api/v1/investor/evaluate/{project_id} -- 2 credits, Investor+"""
+        """POST /api/v1/investor/evaluate/{project_id} -- 2 execution budget units, Investor+"""
         ctx = AgentContext(
             user_context=investor_context, trigger_event=startup_data,
             shared_memory={"venture_profile": startup_data},
@@ -763,7 +755,7 @@ class InvestorSectionService:
     async def analyze_investor_signals(
         self, user_context: UserContext, startup_data: Dict
     ) -> Dict:
-        """POST /api/v1/investor/signals/{project_id} -- 2 credits, Investor+"""
+        """POST /api/v1/investor/signals/{project_id} -- 2 execution budget units, Investor+"""
         resp = await self.brain.process(AIRequest(
             TaskType.INVESTOR_SIGNAL, user_context, startup_data, max_tokens=3000
         ))
@@ -782,7 +774,7 @@ class FeedIntelligenceService:
     async def curate_feed(
         self, user_context: UserContext, raw_feed: List[Dict], limit: int = 30
     ) -> Dict:
-        """GET /api/v1/feed/curated -- 0 credits"""
+        """GET /api/v1/feed/curated -- 0 execution budget units"""
         if not raw_feed:
             return self.repo.feed_posts(user_context.user_id, limit)
         ctx = AgentContext(user_context=user_context,
@@ -802,7 +794,7 @@ class AIProfileService:
         self.brain = brain
 
     async def analyze_profile(self, user_context: UserContext, profile_data: Dict) -> Dict:
-        """POST /api/v1/profile/analyze -- 1 credit, Free+"""
+        """POST /api/v1/profile/analyze -- 1 execution budget unit, Free+"""
         ctx = AgentContext(user_context=user_context,
                            trigger_event={"profile_data": profile_data})
         r   = await self.brain.trigger_agent(AgentType.AI_PROFILE, ctx)
@@ -810,7 +802,7 @@ class AIProfileService:
                 "recommendations":  r.recommendations}
 
     def compute_profile_score(self, profile_data: Dict) -> Dict:
-        """GET /api/v1/profile/score/{user_id} -- 0 credits"""
+        """GET /api/v1/profile/score/{user_id} -- 0 execution budget units"""
         checks = {
             "basic_info_complete":   (20, profile_data.get("full_name") and profile_data.get("email")),
             "skills_listed":         (20, len(profile_data.get("skills", [])) >= 3),
@@ -835,13 +827,13 @@ class OrgSphereService:
         self.repo = LiveDomainRepository()
 
     async def get_dashboard(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/organization/dashboard -- 0 credits"""
+        """GET /api/v1/organization/dashboard -- 0 execution budget units"""
         return self.repo.organization_dashboard(user_context.user_id)
 
     async def analyze_organization(
         self, user_context: UserContext, org_data: Dict
     ) -> Dict:
-        """POST /api/v1/org/analyze -- 1 credit, Founder Pro+"""
+        """POST /api/v1/org/analyze -- 1 execution budget unit, Founder Pro+"""
         ctx = AgentContext(user_context=user_context, trigger_event={"org_data": org_data})
         r   = await self.brain.trigger_agent(AgentType.ORG_SPHERE, ctx)
         tss = ScoringEngine.compute_tss(
@@ -855,7 +847,7 @@ class OrgSphereService:
     async def track_cohort(
         self, accelerator_context: UserContext, cohort_data: Dict
     ) -> Dict:
-        """GET /api/v1/org/cohort/{cohort_id}/analytics -- 0 credits"""
+        """GET /api/v1/org/cohort/{cohort_id}/analytics -- 0 execution budget units"""
         startups = cohort_data.get("startups", [])
         summaries = [
             {
@@ -894,7 +886,7 @@ class MarketReadinessService:
     async def get_readiness_status(
         self, user_context: UserContext, project_data: Dict
     ) -> Dict:
-        """GET /api/v1/readiness/{project_id} -- 0 credits"""
+        """GET /api/v1/readiness/{project_id} -- 0 execution budget units"""
         stage    = project_data.get("stage", "idea")
         criteria = self._stage_criteria(stage)
         met      = {k: project_data.get(k, False) for k in criteria}
@@ -913,7 +905,7 @@ class MarketReadinessService:
     async def generate_readiness_certificate(
         self, user_context: UserContext, project_data: Dict, stage: str
     ) -> Dict:
-        """POST /api/v1/readiness/certify -- 1 credit"""
+        """POST /api/v1/readiness/certify -- 1 execution budget unit"""
         resp = await self.brain.process(AIRequest(
             TaskType.SUMMARY, user_context,
             {"project_data": project_data, "stage": stage, "mode": "readiness_certificate"},
@@ -952,7 +944,7 @@ class AdminMonitorService:
     async def run_anomaly_scan(
         self, admin_context: UserContext, signals: List[Dict]
     ) -> Dict:
-        """POST /api/v1/admin/monitor/scan -- 0 credits, Enterprise only"""
+        """POST /api/v1/admin/monitor/scan -- 0 execution budget units, Enterprise only"""
         if admin_context.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
             return {"error": "Admin access required."}
         ctx = AgentContext(user_context=admin_context, trigger_event={"anomaly_signals": signals})
@@ -964,7 +956,7 @@ class AdminMonitorService:
     async def check_stagnation_roster(
         self, admin_context: UserContext, all_projects: List[Dict]
     ) -> Dict:
-        """GET /api/v1/admin/stagnation-roster -- 0 credits, Scheduled daily 07:00"""
+        """GET /api/v1/admin/stagnation-roster -- 0 execution budget units, Scheduled daily 07:00"""
         stagnating = [
             {"project_id":    p.get("id"),
              "project_name":  p.get("title"),
@@ -985,66 +977,7 @@ class AdminMonitorService:
 
 
 # ============================================================================
-# 15. HYBRID BILLING SERVICE
-# ============================================================================
-
-class HybridBillingService:
-    """
-    Manages the hybrid credit + subscription billing system.
-
-    Two tracks run simultaneously:
-      Track A -- Subscription: monthly credits, plan-based feature access
-      Track B -- PAYG: purchased credits that never expire
-
-    Resolution: subscription credits deducted first, PAYG used as overflow.
-    Paywalls trigger at high-momentum moments when plan access is exceeded.
-    """
-
-    def __init__(self) -> None:
-        from billing_system import HybridCreditEngine, PaywallEnforcementService
-        self.credit_engine = HybridCreditEngine()
-        self.paywall       = PaywallEnforcementService()
-
-    def check_operation(
-        self, user_billing_state, operation_id: str, context_vars: Optional[Dict] = None
-    ) -> Dict:
-        """
-        Pre-flight check before any AI operation.
-        Returns: {approved, from_subscription, from_payg, usd_cost, paywall_copy, upgrade_cta}
-        Called by: every API endpoint before triggering an agent.
-        """
-        resolution = self.credit_engine.resolve(user_billing_state, operation_id, context_vars)
-        return {
-            "approved":           resolution.approved,
-            "credit_cost":        resolution.credit_cost,
-            "from_subscription":  resolution.from_subscription,
-            "from_payg":          resolution.from_payg,
-            "usd_cost_this_op":   resolution.usd_cost_this_operation,
-            "credits_after":      resolution.credits_remaining_after,
-            "paywall_triggered":  resolution.paywall_triggered,
-            "paywall_copy":       resolution.paywall_copy,
-            "upgrade_cta":        resolution.upgrade_cta,
-            "upgrade_plan_id":    resolution.upgrade_plan_id,
-        }
-
-    def get_credit_summary(self, user_billing_state) -> Dict:
-        """GET /api/v1/credits/summary -- 0 credits"""
-        spec = user_billing_state.plan_spec
-        alloc = CreditCost.monthly_allocation(SubscriptionTier(user_billing_state.plan_id.split("_")[0]))
-        remaining = (user_billing_state.subscription_credits_remaining +
-                     user_billing_state.payg_credits_balance)
-        return {
-            "plan_id":              user_billing_state.plan_id,
-            "subscription_credits": user_billing_state.subscription_credits_remaining,
-            "payg_credits":         user_billing_state.payg_credits_balance,
-            "total_available":      remaining,
-            "credit_packs":         CreditCost.CREDIT_PACKS,
-            "payg_rate_usd":        spec.payg_credit_rate,
-        }
-
-
-# ============================================================================
-# 16. GSIS SERVICE
+# 15. GSIS SERVICE
 # ============================================================================
 
 class GSISService:
@@ -1062,7 +995,7 @@ class GSISService:
         self.brain = brain
 
     def compute(self, component_scores: Dict) -> Dict:
-        """Compute GSIS from component scores. Zero credits -- deterministic."""
+        """Compute GSIS from component scores. Zero execution budget units -- deterministic."""
         return ScoringEngine.compute_gsis(
             product_progress_score=component_scores.get("pps", 0),
             execution_velocity_index=component_scores.get("evi", 0),
@@ -1078,7 +1011,7 @@ class GSISService:
     async def compute_with_narrative(
         self, user_context: UserContext, component_scores: Dict
     ) -> Dict:
-        """POST /api/v1/gsis/compute -- 1 credit"""
+        """POST /api/v1/gsis/compute -- 1 execution budget unit"""
         ctx = AgentContext(
             user_context=user_context,
             trigger_event={"scores": component_scores},
@@ -1136,7 +1069,7 @@ class IdeaSolutionHubService:
         people_affected_millions: float = 1.0,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/solutions/problems/submit -- 2 credits, Free+
+        POST /api/v1/solutions/problems/submit -- 2 execution budget units, Free+
 
         Submit a real-world problem to the Global Problems Board.
         AI automatically expands scope, builds stakeholder map,
@@ -1169,7 +1102,7 @@ class IdeaSolutionHubService:
     async def analyze_problem(
         self, user_context: UserContext, problem_id: str, problem_data: Dict
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/problems/{id}/analyze -- 2 credits, Builder+"""
+        """POST /api/v1/solutions/problems/{id}/analyze -- 2 execution budget units, Builder+"""
         ctx = AgentContext(user_context=user_context,
                            trigger_event={"problem_id": problem_id, **problem_data})
         result = await self.brain.trigger_agent(AgentType.PROBLEM_ANALYZER, ctx)
@@ -1182,7 +1115,7 @@ class IdeaSolutionHubService:
         region: Optional[str] = None, limit: int = 20,
     ) -> Dict[str, Any]:
         """
-        GET /api/v1/solutions/problems/discover -- 2 credits, Builder+
+        GET /api/v1/solutions/problems/discover -- 2 execution budget units, Builder+
 
         Automated discovery: scans news, NGO reports, government datasets,
         and social signals to surface problems before users submit them.
@@ -1201,7 +1134,7 @@ class IdeaSolutionHubService:
         self, user_context: UserContext, problem_id: str, problem_data: Dict
     ) -> Dict[str, Any]:
         """
-        GET /api/v1/solutions/problems/match/{id} -- 2 credits, Builder+
+        GET /api/v1/solutions/problems/match/{id} -- 2 execution budget units, Builder+
 
         Matches a new problem to existing solutions, startups, and NGOs
         globally. Prevents building from scratch when better alternatives exist.
@@ -1218,7 +1151,7 @@ class IdeaSolutionHubService:
         contributions: List[Dict],
     ) -> Dict[str, Any]:
         """
-        GET /api/v1/solutions/discussions/{id}/summary -- 1 credit, Free+
+        GET /api/v1/solutions/discussions/{id}/summary -- 1 execution budget unit, Free+
 
         AI moderates the discussion: summarises, clusters ideas,
         detects strongest direction, and signals conversion readiness.
@@ -1237,7 +1170,7 @@ class IdeaSolutionHubService:
         description: str, discussion_summary: str = "",
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/solutions/discussions/{id}/convert -- 3 credits, Founder Pro+
+        POST /api/v1/solutions/discussions/{id}/convert -- 3 execution budget units, Founder Pro+
 
         Converts a matured discussion into a Solution Project.
         Simultaneously synthesises the solution, predicts impact,
@@ -1270,7 +1203,7 @@ class IdeaSolutionHubService:
     async def run_feasibility(
         self, user_context: UserContext, solution_id: str, solution_data: Dict
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/projects/{id}/feasibility -- 2 credits, Builder+"""
+        """POST /api/v1/solutions/projects/{id}/feasibility -- 2 execution budget units, Builder+"""
         ctx = AgentContext(user_context=user_context,
                            trigger_event={"solution_id": solution_id, **solution_data})
         result = await self.brain.trigger_agent(AgentType.FEASIBILITY_ESTIMATOR, ctx)
@@ -1279,7 +1212,7 @@ class IdeaSolutionHubService:
     async def predict_impact(
         self, user_context: UserContext, solution_id: str, solution_data: Dict
     ) -> Dict[str, Any]:
-        """GET /api/v1/solutions/projects/{id}/impact -- 1 credit, Free+"""
+        """GET /api/v1/solutions/projects/{id}/impact -- 1 execution budget unit, Free+"""
         from idea_solution_hub import ImpactScoringEngine
         eng = ImpactScoringEngine()
         impact = eng.compute_impact_score(
@@ -1303,7 +1236,7 @@ class IdeaSolutionHubService:
         solution_data: Dict, mode: str, region: str,
         beneficiaries_target: int,
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/deployments/create -- 2 credits, Founder Pro+"""
+        """POST /api/v1/solutions/deployments/create -- 2 execution budget units, Founder Pro+"""
         from idea_solution_hub import DeploymentEngine, DeploymentMode, SolutionProject, SolutionType, FundingType, SolutionStage
         dep_eng = DeploymentEngine()
         sol = SolutionProject(
@@ -1339,7 +1272,7 @@ class IdeaSolutionHubService:
         solution_id: str, field_report: str,
         impact_metrics: Dict, failure_points: List[str],
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/deployments/{id}/feedback -- 1 credit, Free+"""
+        """POST /api/v1/solutions/deployments/{id}/feedback -- 1 execution budget unit, Free+"""
         ctx = AgentContext(user_context=user_context,
                            trigger_event={
                                "type": "field_feedback_submitted",
@@ -1357,7 +1290,7 @@ class IdeaSolutionHubService:
         solution_data: Dict, funder_name: str,
         funding_type: str, amount_usd: float,
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/grants/generate -- 3 credits, Founder Pro+"""
+        """POST /api/v1/solutions/grants/generate -- 3 execution budget units, Founder Pro+"""
         ctx = AgentContext(user_context=user_context,
                            trigger_event={
                                "solution_id": solution_id, "funder_name": funder_name,
@@ -1381,7 +1314,7 @@ class IdeaSolutionHubService:
         active_deployments: int, total_beneficiaries: int,
         countries: List[str], funds_deployed_usd: float,
     ) -> Dict[str, Any]:
-        """GET /api/v1/solutions/impact/global -- 0 credits, Free+"""
+        """GET /api/v1/solutions/impact/global -- 0 execution budget units, Free+"""
         from idea_solution_hub import IdeaSolutionHubService as HubSvc
         svc = HubSvc(self.brain)
         return svc.get_global_impact_dashboard(
@@ -1406,14 +1339,14 @@ class DocumentGenerationService:
       👉 Investor Preparation Engine
 
     8 Document Types:
-      Executive Summary      -- 1–2 pages,  2 credits, Builder+
-      Full Business Plan     -- 10–25 pages, 4 credits, Investor+
-      Pitch Deck             -- 12 slides,   3 credits, Founder Pro+
-      Investor Report        -- 8 pages,     3 credits, Investor+
-      Unicorn Analysis Report -- 7 pages,   2 credits, Builder+
-      Product Roadmap        -- 5 pages,    2 credits, Founder Pro+
-      Financial Projection   -- 5 pages,    2 credits, Founder Pro+
-      Market Research Report -- 8 pages,    3 credits, Founder Pro+
+      Executive Summary      -- 1–2 pages,  2 execution budget units, Builder+
+      Full Business Plan     -- 10–25 pages, 4 execution budget units, Investor+
+      Pitch Deck             -- 12 slides,   3 execution budget units, Founder Pro+
+      Investor Report        -- 8 pages,     3 execution budget units, Investor+
+      Unicorn Analysis Report -- 7 pages,   2 execution budget units, Builder+
+      Product Roadmap        -- 5 pages,    2 execution budget units, Founder Pro+
+      Financial Projection   -- 5 pages,    2 execution budget units, Founder Pro+
+      Market Research Report -- 8 pages,    3 execution budget units, Founder Pro+
 
     3 Styles:   Concise * Standard * Detailed
     3 Audiences: Founder Use * Investors * Accelerators
@@ -1438,7 +1371,7 @@ class DocumentGenerationService:
         analysis_results: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/documents/generate -- 2–4 credits, Builder+
+        POST /api/v1/documents/generate -- 2–4 execution budget units, Builder+
 
         Master document generation endpoint.
 
@@ -1474,7 +1407,7 @@ class DocumentGenerationService:
         analysis_results: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/documents/investor-pack -- 8 credits, Investor+
+        POST /api/v1/documents/investor-pack -- 8 execution budget units, Investor+
 
         Generate the complete investor pack in one call:
           • Executive Summary
@@ -1501,7 +1434,7 @@ class DocumentGenerationService:
         section: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/documents/{id}/edit -- 2 credits, Builder+
+        POST /api/v1/documents/{id}/edit -- 2 execution budget units, Builder+
 
         AI-powered in-document editing.
         User selects a section and gives a natural-language instruction.
@@ -1517,9 +1450,9 @@ class DocumentGenerationService:
 
     def get_available_templates(self) -> List[Dict[str, Any]]:
         """
-        GET /api/v1/documents/templates -- 0 credits, Free+
+        GET /api/v1/documents/templates -- 0 execution budget units, Free+
 
-        Returns all 8 document types with credit costs, page estimates,
+        Returns all 8 document types with execution budget unit costs, page estimates,
         and export format support -- used to render the UI card grid.
         """
         from document_generation import DocumentGenerationService as DocSvc, DocumentType
@@ -1530,7 +1463,7 @@ class DocumentGenerationService:
         self, user_context: UserContext,
         document_id: str, expiry_days: int = 30,
     ) -> Dict[str, Any]:
-        """POST /api/v1/documents/{id}/share -- 0 credits, Free+"""
+        """POST /api/v1/documents/{id}/share -- 0 execution budget units, Free+"""
         from document_generation import DocumentGenerationService as DocSvc
         svc = DocSvc(self.brain)
         return await svc.share_document(user_context, document_id, expiry_days)
@@ -1538,14 +1471,14 @@ class DocumentGenerationService:
     def get_document_type_map(self) -> Dict[str, Dict[str, Any]]:
         """Returns the 8 document types with their properties for the UI."""
         return {
-            "executive_summary":       {"icon": "🧾", "pages": "1–2",   "credits": 2, "min_tier": "builder"},
-            "business_plan":           {"icon": "📊", "pages": "10–25", "credits": 4, "min_tier": "investor"},
-            "pitch_deck":              {"icon": "🎯", "pages": "12",     "credits": 3, "min_tier": "founder_pro"},
-            "investor_report":         {"icon": "📈", "pages": "8",      "credits": 3, "min_tier": "investor"},
-            "unicorn_analysis_report": {"icon": "🧠", "pages": "7",      "credits": 2, "min_tier": "builder"},
-            "product_roadmap":         {"icon": "🛠", "pages": "5",      "credits": 2, "min_tier": "founder_pro"},
-            "financial_projection":    {"icon": "💰", "pages": "5",      "credits": 2, "min_tier": "founder_pro"},
-            "market_research_report":  {"icon": "🧪", "pages": "8",      "credits": 3, "min_tier": "founder_pro"},
+            "executive_summary":       {"icon": "🧾", "pages": "1–2",   "execution budget units": 2, "min_tier": "builder"},
+            "business_plan":           {"icon": "📊", "pages": "10–25", "execution budget units": 4, "min_tier": "investor"},
+            "pitch_deck":              {"icon": "🎯", "pages": "12",     "execution budget units": 3, "min_tier": "founder_pro"},
+            "investor_report":         {"icon": "📈", "pages": "8",      "execution budget units": 3, "min_tier": "investor"},
+            "unicorn_analysis_report": {"icon": "🧠", "pages": "7",      "execution budget units": 2, "min_tier": "builder"},
+            "product_roadmap":         {"icon": "🛠", "pages": "5",      "execution budget units": 2, "min_tier": "founder_pro"},
+            "financial_projection":    {"icon": "💰", "pages": "5",      "execution budget units": 2, "min_tier": "founder_pro"},
+            "market_research_report":  {"icon": "🧪", "pages": "8",      "execution budget units": 3, "min_tier": "founder_pro"},
         }
 
 
@@ -1583,7 +1516,7 @@ class IPProtectionService:
        RLS policies in database_schema.RLS_POLICIES_SQL enforce that:
          - Each user can only SELECT their own projects, ai_outputs,
            idea_embeddings, generated_documents, solution_projects,
-           grant_applications, credit_ledger, and paywall_hits.
+           grant_applications, execution_usage_ledger, and execution_denials.
          - The app connects as 'techit_app' role (non-superuser) so RLS
            always applies.
          - Admin/scheduled jobs use 'techit_system' role (BYPASSRLS)
@@ -1701,7 +1634,7 @@ class IPProtectionService:
 
     def get_protection_status(self) -> Dict[str, Any]:
         """
-        GET /api/v1/ip-protection/status -- 0 credits, Founder Pro+
+        GET /api/v1/ip-protection/status -- 0 execution budget units, Founder Pro+
 
         Returns the complete IP protection status for a user's projects.
         Used in the admin panel and founder dashboard.
@@ -1728,7 +1661,7 @@ class IPProtectionService:
                     "engine":      "PostgreSQL RLS",
                     "policies":    "project_owner, ai_output_owner, idea_embedding_owner, "
                                    "document_owner, solution_owner, grant_owner, "
-                                   "credit_ledger_owner, paywall_owner",
+                                   "execution_usage_ledger_owner, execution_denial_owner",
                     "app_role":    "techit_app (non-superuser -- RLS always applies)",
                     "bypass_role": "techit_system (BYPASSRLS -- IP leak detection only)",
                     "applied_via": "database_schema.apply_rls_policies(engine)",
@@ -1869,7 +1802,7 @@ class TrustVerificationService:
         user_context: UserContext,
         db: Any = None,
     ) -> Dict[str, Any]:
-        """GET /api/v1/trust/profile -- 0 credits, Free+."""
+        """GET /api/v1/trust/profile -- 0 execution budget units, Free+."""
         row = self._load_profile_row(user_context, db)
         profile = self._profile_from_row(user_context, row)
         computed = TrustEngineComputer.compute(profile)
@@ -1894,7 +1827,7 @@ class TrustVerificationService:
         user_context: UserContext,
         db: Any = None,
     ) -> Dict[str, Any]:
-        """GET /api/v1/trust/badges -- 0 credits, Free+."""
+        """GET /api/v1/trust/badges -- 0 execution budget units, Free+."""
         row = self._load_profile_row(user_context, db)
         profile = self._profile_from_row(user_context, row)
         badges = TrustEngineComputer.compute_badges(profile)
@@ -1912,7 +1845,7 @@ class TrustVerificationService:
         db: Any = None,
         limit: int = 50,
     ) -> Dict[str, Any]:
-        """GET /api/v1/trust/history -- 0 credits, Free+."""
+        """GET /api/v1/trust/history -- 0 execution budget units, Free+."""
         rows = self._load_history_rows(user_context, db, limit)
         return {
             "user_id": user_context.user_id,
@@ -1928,7 +1861,7 @@ class TrustVerificationService:
         body: Optional[Dict[str, Any]] = None,
         db: Any = None,
     ) -> Dict[str, Any]:
-        """POST /api/v1/trust/share-profile/preview -- 0 credits, Free+."""
+        """POST /api/v1/trust/share-profile/preview -- 0 execution budget units, Free+."""
         body = body or {}
         profile = body.get("profile") if isinstance(body.get("profile"), dict) else self.get_profile(user_context, db)
         badges_payload = body.get("badges")
@@ -1946,7 +1879,7 @@ class TrustVerificationService:
         return shared
 
     def get_integration_manifests(self, provider: Optional[str] = None) -> Dict[str, Any]:
-        """GET /api/v1/trust/integrations -- 0 credits, Free+."""
+        """GET /api/v1/trust/integrations -- 0 execution budget units, Free+."""
         registry = TrustIntegrationAdapterRegistry.default()
         if provider:
             manifests = [registry.manifest(provider)]
@@ -1970,7 +1903,7 @@ class TrustVerificationService:
         db: Any = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/trust/adapters/{provider}/verify -- 1 credit, Free+.
+        POST /api/v1/trust/adapters/{provider}/verify -- 1 execution budget unit, Free+.
 
         Future provider clients should feed raw responses into their private
         adapter process, then submit only this normalized metadata contract.
@@ -1997,7 +1930,7 @@ class TrustVerificationService:
         user_context: UserContext,
         body: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """POST /api/v1/trust/refresh-plan -- 0 credits, Free+."""
+        """POST /api/v1/trust/refresh-plan -- 0 execution budget units, Free+."""
         body = body or {}
         connections = body.get("connections") or []
         if not isinstance(connections, list):
@@ -2014,7 +1947,7 @@ class TrustVerificationService:
         db: Any = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/trust/continuous-verification/run -- 0 credits, Free+.
+        POST /api/v1/trust/continuous-verification/run -- 0 execution budget units, Free+.
 
         This executes no live provider calls. It consumes existing connection
         metadata and optional adapter payloads, then prepares notification
@@ -2057,7 +1990,7 @@ class TrustVerificationService:
         action: str = "verify",
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/trust/verify/{source} -- 1 credit, Free+.
+        POST /api/v1/trust/verify/{source} -- 1 execution budget unit, Free+.
 
         The request body is treated as adapter metadata, not raw provider data.
         Unknown and sensitive keys are dropped before hashing/persistence.
@@ -2105,7 +2038,7 @@ class TrustVerificationService:
         body: Optional[Dict[str, Any]] = None,
         db: Any = None,
     ) -> Dict[str, Any]:
-        """POST /api/v1/trust/disconnect/{source} -- 0 credits, Free+."""
+        """POST /api/v1/trust/disconnect/{source} -- 0 execution budget units, Free+."""
         body = {**(body or {}), "verified": False, "disconnected": True}
         result = self.verify_source(user_context, source, body, db, action="disconnect")
         result["next_action"] = "Reconnect the integration or leave it disconnected."
@@ -2118,7 +2051,7 @@ class TrustVerificationService:
         body: Optional[Dict[str, Any]] = None,
         db: Any = None,
     ) -> Dict[str, Any]:
-        """POST /api/v1/trust/refresh/{source} -- 1 credit, Free+."""
+        """POST /api/v1/trust/refresh/{source} -- 1 execution budget unit, Free+."""
         body = {**(body or {}), "manual_refresh": True}
         return self.verify_source(user_context, source, body, db, action="refresh")
 
@@ -2128,7 +2061,7 @@ class TrustVerificationService:
         body: Dict[str, Any],
         db: Any = None,
     ) -> Dict[str, Any]:
-        """POST /api/v1/trust/milestone -- 1 credit, Free+."""
+        """POST /api/v1/trust/milestone -- 1 execution budget unit, Free+."""
         milestone_body = {
             **body,
             "milestone": body.get("milestone") or body.get("title"),
@@ -2152,7 +2085,7 @@ class TrustVerificationService:
         body: Dict[str, Any],
         db: Any = None,
     ) -> Dict[str, Any]:
-        """POST /api/v1/trust/milestone/review -- 1 credit, admin workflow contract."""
+        """POST /api/v1/trust/milestone/review -- 1 execution budget unit, admin workflow contract."""
         review = TrustMilestoneReviewContract().review(body)
         verification_body = {
             **review["metadata"],
@@ -2180,7 +2113,7 @@ class TrustVerificationService:
         body: Dict[str, Any],
         db: Any = None,
     ) -> Dict[str, Any]:
-        """POST /api/v1/trust/team/invite -- 0 credits, Free+."""
+        """POST /api/v1/trust/team/invite -- 0 execution budget units, Free+."""
         invitation = TrustTeamContract().invite(body)
         return {
             "invitation": invitation,
@@ -2205,7 +2138,7 @@ class TrustVerificationService:
         body: Dict[str, Any],
         db: Any = None,
     ) -> Dict[str, Any]:
-        """POST /api/v1/trust/team/verify -- 1 credit, Free+."""
+        """POST /api/v1/trust/team/verify -- 1 execution budget unit, Free+."""
         team_result = TrustTeamContract().verify(body)
         verification_body = {
             **team_result["verification_metadata"],
@@ -2232,7 +2165,7 @@ class TrustVerificationService:
         user_context: UserContext,
         body: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """POST /api/v1/trust/notifications/preview -- 0 credits, Free+."""
+        """POST /api/v1/trust/notifications/preview -- 0 execution budget units, Free+."""
         body = body or {}
         events = body.get("events") if isinstance(body.get("events"), list) else []
         preview = TrustNotificationPreviewService().preview(events)
@@ -2704,13 +2637,13 @@ class AppScaffoldService:
 
     API Endpoints served
     ─────────────────────
-      POST /api/v1/scaffold/generate          5 credits  Founder Pro+
-      GET  /api/v1/scaffold/{project_id}      0 credits  Free+
-      POST /api/v1/scaffold/{id}/deploy       3 credits  Founder Pro+
-      GET  /api/v1/scaffold/{id}/status       0 credits  Free+
-      GET  /api/v1/scaffold/{id}/live-url     0 credits  Free+
-      POST /api/v1/scaffold/{id}/download     0 credits  Free+
-      GET  /api/v1/scaffold/stacks            0 credits  Free+
+      POST /api/v1/scaffold/generate          5 execution budget units  Founder Pro+
+      GET  /api/v1/scaffold/{project_id}      0 execution budget units  Free+
+      POST /api/v1/scaffold/{id}/deploy       3 execution budget units  Founder Pro+
+      GET  /api/v1/scaffold/{id}/status       0 execution budget units  Free+
+      GET  /api/v1/scaffold/{id}/live-url     0 execution budget units  Free+
+      POST /api/v1/scaffold/{id}/download     0 execution budget units  Free+
+      GET  /api/v1/scaffold/stacks            0 execution budget units  Free+
     """
 
     STACK_OPTIONS = {
@@ -2718,31 +2651,31 @@ class AppScaffoldService:
             "label":       "Next.js + Supabase (Recommended)",
             "description": "Full-stack web app. Best for marketplaces, SaaS, dashboards.",
             "deploy_time": "~2 minutes",
-            "credits":     5,
+            "execution budget units":     5,
         },
         "nextjs_prisma":    {
             "label":       "Next.js + PostgreSQL + Prisma",
             "description": "Full-stack with Prisma ORM. Best for complex relational data.",
             "deploy_time": "~3 minutes",
-            "credits":     5,
+            "execution budget units":     5,
         },
         "react_firebase":   {
             "label":       "React + Firebase",
             "description": "Real-time apps. Best for chat, collaboration, live data.",
             "deploy_time": "~2 minutes",
-            "credits":     5,
+            "execution budget units":     5,
         },
         "expo_supabase":    {
             "label":       "Expo (React Native) + Supabase",
             "description": "Mobile app for iOS + Android. Best for consumer mobile.",
             "deploy_time": "~5 minutes (TestFlight/Play Store)",
-            "credits":     5,
+            "execution budget units":     5,
         },
         "fastapi_supabase": {
             "label":       "FastAPI + Supabase (API only)",
             "description": "Backend API. Best for B2B integrations, developer tools.",
             "deploy_time": "~2 minutes",
-            "credits":     5,
+            "execution budget units":     5,
         },
     }
 
@@ -2758,7 +2691,7 @@ class AppScaffoldService:
         arch_data:     Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/scaffold/generate -- 5 credits, Founder Pro+
+        POST /api/v1/scaffold/generate -- 5 execution budget units, Founder Pro+
 
         Generate a complete application scaffold from the venture profile
         already computed by the TechIT pipeline.
@@ -2801,7 +2734,7 @@ class AppScaffoldService:
         deploy_target: str = "vercel",
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/scaffold/{id}/deploy -- 3 credits, Founder Pro+
+        POST /api/v1/scaffold/{id}/deploy -- 3 execution budget units, Founder Pro+
 
         Trigger deployment of a generated scaffold to Vercel.
 
@@ -2830,7 +2763,7 @@ class AppScaffoldService:
 
     def get_deploy_status(self, scaffold_id: str) -> Dict[str, Any]:
         """
-        GET /api/v1/scaffold/{id}/status -- 0 credits, Free+
+        GET /api/v1/scaffold/{id}/status -- 0 execution budget units, Free+
 
         Poll deployment status. Frontend calls this every 5 seconds until
         deploy_status = 'deployed'.
@@ -2845,7 +2778,7 @@ class AppScaffoldService:
 
     def get_live_url(self, scaffold_id: str) -> Dict[str, Any]:
         """
-        GET /api/v1/scaffold/{id}/live-url -- 0 credits, Free+
+        GET /api/v1/scaffold/{id}/live-url -- 0 execution budget units, Free+
 
         Returns the live URL for a deployed scaffold.
         The moment the user sees this is the 'Wait... I just built a product
@@ -2861,7 +2794,7 @@ class AppScaffoldService:
 
     def get_available_stacks(self) -> List[Dict[str, Any]]:
         """
-        GET /api/v1/scaffold/stacks -- 0 credits, Free+
+        GET /api/v1/scaffold/stacks -- 0 execution budget units, Free+
 
         Returns all supported stacks for the scaffold UI picker.
         """
@@ -2924,140 +2857,135 @@ TechIT API -- Full Endpoint Reference
 =====================================
 
 INCUBATION HUB
-  POST /api/v1/incubation/pipeline/run              12 credits  Investor+
-  POST /api/v1/incubation/idea/diagnose              1 credit   Free+
-  POST /api/v1/incubation/unicorn/analyze            2 credits  Builder+
-  POST /api/v1/incubation/market/analyze             2 credits  Builder+
-  POST /api/v1/incubation/market/simulate-survey     3 credits  Investor+
-  POST /api/v1/incubation/strategy/generate          3 credits  Founder Pro+
-  POST /api/v1/incubation/finance/strategy           2 credits  Founder Pro+
-  POST /api/v1/incubation/business-plan/generate     6 credits  Investor+
-  POST /api/v1/incubation/tech-stack/design          2 credits  Founder Pro+
-  POST /api/v1/incubation/roadmap/generate           2 credits  Founder Pro+
-  POST /api/v1/incubation/pivot/analyze              2 credits  Builder+
-  POST /api/v1/incubation/investor-readiness/generate 2 credits Investor+
+  POST /api/v1/incubation/pipeline/run              12 execution budget units  Investor+
+  POST /api/v1/incubation/idea/diagnose              1 execution budget unit   Free+
+  POST /api/v1/incubation/unicorn/analyze            2 execution budget units  Builder+
+  POST /api/v1/incubation/market/analyze             2 execution budget units  Builder+
+  POST /api/v1/incubation/market/simulate-survey     3 execution budget units  Investor+
+  POST /api/v1/incubation/strategy/generate          3 execution budget units  Founder Pro+
+  POST /api/v1/incubation/finance/strategy           2 execution budget units  Founder Pro+
+  POST /api/v1/incubation/business-plan/generate     6 execution budget units  Investor+
+  POST /api/v1/incubation/tech-stack/design          2 execution budget units  Founder Pro+
+  POST /api/v1/incubation/roadmap/generate           2 execution budget units  Founder Pro+
+  POST /api/v1/incubation/pivot/analyze              2 execution budget units  Builder+
+  POST /api/v1/incubation/investor-readiness/generate 2 execution budget units Investor+
 
 DASHBOARD
-  GET  /api/v1/dashboard/intelligence                0 credits  Free+
-  GET  /api/v1/dashboard/gsis/{project_id}           1 credit   Free+
-  GET  /api/v1/dashboard/infographic/{project_id}    0 credits  Free+
+  GET  /api/v1/dashboard/intelligence                0 execution budget units  Free+
+  GET  /api/v1/dashboard/gsis/{project_id}           1 execution budget unit   Free+
+  GET  /api/v1/dashboard/infographic/{project_id}    0 execution budget units  Free+
 
 TOUR GUIDE
-  POST /api/v1/tour-guide/daily-check-in             0 credits  Free+
-  GET  /api/v1/tour-guide/audio-briefing             0 credits  Free+
+  POST /api/v1/tour-guide/daily-check-in             0 execution budget units  Free+
+  GET  /api/v1/tour-guide/audio-briefing             0 execution budget units  Free+
 
 TRAINING (ADAPTIVE -- NOT FIXED WEEKS)
-  POST /api/v1/training/curriculum/generate          1 credit   Free+
-  POST /api/v1/training/curriculum/adapt             0 credits  Free+
-  POST /api/v1/training/progress/update              0 credits  Free+
-  POST /api/v1/training/tutor/ask                    0 credits  Free+
-  GET  /api/v1/training/time-to-mvp/{user_id}        0 credits  Free+
-  GET  /api/v1/training/post-mvp/tracks              0 credits  Free+
+  POST /api/v1/training/curriculum/generate          1 execution budget unit   Free+
+  POST /api/v1/training/curriculum/adapt             0 execution budget units  Free+
+  POST /api/v1/training/progress/update              0 execution budget units  Free+
+  POST /api/v1/training/tutor/ask                    0 execution budget units  Free+
+  GET  /api/v1/training/time-to-mvp/{user_id}        0 execution budget units  Free+
+  GET  /api/v1/training/post-mvp/tracks              0 execution budget units  Free+
 
 MATCHING
-  POST /api/v1/matching/find-collaborators           1 credit   Builder+
-  POST /api/v1/matching/find-investors               2 credits  Investor+
-  GET  /api/v1/matching/compatibility                0 credits  Free+
+  POST /api/v1/matching/find-collaborators           1 execution budget unit   Builder+
+  POST /api/v1/matching/find-investors               2 execution budget units  Investor+
+  GET  /api/v1/matching/compatibility                0 execution budget units  Free+
 
 RISK
-  POST /api/v1/risk/evaluate                         2 credits  Builder+
+  POST /api/v1/risk/evaluate                         2 execution budget units  Builder+
 
 INVESTOR SECTION
-  GET  /api/v1/investor/evi/{project_id}             2 credits  Investor+
-  GET  /api/v1/investor/readiness/{project_id}       0+2 credits Investor+
-  POST /api/v1/investor/signals/{project_id}         2 credits  Investor+
-  GET  /api/v1/investor/deal-flow                    0 credits  Investor+
-  POST /api/v1/investor/evaluate/{project_id}        2 credits  Investor+
-  POST /api/v1/investor/watchlist/add                0 credits  Investor+
+  GET  /api/v1/investor/evi/{project_id}             2 execution budget units  Investor+
+  GET  /api/v1/investor/readiness/{project_id}       0+2 execution budget units Investor+
+  POST /api/v1/investor/signals/{project_id}         2 execution budget units  Investor+
+  GET  /api/v1/investor/deal-flow                    0 execution budget units  Investor+
+  POST /api/v1/investor/evaluate/{project_id}        2 execution budget units  Investor+
+  POST /api/v1/investor/watchlist/add                0 execution budget units  Investor+
 
 FEED
-  GET  /api/v1/feed/curated                          0 credits  Free+
+  GET  /api/v1/feed/curated                          0 execution budget units  Free+
 
 PROFILE
-  POST /api/v1/profile/analyze                       1 credit   Free+
-  GET  /api/v1/profile/score/{user_id}               0 credits  Free+
+  POST /api/v1/profile/analyze                       1 execution budget unit   Free+
+  GET  /api/v1/profile/score/{user_id}               0 execution budget units  Free+
 
 ORG SPHERE
-  POST /api/v1/org/analyze                           1 credit   Founder Pro+
-  GET  /api/v1/org/cohort/{cohort_id}/analytics      0 credits  Free+
+  POST /api/v1/org/analyze                           1 execution budget unit   Founder Pro+
+  GET  /api/v1/org/cohort/{cohort_id}/analytics      0 execution budget units  Free+
 
 MARKET READINESS
-  GET  /api/v1/readiness/{project_id}                0 credits  Free+
-  POST /api/v1/readiness/certify                     1 credit   Free+
+  GET  /api/v1/readiness/{project_id}                0 execution budget units  Free+
+  POST /api/v1/readiness/certify                     1 execution budget unit   Free+
 
 ADMIN
-  POST /api/v1/admin/monitor/scan                    0 credits  Enterprise
-  GET  /api/v1/admin/stagnation-roster               0 credits  Enterprise
+  POST /api/v1/admin/monitor/scan                    0 execution budget units  Enterprise
+  GET  /api/v1/admin/stagnation-roster               0 execution budget units  Enterprise
 
 GSIS
-  POST /api/v1/gsis/compute                          1 credit   Free+
-
-BILLING
-  GET  /api/v1/credits/summary                       0 credits  Free+
-  POST /api/v1/credits/purchase                      0 credits  (Stripe)
-  GET  /api/v1/billing/paywall/{operation_id}        0 credits  Free+
+  POST /api/v1/gsis/compute                          1 execution budget unit   Free+
 
 IP PROTECTION
-  GET  /api/v1/ip-protection/status                  0 credits  Founder Pro+
-  POST /api/v1/ip-protection/check-fingerprint       0 credits  Founder Pro+
-  POST /api/v1/ip-protection/embed-idea              1 credit   Founder Pro+
+  GET  /api/v1/ip-protection/status                  0 execution budget units  Founder Pro+
+  POST /api/v1/ip-protection/check-fingerprint       0 execution budget units  Founder Pro+
+  POST /api/v1/ip-protection/embed-idea              1 execution budget unit   Founder Pro+
 
 PROMPT -> LIVE APP  (App Scaffold Engine)
-  POST /api/v1/scaffold/generate                     5 credits  Founder Pro+
-  GET  /api/v1/scaffold/{project_id}                 0 credits  Free+
-  POST /api/v1/scaffold/{id}/deploy                  3 credits  Founder Pro+
-  GET  /api/v1/scaffold/{id}/status                  0 credits  Free+
-  GET  /api/v1/scaffold/{id}/live-url                0 credits  Free+
-  POST /api/v1/scaffold/{id}/download                0 credits  Free+
-  GET  /api/v1/scaffold/stacks                       0 credits  Free+
+  POST /api/v1/scaffold/generate                     5 execution budget units  Founder Pro+
+  GET  /api/v1/scaffold/{project_id}                 0 execution budget units  Free+
+  POST /api/v1/scaffold/{id}/deploy                  3 execution budget units  Founder Pro+
+  GET  /api/v1/scaffold/{id}/status                  0 execution budget units  Free+
+  GET  /api/v1/scaffold/{id}/live-url                0 execution budget units  Free+
+  POST /api/v1/scaffold/{id}/download                0 execution budget units  Free+
+  GET  /api/v1/scaffold/stacks                       0 execution budget units  Free+
 
 IDEA & SOLUTION HUB -- Global Problems Board
-  POST /api/v1/solutions/problems/submit             2 credits  Free+
-  GET  /api/v1/solutions/problems/board              0 credits  Free+
-  GET  /api/v1/solutions/problems/{id}               0 credits  Free+
-  POST /api/v1/solutions/problems/{id}/analyze       2 credits  Builder+
-  GET  /api/v1/solutions/problems/discover           2 credits  Builder+
-  GET  /api/v1/solutions/problems/match/{id}         2 credits  Builder+
+  POST /api/v1/solutions/problems/submit             2 execution budget units  Free+
+  GET  /api/v1/solutions/problems/board              0 execution budget units  Free+
+  GET  /api/v1/solutions/problems/{id}               0 execution budget units  Free+
+  POST /api/v1/solutions/problems/{id}/analyze       2 execution budget units  Builder+
+  GET  /api/v1/solutions/problems/discover           2 execution budget units  Builder+
+  GET  /api/v1/solutions/problems/match/{id}         2 execution budget units  Builder+
 
 IDEA & SOLUTION HUB -- Discussions
-  POST /api/v1/solutions/discussions/{id}/contribute 1 credit   Free+
-  GET  /api/v1/solutions/discussions/{id}/summary    1 credit   Free+
-  GET  /api/v1/solutions/discussions/{id}/clusters   1 credit   Builder+
-  POST /api/v1/solutions/discussions/{id}/convert    3 credits  Founder Pro+
+  POST /api/v1/solutions/discussions/{id}/contribute 1 execution budget unit   Free+
+  GET  /api/v1/solutions/discussions/{id}/summary    1 execution budget unit   Free+
+  GET  /api/v1/solutions/discussions/{id}/clusters   1 execution budget unit   Builder+
+  POST /api/v1/solutions/discussions/{id}/convert    3 execution budget units  Founder Pro+
 
 IDEA & SOLUTION HUB -- Solution Projects
-  POST /api/v1/solutions/projects/create             3 credits  Founder Pro+
-  GET  /api/v1/solutions/projects/{id}               0 credits  Free+
-  POST /api/v1/solutions/projects/{id}/feasibility   2 credits  Builder+
-  GET  /api/v1/solutions/projects/{id}/impact        1 credit   Free+
+  POST /api/v1/solutions/projects/create             3 execution budget units  Founder Pro+
+  GET  /api/v1/solutions/projects/{id}               0 execution budget units  Free+
+  POST /api/v1/solutions/projects/{id}/feasibility   2 execution budget units  Builder+
+  GET  /api/v1/solutions/projects/{id}/impact        1 execution budget unit   Free+
 
 IDEA & SOLUTION HUB -- Deployments
-  POST /api/v1/solutions/deployments/create          2 credits  Founder Pro+
-  GET  /api/v1/solutions/deployments/{id}            0 credits  Free+
-  POST /api/v1/solutions/deployments/{id}/advance    0 credits  Free+
-  POST /api/v1/solutions/deployments/{id}/feedback   1 credit   Free+
-  GET  /api/v1/solutions/deployments/{id}/readiness  0 credits  Free+
+  POST /api/v1/solutions/deployments/create          2 execution budget units  Founder Pro+
+  GET  /api/v1/solutions/deployments/{id}            0 execution budget units  Free+
+  POST /api/v1/solutions/deployments/{id}/advance    0 execution budget units  Free+
+  POST /api/v1/solutions/deployments/{id}/feedback   1 execution budget unit   Free+
+  GET  /api/v1/solutions/deployments/{id}/readiness  0 execution budget units  Free+
 
 IDEA & SOLUTION HUB -- Funding & Grants
-  POST /api/v1/solutions/grants/generate             3 credits  Founder Pro+
-  GET  /api/v1/solutions/grants/{solution_id}        0 credits  Free+
-  GET  /api/v1/solutions/funding/match/{id}          2 credits  Builder+
+  POST /api/v1/solutions/grants/generate             3 execution budget units  Founder Pro+
+  GET  /api/v1/solutions/grants/{solution_id}        0 execution budget units  Free+
+  GET  /api/v1/solutions/funding/match/{id}          2 execution budget units  Builder+
 
 IDEA & SOLUTION HUB -- Impact Dashboard
-  GET  /api/v1/solutions/impact/global               0 credits  Free+
-  GET  /api/v1/solutions/impact/{solution_id}        0 credits  Free+
+  GET  /api/v1/solutions/impact/global               0 execution budget units  Free+
+  GET  /api/v1/solutions/impact/{solution_id}        0 execution budget units  Free+
 
 DOCUMENT GENERATION ENGINE
-  POST /api/v1/documents/generate                    2-4 credits  Builder+
-  GET  /api/v1/documents/{document_id}               0 credits    Free+
-  GET  /api/v1/documents/project/{project_id}        0 credits    Free+
-  POST /api/v1/documents/{document_id}/export        0 credits    Free+
-  GET  /api/v1/documents/{document_id}/preview       0 credits    Free+
-  POST /api/v1/documents/{document_id}/edit          2 credits    Builder+
-  DELETE /api/v1/documents/{document_id}             0 credits    Free+
-  GET  /api/v1/documents/templates                   0 credits    Free+
-  POST /api/v1/documents/investor-pack               8 credits    Investor+
-  POST /api/v1/documents/{document_id}/share         0 credits    Free+
+  POST /api/v1/documents/generate                    2-4 execution budget units  Builder+
+  GET  /api/v1/documents/{document_id}               0 execution budget units    Free+
+  GET  /api/v1/documents/project/{project_id}        0 execution budget units    Free+
+  POST /api/v1/documents/{document_id}/export        0 execution budget units    Free+
+  GET  /api/v1/documents/{document_id}/preview       0 execution budget units    Free+
+  POST /api/v1/documents/{document_id}/edit          2 execution budget units    Builder+
+  DELETE /api/v1/documents/{document_id}             0 execution budget units    Free+
+  GET  /api/v1/documents/templates                   0 execution budget units    Free+
+  POST /api/v1/documents/investor-pack               8 execution budget units    Investor+
+  POST /api/v1/documents/{document_id}/share         0 execution budget units    Free+
 """
 
 
@@ -3076,7 +3004,7 @@ adaptive_curriculum_weekly     0 2 * * 1           Curriculum for new users (Mon
 wcrs_gsis_refresh              */30 * * * *        WCRS + GSIS refresh for all active projects
 gsis_refresh                   */30 * * * *        GSIS score refresh for active projects
 stagnation_roster              0 7 * * *           Flag stagnating projects + re-engagement
-monthly_credit_reset           0 0 1 * *           Reset subscription credit allocations
+monthly_credit_reset           0 0 1 * *           Reset subscription execution budget unit allocations
 admin_anomaly_scan             */15 * * * *        Abuse/anomaly monitoring
 investor_alert_checker         */5 * * * *         Watchlist threshold alerts
 feed_relevance_refresh         */30 * * * *        Update feed relevance scores
@@ -3111,14 +3039,14 @@ class EquityService:
 
     # ── public API ────────────────────────────────────────────────────────
     async def get_collaborator_equity(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/collaborator/equity -- 0 credits, Free+"""
+        """GET /api/v1/collaborator/equity -- 0 execution budget units, Free+"""
         return self.repo.collaborator_equity(user_context.user_id)
 
     async def record_dilution_event(
         self, user_context: UserContext, event: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/collaborator/equity/dilution -- 0 credits.
+        POST /api/v1/collaborator/equity/dilution -- 0 execution budget units.
         Honors dilution protection: already-vested equity is shielded unless the
         collaborator consented. Returns the protected/effective dilution.
         """
@@ -3185,7 +3113,7 @@ class EquityService:
 class PayoutService:
     """
     Collaborator cash earnings + payout ledger + withdrawals. Distinct from the
-    billing credit engine (money coming in). Backs the Earnings dashboard.
+    platform revenue collection systems. Backs the collaborator Earnings dashboard.
 
     Response keys camelCase to match frontend CashEarning / Payout / cashTotals.
     Production: query `collaborator_earnings` and `payouts` (database_schema.py).
@@ -3196,14 +3124,14 @@ class PayoutService:
         self.repo = LiveDomainRepository()
 
     async def get_collaborator_earnings(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/collaborator/earnings -- 0 credits, Free+"""
+        """GET /api/v1/collaborator/earnings -- 0 execution budget units, Free+"""
         return self.repo.collaborator_earnings(user_context.user_id)
 
     async def request_withdrawal(
         self, user_context: UserContext, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/collaborator/earnings/withdraw -- 0 credits.
+        POST /api/v1/collaborator/earnings/withdraw -- 0 execution budget units.
         Body: { amount, destination? }. Creates a 'processing' payout.
         Production: INSERT payouts; debit pending balance atomically.
         """
@@ -3248,20 +3176,20 @@ class CapitalPoolService:
         self.repo = LiveDomainRepository()
 
     async def get_capital_pools(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/investor/capital-pools -- 0 credits, Investor+"""
+        """GET /api/v1/investor/capital-pools -- 0 execution budget units, Investor+"""
         return {"pools": self.repo.capital_pools(user_context.user_id)}
 
     async def create_pool(
         self, user_context: UserContext, body: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """POST /api/v1/investor/capital-pools -- 0 credits. Body: pool definition."""
+        """POST /api/v1/investor/capital-pools -- 0 execution budget units. Body: pool definition."""
         return self.repo.create_capital_pool(user_context.user_id, body)
 
     async def release_on_milestone(
         self, user_context: UserContext, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/investor/capital-pools/{pool_id}/release -- 0 credits.
+        POST /api/v1/investor/capital-pools/{pool_id}/release -- 0 execution budget units.
         Release escrowed capital for a startup that hit a milestone.
         Body: { projectId, milestone, amount }
         """
@@ -3294,14 +3222,14 @@ class DealRoomService:
         self.repo = LiveDomainRepository()
 
     async def get_deal_rooms(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/investor/deal-rooms -- 0 credits, Investor+"""
+        """GET /api/v1/investor/deal-rooms -- 0 execution budget units, Investor+"""
         return self.repo.deal_rooms(user_context.user_id)
 
     async def get_deal_room(
         self, user_context: UserContext, project_id: str, startup: Dict[str, Any] | None = None
     ) -> Dict[str, Any]:
         """
-        GET /api/v1/investor/deal-rooms/{project_id} -- 0 credits, Investor+
+        GET /api/v1/investor/deal-rooms/{project_id} -- 0 execution budget units, Investor+
         Returns term-sheet defaults, valuation (ARR×8), milestone tranches,
         documents, and the negotiation stepper.
         """
@@ -3334,14 +3262,14 @@ class DataRoomService:
         self.repo = LiveDomainRepository()
 
     async def get_data_rooms(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/investor/data-rooms -- 0 credits, Investor+"""
+        """GET /api/v1/investor/data-rooms -- 0 execution budget units, Investor+"""
         return self.repo.data_rooms(user_context.user_id)
 
     async def grant_access(
         self, user_context: UserContext, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/investor/data-rooms/{project_id}/access -- 0 credits.
+        POST /api/v1/investor/data-rooms/{project_id}/access -- 0 execution budget units.
         Share a data room with an investor. Body: { investorId, canDownload }
         Production: upsert data_room_access.
         """
@@ -3375,7 +3303,7 @@ class InvestorReputationService:
         self.repo = LiveDomainRepository()
 
     async def get_reputation(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/investor/reputation -- 0 credits, Investor+"""
+        """GET /api/v1/investor/reputation -- 0 execution budget units, Investor+"""
         return self.repo.investor_reputation(user_context.user_id)
 
     def _metrics(self, user_context: UserContext) -> List[Dict[str, Any]]:
@@ -3403,7 +3331,7 @@ class GeoSignalService:
         self.repo = LiveDomainRepository()
 
     async def get_heatmap(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/investor/heatmap -- 0 credits, Investor+"""
+        """GET /api/v1/investor/heatmap -- 0 execution budget units, Investor+"""
         return self.repo.heatmap()
 
 
@@ -3425,14 +3353,14 @@ class ProjectService:
         self.repo = LiveDomainRepository()
 
     async def list_founder_projects(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/founder/projects -- 0 credits, Free+"""
+        """GET /api/v1/founder/projects -- 0 execution budget units, Free+"""
         return {"projects": self.repo.list_founder_projects(user_context.user_id)}
 
     async def create_project(
         self, user_context: UserContext, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/founder/projects -- 0 credits.
+        POST /api/v1/founder/projects -- 0 execution budget units.
         Body: { title, tagline?, industry?, stage?, hackathonId?, teamId? }.
         Production: INSERT projects (+ project_origins row when hackathonId+teamId
         are present, so the venture knows it was promoted from a hackathon team).
@@ -3461,14 +3389,14 @@ class WorkspaceService:
         self.repo = LiveDomainRepository()
 
     async def list_workspaces(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/workspaces -- 0 credits, Free+"""
+        """GET /api/v1/workspaces -- 0 execution budget units, Free+"""
         return {"workspaces": self.repo.list_workspaces(user_context.user_id)}
 
     async def provision_workspace(
         self, user_context: UserContext, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/workspaces/provision -- 0 credits.
+        POST /api/v1/workspaces/provision -- 0 execution budget units.
         Body: { projectId, name? }. Creates (or returns existing) a workspace
         bound to the analyzed project, seeded from its latest analysis.
         """
@@ -3478,7 +3406,7 @@ class WorkspaceService:
         self, user_context: UserContext, workspace_id: str, project_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        GET /api/v1/workspaces/{workspace_id}/context -- 0 credits.
+        GET /api/v1/workspaces/{workspace_id}/context -- 0 execution budget units.
         Loads the bound project's latest analysis/blueprint so the workspace AI
         is scoped to the specific analyzed venture (not a context-free blob).
         """
@@ -3512,16 +3440,16 @@ class HackathonService:
 
     # ── org host facing ───────────────────────────────────────────────────
     async def list_hackathons(self, user_context: UserContext) -> Dict[str, Any]:
-        """GET /api/v1/hackathons -- 0 credits."""
+        """GET /api/v1/hackathons -- 0 execution budget units."""
         return {"hackathons": self.repo.list_hackathons(user_context.user_id)}
 
     async def create_hackathon(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/v1/hackathons -- 0 credits."""
+        """POST /api/v1/hackathons -- 0 execution budget units."""
         return self.repo.create_hackathon(user_context.user_id, body)
 
     async def get_overview(self, user_context: UserContext, hackathon_id: str) -> Dict[str, Any]:
         """
-        GET /api/v1/hackathons/{id}/overview -- 0 credits.
+        GET /api/v1/hackathons/{id}/overview -- 0 execution budget units.
         Real-time org command-centre stats, derived live from the store.
         Production: COUNT/aggregate over hackathon_teams + hackathon_briefs +
         hackathon_check_ins.
@@ -3541,7 +3469,7 @@ class HackathonService:
         self, user_context: UserContext, hackathon_id: str
     ) -> Dict[str, Any]:
         """
-        GET /api/v1/hackathons/{id}/velocity -- 0 credits.
+        GET /api/v1/hackathons/{id}/velocity -- 0 execution budget units.
         REAL per-team build velocity from check-ins (replaces Math.random()).
         Production: aggregate activity_score from hackathon_check_ins per team
         over the recent window.
@@ -3551,23 +3479,23 @@ class HackathonService:
     async def get_leaderboard(
         self, user_context: UserContext, hackathon_id: str
     ) -> Dict[str, Any]:
-        """GET /api/v1/hackathons/{id}/leaderboard -- 0 credits. Composite-ranked."""
+        """GET /api/v1/hackathons/{id}/leaderboard -- 0 execution budget units. Composite-ranked."""
         return self.repo.hackathon_leaderboard(hackathon_id)
 
     async def get_pipeline(
         self, user_context: UserContext, hackathon_id: str
     ) -> Dict[str, Any]:
-        """GET /api/v1/hackathons/{id}/pipeline -- 0 credits. CRS bucket counts."""
+        """GET /api/v1/hackathons/{id}/pipeline -- 0 execution budget units. CRS bucket counts."""
         return self.repo.hackathon_pipeline(hackathon_id)
 
     # ── team / founder facing ─────────────────────────────────────────────
     async def register(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /api/v1/hackathons/{id}/register -- 0 credits. Body: { name?, members? }"""
+        """POST /api/v1/hackathons/{id}/register -- 0 execution budget units. Body: { name?, members? }"""
         return self.repo.register_hackathon_team(user_context.user_id, body)
 
     async def submit_brief(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
         """
-        POST /api/v1/hackathons/{id}/brief -- 0 credits.
+        POST /api/v1/hackathons/{id}/brief -- 0 execution budget units.
         Scores the idea brief (platform composite) and persists it to the store
         so the org command-centre sees the submission live.
         Body: { teamId, problem, solution, fields, demoReadinessHours?,
@@ -3597,7 +3525,7 @@ class HackathonService:
 
     async def log_check_in(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
         """
-        POST /api/v1/hackathons/{id}/checkin -- 0 credits.
+        POST /api/v1/hackathons/{id}/checkin -- 0 execution budget units.
         Records a build check-in; its activity_score updates the team's running
         velocity in the store, which feeds the org heatmap live.
         Body: { teamId, note, progressDelta? }
@@ -3610,7 +3538,7 @@ class HackathonService:
     async def get_team_status(
         self, user_context: UserContext, hackathon_id: str, team_id: str
     ) -> Dict[str, Any]:
-        """GET /api/v1/hackathons/{id}/teams/{tid}/status -- 0 credits."""
+        """GET /api/v1/hackathons/{id}/teams/{tid}/status -- 0 execution budget units."""
         return self.repo.hackathon_team_status(hackathon_id, team_id) or {
             "hackathonId": hackathon_id,
             "teamId": team_id,
@@ -3625,7 +3553,7 @@ class HackathonService:
         self, user_context: UserContext, hackathon_id: str, team_id: str, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/hackathons/{id}/teams/{tid}/workspace -- 0 credits.
+        POST /api/v1/hackathons/{id}/teams/{tid}/workspace -- 0 execution budget units.
         Pipe the analyzed hackathon brief into a team workspace (reuses
         WorkspaceService) and mark the team's workspace live in the store.
         Body: { projectId? }.
@@ -3641,7 +3569,7 @@ class HackathonService:
         self, user_context: UserContext, hackathon_id: str, team_id: str, body: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/hackathons/{id}/teams/{tid}/report -- 0 credits.
+        POST /api/v1/hackathons/{id}/teams/{tid}/report -- 0 execution budget units.
         Record a team report (idea/team/artifacts/stage + optional workspaceId)
         on the team so org dashboards can surface it. Production: INSERT into
         hackathon_team_reports keyed by (hackathon_id, team_id, created_at).
@@ -3695,7 +3623,6 @@ async def complete_demo() -> None:
 
     uc = UserContext(
         user_id="demo_founder", role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FOUNDER_PRO, credits_remaining=150,
         project_id="proj_001", project_stage="idea", industry="edtech",
         tech_stack=["React", "Node.js"], past_feedback=[],
         training_progress={"completion_percentage": 0},
@@ -3703,24 +3630,24 @@ async def complete_demo() -> None:
         days_since_update=0, team_size=2,
     )
 
-    print("\n🚀 Step 1: Idea diagnostic (1 credit)")
+    print("\n🚀 Step 1: Idea diagnostic (1 execution budget unit)")
     d = await incubation.run_idea_diagnostic(uc, {
         "startup_name": "SkillBridge Africa", "industry": "EdTech",
         "problem": "Youth skills mismatch", "solution": "AI micro-credential platform",
     })
     print(f"   ✅ Profile keys: {list(d.get('structured_profile', {}).keys())[:4]}")
 
-    print("\n📊 Step 2: GSIS compute (1 credit)")
+    print("\n📊 Step 2: GSIS compute (1 execution budget unit)")
     gsis = gsis_svc.compute({"pps": 40, "evi": 60, "mrs": 35, "bss": 0, "rgs": 0,
                               "frs": 70, "cis": 45, "iis": 15, "cs": 80})
     print(f"   ✅ GSIS: {gsis['gsis']} -- {gsis['classification']}")
     print(f"   Alert triggered: {gsis['alert_triggered']} (score: {gsis['alert_score']})")
 
-    print("\n🧭 Step 3: Tour Guide (0 credits)")
+    print("\n🧭 Step 3: Tour Guide (0 execution budget units)")
     checkin = await tour_guide.daily_check_in(uc)
     print(f"   ✅ Momentum: {checkin['momentum_score']}/100 | Decay: {checkin['decay_factor']:.4f}")
 
-    print("\n🎓 Step 4: Adaptive curriculum (1 credit)")
+    print("\n🎓 Step 4: Adaptive curriculum (1 execution budget unit)")
     curriculum = await training.generate_curriculum(
         uc, hours_available_per_week=8, learning_pace="standard",
         target_mvp_weeks=0, has_technical_skills=False,
@@ -3730,13 +3657,13 @@ async def complete_demo() -> None:
           f"Modules: {curriculum.get('pre_mvp', {}).get('total_modules', 0)} pre-MVP")
     print(f"   ✅ MVP target: {ls.get('mvp_target_date', 'TBD')}")
 
-    print("\n🤝 Step 5: Find collaborators (1 credit)")
+    print("\n🤝 Step 5: Find collaborators (1 execution budget unit)")
     matches = await matching.find_collaborators(
         uc, {"required_skills": ["Python"], "availability_required": True}
     )
     print(f"   ✅ Matches found: {matches['total_found']}")
 
-    print("\n📈 Step 6: Dashboard intelligence (0 credits)")
+    print("\n📈 Step 6: Dashboard intelligence (0 execution budget units)")
     dash = await dashboard.get_dashboard_intelligence(uc, {"market_readiness_score": 35})
     print(f"   ✅ GSIS: {dash['gsis']['gsis'] if dash.get('gsis') else 'N/A'}")
     print(f"   ✅ Alerts: {len(dash.get('alerts', []))}")
