@@ -15,14 +15,12 @@ hiredis==2.3.2
 celery==5.4.0
 flower==2.0.1
 # AI
-openai==1.35.7
+openai>=1.109.0,<2
 anthropic==0.29.0
 cohere==5.5.8
 tiktoken==0.7.0
 # Vector
 pinecone-client==3.2.2
-# Billing
-stripe==10.3.0
 # Storage
 boto3==1.34.144
 # Voice
@@ -34,6 +32,7 @@ python-multipart==0.0.9
 # Utilities
 python-dotenv==1.0.1
 httpx==0.27.0
+jsonschema==4.23.0
 structlog==24.2.0
 tenacity==8.5.0
 # Monitoring

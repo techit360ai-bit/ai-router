@@ -13,8 +13,7 @@ Task index:
   4.  adaptive_curriculum_weekly    02:00 Monday    -- generate curricula for new users
   5.  wcrs_gsis_refresh             every 30 min    -- apply decay + refresh GSIS/WCRS for all projects
   6.  stagnation_roster             07:00 daily     -- flag inactive projects, send re-engagement
-  7.  monthly_credit_reset          00:00 1st/month -- reset subscription credit allocations
-  8.  admin_anomaly_scan            every 15 min    -- abuse detection, fake traction, anomalies
+  7.  admin_anomaly_scan            every 15 min    -- abuse detection, fake traction, anomalies
   9.  investor_alert_check          every 5 min     -- fire watchlist alerts on threshold crossings
   10. problem_discovery_daily       06:00 daily     -- auto-discover global problems from signals
   11. discussion_moderation_hourly  every hour      -- AI moderate active discussion threads
@@ -96,7 +95,6 @@ celery.conf.update(
         "workers.adaptive_curriculum_weekly":   {"queue": "ai_heavy"},
         "workers.wcrs_gsis_refresh":            {"queue": "scheduled"},
         "workers.stagnation_roster":            {"queue": "scheduled"},
-        "workers.monthly_credit_reset":         {"queue": "scheduled"},
         "workers.admin_anomaly_scan":           {"queue": "ai_light"},
         "workers.investor_alert_check":         {"queue": "scheduled"},
         "workers.problem_discovery_daily":      {"queue": "ai_light"},
@@ -137,10 +135,6 @@ celery.conf.beat_schedule = {
     "stagnation-roster": {
         "task":     "workers.stagnation_roster",
         "schedule": crontab(hour=7, minute=0),
-    },
-    "monthly-credit-reset": {
-        "task":     "workers.monthly_credit_reset",
-        "schedule": crontab(hour=0, minute=0, day_of_month=1),
     },
     "admin-anomaly-scan": {
         "task":     "workers.admin_anomaly_scan",
@@ -223,12 +217,10 @@ def _get_db():
 
 def _build_system_context():
     """System-level UserContext for tasks that run without a specific user."""
-    from ai_router_core import UserContext, UserRole, SubscriptionTier
+    from ai_router_core import UserContext, UserRole
     return UserContext(
         user_id="system_worker",
         role=UserRole.ADMIN,
-        subscription_tier=SubscriptionTier.ENTERPRISE,
-        credits_remaining=99999,
         project_id=None, project_stage=None, industry=None,
         tech_stack=[], past_feedback=[],
         training_progress={}, time_logged_today=0, tasks_completed_week=0,
@@ -240,17 +232,17 @@ def _fetch_active_users() -> List[Any]:
     Fetch all users active within the last 30 days as UserContext objects.
 
     Production SQL:
-        SELECT u.id, u.role, u.subscription_tier
+        SELECT u.id, u.role
         FROM users u
         WHERE u.created_at > NOW() - INTERVAL '30 days'
     """
     try:
         from sqlalchemy import text
-        from ai_router_core import UserContext, UserRole, SubscriptionTier
+        from ai_router_core import UserContext, UserRole
 
         with _get_db() as db:
             rows = db.execute(text("""
-                SELECT id, role, subscription_tier
+                SELECT id, role
                 FROM users
                 WHERE created_at > NOW() - INTERVAL '30 days'
                 LIMIT 1000
@@ -262,9 +254,6 @@ def _fetch_active_users() -> List[Any]:
                 users.append(UserContext(
                     user_id=str(row.id),
                     role=UserRole(row.role) if row.role else UserRole.FOUNDER,
-                    subscription_tier=SubscriptionTier(row.subscription_tier)
-                        if row.subscription_tier else SubscriptionTier.FREE,
-                    credits_remaining=50,
                     project_id=None, project_stage=None, industry=None,
                     tech_stack=[], past_feedback=[],
                     training_progress={}, time_logged_today=0, tasks_completed_week=0,
@@ -359,11 +348,11 @@ def _fetch_users_without_curriculum() -> List[tuple]:
     """
     try:
         from sqlalchemy import text
-        from ai_router_core import UserContext, UserRole, SubscriptionTier
+        from ai_router_core import UserContext, UserRole
 
         with _get_db() as db:
             rows = db.execute(text("""
-                SELECT u.id, u.role, u.subscription_tier,
+                SELECT u.id, u.role,
                        lp.learning_pace, lp.hours_per_week,
                        lp.has_technical_skills
                 FROM users u
@@ -380,9 +369,6 @@ def _fetch_users_without_curriculum() -> List[tuple]:
                 ctx = UserContext(
                     user_id=str(row.id),
                     role=UserRole(row.role) if row.role else UserRole.FOUNDER,
-                    subscription_tier=SubscriptionTier(row.subscription_tier)
-                        if row.subscription_tier else SubscriptionTier.FREE,
-                    credits_remaining=50,
                     project_id=None, project_stage="idea", industry=None,
                     tech_stack=[], past_feedback=[],
                     training_progress={}, time_logged_today=0, tasks_completed_week=0,
@@ -519,7 +505,7 @@ def _fetch_anomaly_signals() -> List[Dict]:
                 SELECT id, event_type, event_data, user_id, created_at
                 FROM event_logs
                 WHERE event_type IN (
-                    'unusual_credit_burn', 'multiple_logins_same_ip',
+                    'provider_failure_spike', 'multiple_logins_same_ip',
                     'fake_traction_detected', 'rapid_metric_spike',
                     'account_sharing_signal'
                 )
@@ -587,7 +573,6 @@ def _fetch_due_trust_verification_batches(limit: int = 500) -> List[Dict]:
                     latest_history.last_sync_at,
                     latest_history.expires_at,
                     users.role,
-                    users.subscription_tier,
                     projects.stage AS project_stage,
                     projects.industry,
                     COALESCE(active_badges.active_badges, '[]'::json) AS active_badges
@@ -625,7 +610,6 @@ def _trust_connection_batches_from_rows(rows: List[Any]) -> List[Dict]:
                 "user_id": user_id,
                 "project_id": project_id,
                 "role": _trust_value(_row_value(row, "role", "founder")) or "founder",
-                "subscription_tier": _trust_value(_row_value(row, "subscription_tier", "free")) or "free",
                 "project_stage": _trust_value(_row_value(row, "project_stage")),
                 "industry": _row_value(row, "industry"),
                 "connections": [],
@@ -768,15 +752,12 @@ def _run_trust_continuous_verification_batches(
 
 
 def _build_trust_user_context(batch: Dict[str, Any]) -> Any:
-    from ai_router_core import SubscriptionTier, UserContext, UserRole
+    from ai_router_core import UserContext, UserRole
 
     role = _enum_for_value(UserRole, batch.get("role"), UserRole.FOUNDER)
-    tier = _enum_for_value(SubscriptionTier, batch.get("subscription_tier"), SubscriptionTier.FREE)
     return UserContext(
         user_id=str(batch.get("user_id")),
         role=role,
-        subscription_tier=tier,
-        credits_remaining=0,
         project_id=batch.get("project_id"),
         project_stage=batch.get("project_stage"),
         industry=batch.get("industry"),
@@ -1307,83 +1288,7 @@ def stagnation_roster(self):
 
 
 # ============================================================================
-# TASK 7: Monthly Credit Reset
-# ============================================================================
-
-@celery.task(name="workers.monthly_credit_reset", bind=True, max_retries=3)
-def monthly_credit_reset(self):
-    """
-    Reset subscription credit allocations on the 1st of every month. 00:00 UTC.
-
-    Rules:
-      - Subscription credits reset to plan monthly allowance
-      - PAYG credits are NEVER reset -- they never expire
-      - Each reset recorded in credit_ledger for audit trail
-      - Free tier (5 credits/month) also resets
-
-    Uses ALL_PLANS from billing_system.py for each plan's monthly_credits value.
-    """
-    try:
-        from billing_system import ALL_PLANS
-        from sqlalchemy import text
-
-        reset_count = 0
-        logger.info("monthly_credit_reset_start",
-                    month=datetime.utcnow().strftime("%Y-%m"))
-
-        with _get_db() as db:
-            rows = db.execute(text("""
-                SELECT id, subscription_plan_id, subscription_tier,
-                       subscription_credits_remaining
-                FROM users
-                WHERE subscription_plan_id IS NOT NULL
-                  AND subscription_status = 'active'
-            """)).fetchall()
-
-            for row in rows:
-                try:
-                    plan = ALL_PLANS.get(row.subscription_plan_id)
-                    if not plan:
-                        continue
-                    monthly_credits = plan.monthly_credits
-                    old_balance     = int(row.subscription_credits_remaining or 0)
-
-                    db.execute(text("""
-                        UPDATE users
-                        SET subscription_credits_remaining = :credits,
-                            subscription_reset_at          = NOW()
-                        WHERE id = :uid
-                    """), {"credits": monthly_credits, "uid": str(row.id)})
-
-                    db.execute(text("""
-                        INSERT INTO credit_ledger
-                            (user_id, event_type, credits_delta,
-                             balance_after, description, created_at)
-                        VALUES (:uid, 'monthly_reset', :delta, :bal, :desc, NOW())
-                    """), {
-                        "uid":   str(row.id),
-                        "delta": monthly_credits - old_balance,
-                        "bal":   monthly_credits,
-                        "desc":  (
-                            "Monthly subscription reset -- plan: "
-                            + str(row.subscription_plan_id)
-                        ),
-                    })
-                    reset_count += 1
-                except Exception as e:
-                    logger.warning("credit_reset_user_failed",
-                                   user_id=str(row.id), error=str(e))
-
-        logger.info("monthly_credit_reset_complete",
-                    users_reset=reset_count,
-                    month=datetime.utcnow().strftime("%Y-%m"))
-    except Exception as exc:
-        logger.error("monthly_credit_reset_task_failed", error=str(exc))
-        raise self.retry(exc=exc, countdown=300)
-
-
-# ============================================================================
-# TASK 8: Admin Anomaly Scan
+# TASK 7: Admin Anomaly Scan
 # ============================================================================
 
 @celery.task(name="workers.admin_anomaly_scan", bind=True, max_retries=2)
@@ -1392,7 +1297,7 @@ def admin_anomaly_scan(self):
     Continuous abuse and anomaly detection. Runs every 15 minutes.
 
     Detects from event_logs:
-      - unusual_credit_burn: burning 3x expected rate for tier
+      - provider_failure_spike: repeated provider failures or timeouts
       - multiple_logins_same_ip: account sharing signal
       - fake_traction_detected: MRR spike with no customer growth
       - rapid_metric_spike: GSIS +20 in 1 hour (impossible organically)

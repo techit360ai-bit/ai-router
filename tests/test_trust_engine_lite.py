@@ -16,16 +16,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ai_router_core import (  # noqa: E402
     AIRequest,
-    CreditCost,
     ModelRouter,
     PromptEngine,
-    SubscriptionAccessControl,
-    SubscriptionTier,
     TaskType,
     UserContext,
     UserRole,
 )
-from billing_system import CREDIT_OPERATIONS  # noqa: E402
 from trust_engine_lite import (  # noqa: E402
     FounderTrustProfile,
     TrustBadge,
@@ -39,8 +35,6 @@ def _user_context() -> UserContext:
     return UserContext(
         user_id="u_trust",
         role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FREE,
-        credits_remaining=5,
         project_id="p_trust",
         project_stage="mvp",
         industry="saas",
@@ -158,7 +152,7 @@ def test_stale_detection_and_badge_expiry_are_explicit() -> None:
     assert not expired_badge.is_active
 
 
-def test_trust_tasks_are_registered_for_free_tier_routing_and_prompts() -> None:
+def test_trust_tasks_are_registered_for_routing_and_prompts() -> None:
     router = ModelRouter()
     prompt_engine = PromptEngine()
     ctx = _user_context()
@@ -169,24 +163,11 @@ def test_trust_tasks_are_registered_for_free_tier_routing_and_prompts() -> None:
         TaskType.TRUST_MILESTONE_REVIEW,
     ):
         request = AIRequest(task_type=task, user_context=ctx, input_data={})
-        assert CreditCost.cost_for(task) == 1
-        assert SubscriptionAccessControl.is_allowed(SubscriptionTier.FREE, task)
         assert router.select_chain(request)
         assert task in prompt_engine.SYSTEM_PROMPTS
         prompt = prompt_engine.SYSTEM_PROMPTS[task].lower()
         assert "metadata" in prompt
         assert "never" in prompt
-
-
-def test_hybrid_billing_operations_are_registered() -> None:
-    for operation_id in (
-        "trust_verify_founder",
-        "trust_verify_org",
-        "trust_milestone_review",
-    ):
-        operation = CREDIT_OPERATIONS[operation_id]
-        assert operation.credit_cost == 1
-        assert operation.min_plan_id == "founder_free"
 
 
 def test_schema_columns_do_not_store_raw_provider_payloads() -> None:

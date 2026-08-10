@@ -31,7 +31,6 @@ from agent_orchestration import (  # noqa: E402
     WorkspaceAssistantAgent,
 )
 from ai_router_core import (  # noqa: E402
-    SubscriptionTier,
     UserContext,
     UserRole,
 )
@@ -41,8 +40,6 @@ def _user() -> UserContext:
     return UserContext(
         user_id="u_test",
         role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FOUNDER_PRO,
-        credits_remaining=100,
         project_id="p_test",
         project_stage="mvp",
         industry="saas",
@@ -68,7 +65,7 @@ def _agent_with_spy() -> tuple[WorkspaceAssistantAgent, Dict[str, Any]]:
         captured["task_type"] = task_type
         captured["input_data"] = input_data
         captured["user_context"] = user_context
-        return SimpleNamespace(output={"task_suggestions": ["x"]}, credits_consumed=0)
+        return SimpleNamespace(output={"task_suggestions": ["x"]}, tokens_used=0)
 
     # Construct with bare-minimum config + brain — neither is touched once
     # _call_ai is replaced.

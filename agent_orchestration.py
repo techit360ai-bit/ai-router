@@ -61,7 +61,7 @@ from typing import Any, Dict, List, Optional
 from ai_router_core import (
     AICommandLayer, AIRequest, AIResponse,
     UserContext, TaskType, UserRole,
-    SubscriptionTier, ScoringEngine, CreditCost,
+    ScoringEngine,
 )
 
 
@@ -126,7 +126,6 @@ class AgentConfig:
     schedule:            Optional[str]     = None
     timeout_seconds:     int               = 60
     priority:            int               = 3
-    min_tier:            SubscriptionTier  = SubscriptionTier.FREE
 
 
 @dataclass
@@ -145,7 +144,7 @@ class AgentResult:
     recommendations:  List[str]
     next_steps:       List[str]
     execution_time_ms: int
-    credits_consumed: int = 0
+    tokens_used:       int = 0
     metadata:         Dict = field(default_factory=dict)
 
 
@@ -174,7 +173,7 @@ class BaseAgent(ABC):
         self._history.append({
             "timestamp": datetime.now().isoformat(),
             "success":   result.success,
-            "credits":   result.credits_consumed,
+            "tokens_used": result.tokens_used,
         })
 
 
@@ -242,7 +241,7 @@ class VentureIntakeAgent(BaseAgent):
              "Fingerprinted idea for IP leak detection"],
             ["Proceed to Unicorn Evaluation"],
             ["Run UnicornEvaluatorAgent"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -273,7 +272,7 @@ class UnicornEvaluatorAgent(BaseAgent):
             {**ups, "ai_analysis": ai.output},
             [f"Computed UPS: {ups['unicorn_potential_score']}% ({ups['classification']})"],
             recs, ["Run MarketIntelligenceAgent", "Run ProductFeasibilityAgent"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -293,7 +292,7 @@ class MarketIntelligenceAgent(BaseAgent):
             ["Analysed TAM/SAM/SOM", "Benchmarked competition"],
             ["Validate TAM with primary research"],
             ["Integrate into Business Plan"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -312,7 +311,7 @@ class ProductFeasibilityAgent(BaseAgent):
             ["Assessed build complexity", "Mapped dev phases"],
             ["Start with lowest-risk MVP feature set"],
             ["Feed into Execution Roadmap"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -333,7 +332,7 @@ class StartupStrategyAgent(BaseAgent):
             ["Defined GTM strategy", "Designed pricing model"],
             ["Dominate one niche before expanding"],
             ["Generate Execution Roadmap", "Run Finance Strategy Agent"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -354,7 +353,7 @@ class FinanceStrategyAgent(BaseAgent):
             ["Assessed capital efficiency", "Modelled unit economics"],
             ["Delay VC until PMF is proven"],
             ["Incorporate into Business Plan financials"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -403,7 +402,7 @@ class InvestorIntelligenceAgent(BaseAgent):
              f"EVI-I: {evi_i['adjusted_evi_i']} ({evi_i['signal']})"],
             ["Address top 2 investor concerns before outreach"],
             ["Add to Investor Marketplace", "Generate Investor Readiness Report"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -424,7 +423,7 @@ class BusinessPlanGeneratorAgent(BaseAgent):
             ["Generated VC-standard Executive Summary", "Generated 10-section Business Plan"],
             ["Have 3 advisors review before investor outreach"],
             ["Export to PDF", "Upload to investor data room"],
-            ms, exec_r.credits_consumed + plan_r.credits_consumed,
+            ms, exec_r.tokens_used + plan_r.tokens_used,
         )
 
 
@@ -444,7 +443,7 @@ class TechArchitectAgent(BaseAgent):
             ["Designed full-stack architecture"],
             ["Start with monolith, extract microservices at scale"],
             ["Create technical spec", "Hire based on stack"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -476,7 +475,7 @@ class PivotIntelligenceAgent(BaseAgent):
             [f"Weak UPS: {score}%", "Pivot analysis complete"],
             ["Consider market or customer segment pivot first"],
             ["Discuss with co-founders", "Re-run intake with new direction"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -530,7 +529,7 @@ class TourGuideAgent(BaseAgent):
              "daily_plan": actions, "ai_insights": ai.output},
             [f"Momentum: {momentum}/100", f"Decay: {decay:.4f}"],
             recs, ["Complete daily check-in", "Update milestone progress"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -596,7 +595,7 @@ class AdaptiveTrainingAgent(BaseAgent):
             actions,
             ["Begin with Module 1", "Allocate time daily based on pace"],
             ["Track completion", "Schedule mentor check-in"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -640,7 +639,7 @@ class MatchingAgent(BaseAgent):
             [f"Found {len(filtered)} compatible matches"],
             ["Review compatibility before outreach"],
             ["Connect with top match within 48 hours"],
-            ms, ai.credits_consumed if ai else 0,
+            ms, ai.tokens_used if ai else 0,
         )
 
 
@@ -663,7 +662,7 @@ class RiskEvaluatorAgent(BaseAgent):
             ["Evaluated market risks", "Generated SWOT analysis"],
             ["Address top 3 risks in 30-day sprint"],
             ["Validate assumptions before building"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -758,10 +757,6 @@ class DashboardIntelligenceAgent(BaseAgent):
         if gsis_result["alert_triggered"]:
             alerts.append({"type": "gsis_alert", "severity": "warning",
                            "message": f"Alert score: {gsis_result['alert_score']} -- AI intervention recommended"})
-        if uc.credits_remaining <= 2:
-            alerts.append({"type": "credits_low", "severity": "info",
-                           "message": "Credits running low. Purchase a credit pack."})
-
         ms = int((datetime.now() - t0).total_seconds() * 1000)
         return AgentResult(
             AgentType.DASHBOARD_INTELLIGENCE, True,
@@ -772,7 +767,6 @@ class DashboardIntelligenceAgent(BaseAgent):
                     "rgs": rgs, "frs": frs, "cis": cis, "iis": iis, "cs": cs,
                     "decay_factor": round(decay, 4),
                     "momentum_health": round(decay * 100, 1),
-                    "credits_remaining": uc.credits_remaining,
                 },
                 "alerts":   alerts,
                 "insights": ai.output,
@@ -780,7 +774,7 @@ class DashboardIntelligenceAgent(BaseAgent):
             ["Computed GSIS and all component scores", f"GSIS: {gsis_result['gsis']}"],
             ["Act on top alert", "Complete pending training module"],
             ["Check dashboard daily"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -816,7 +810,7 @@ class GSISComputeAgent(BaseAgent):
             [f"GSIS: {gsis['gsis']} -- {gsis['classification']}"],
             [],
             ["Share GSIS with investors if > 70"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -836,7 +830,7 @@ class AIProfileAgent(BaseAgent):
             ["Scored profile completeness", "Identified credibility gaps"],
             ["Add portfolio projects", "Connect GitHub"],
             ["Update profile based on recommendations"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -856,7 +850,7 @@ class OrgSphereAgent(BaseAgent):
             ["Mapped org structure", "Identified knowledge gaps"],
             ["Define clear roles before hiring"],
             ["Create RACI matrix"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -1143,7 +1137,7 @@ class DocumentGenerationAgent(BaseAgent):
                 "document_type": doc_type,
                 "content":       resp.output,
                 "model_used":    resp.model_used,
-                "credits":       resp.credits_consumed,
+                "tokens_used":   resp.tokens_used,
             },
             actions_taken=[f"Generated {doc_type.replace('_', ' ').title()}"],
             recommendations=["Export to PDF", "Share with stakeholders"],
@@ -1317,7 +1311,7 @@ class AppScaffoldAgent(BaseAgent):
                 f"Live preview: {full_scaffold['live_preview_url']}",
             ],
             execution_time_ms=ms,
-            credits_consumed=scaffold_resp.credits_consumed + deploy_resp.credits_consumed,
+            tokens_used=scaffold_resp.tokens_used + deploy_resp.tokens_used,
         )
 
     def _select_stack(self, profile: dict, arch: dict) -> str:
@@ -1393,47 +1387,44 @@ class AgentOrchestrator:
 
     def _init_agents(self) -> None:
         registry = [
-            # (AgentType, Class, name, triggers, min_tier, schedule)
-            (AgentType.VENTURE_INTAKE,        VentureIntakeAgent,        "Venture Intake",              [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], SubscriptionTier.FREE,        None),
-            (AgentType.UNICORN_EVALUATOR,     UnicornEvaluatorAgent,     "Unicorn Probability Engine",  [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], SubscriptionTier.BUILDER,     None),
-            (AgentType.MARKET_INTELLIGENCE,   MarketIntelligenceAgent,   "Market Intelligence Engine",  [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], SubscriptionTier.BUILDER,     None),
-            (AgentType.PRODUCT_FEASIBILITY,   ProductFeasibilityAgent,   "Product Feasibility Agent",   [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.STARTUP_STRATEGY,      StartupStrategyAgent,      "Startup Strategy Generator",  [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.FINANCE_STRATEGY,      FinanceStrategyAgent,      "Finance Strategy Agent",      [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.INVESTOR_INTELLIGENCE, InvestorIntelligenceAgent, "Investor Intelligence Engine",[AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN],  SubscriptionTier.INVESTOR,    "0 0 * * *"),
-            (AgentType.BUSINESS_PLAN_GEN,     BusinessPlanGeneratorAgent,"Business Plan Generator",     [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.INVESTOR,    None),
-            (AgentType.TECH_ARCHITECT,        TechArchitectAgent,        "Tech Architecture Agent",     [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.PIVOT_INTELLIGENCE,    PivotIntelligenceAgent,    "Pivot Intelligence Agent",    [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.BUILDER,     None),
-            (AgentType.TOUR_GUIDE,            TourGuideAgent,            "AI Tour Guide",               [AgentTrigger.SCHEDULED, AgentTrigger.ON_DEMAND],     SubscriptionTier.FREE,        "0 6 * * *"),
-            (AgentType.ADAPTIVE_TRAINING,     AdaptiveTrainingAgent,     "Adaptive Training Agent",     [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN],  SubscriptionTier.FREE,        "0 2 * * 1"),
-            (AgentType.MATCHING,              MatchingAgent,             "Team Matching Engine",        [AgentTrigger.ON_DEMAND, AgentTrigger.EVENT_DRIVEN],  SubscriptionTier.BUILDER,     None),
-            (AgentType.RISK_EVALUATOR,        RiskEvaluatorAgent,        "Risk Evaluator Agent",        [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.BUILDER,     None),
-            (AgentType.WORKSPACE_ASSISTANT,   WorkspaceAssistantAgent,   "Workspace Assistant",         [AgentTrigger.ON_DEMAND, AgentTrigger.EVENT_DRIVEN],  SubscriptionTier.FREE,        None),
-            (AgentType.FEED_INTELLIGENCE,     FeedIntelligenceAgent,     "Feed Intelligence Engine",    [AgentTrigger.SCHEDULED],                             SubscriptionTier.FREE,        "*/30 * * * *"),
-            (AgentType.DASHBOARD_INTELLIGENCE,DashboardIntelligenceAgent,"Dashboard Intelligence",      [AgentTrigger.ON_DEMAND, AgentTrigger.SCHEDULED],     SubscriptionTier.FREE,        "*/30 * * * *"),
-            (AgentType.AI_PROFILE,            AIProfileAgent,            "AI Profile Agent",            [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FREE,        None),
-            (AgentType.ORG_SPHERE,            OrgSphereAgent,            "Org Sphere Agent",            [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.ADMIN_MONITOR,         AdminMonitorAgent,         "Admin Monitor Agent",         [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN],  SubscriptionTier.ENTERPRISE,  "*/15 * * * *"),
-            (AgentType.GSIS_COMPUTE,          GSISComputeAgent,          "GSIS Compute Agent",          [AgentTrigger.ON_DEMAND, AgentTrigger.SCHEDULED],     SubscriptionTier.FREE,        "*/30 * * * *"),
-            # Idea & Solution Hub agents
-            (AgentType.PROBLEM_ANALYZER,      ProblemAnalyzerAgent,      "Problem Analyzer",            [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FREE,        None),
-            (AgentType.SOLUTION_SYNTHESIZER,  SolutionSynthesizerAgent,  "Solution Synthesizer",        [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.IMPACT_PREDICTOR,      ImpactPredictorAgent,      "Impact Predictor",            [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FREE,        None),
-            (AgentType.FEASIBILITY_ESTIMATOR, FeasibilityEstimatorAgent, "Feasibility Estimator",       [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.BUILDER,     None),
-            (AgentType.PROBLEM_DISCOVERY,     ProblemDiscoveryAgent,     "Problem Discovery Engine",    [AgentTrigger.SCHEDULED, AgentTrigger.ON_DEMAND],     SubscriptionTier.BUILDER,     "0 6 * * *"),
-            (AgentType.SOLUTION_MATCHER,      SolutionMatcherAgent,      "Solution Matching Engine",    [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.BUILDER,     None),
-            (AgentType.DEPLOYMENT_PLANNER,    DeploymentPlannerAgent,    "Deployment Planner",          [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.GRANT_MATCHER,         GrantMatcherAgent,         "Grant Matching Engine",       [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.DISCUSSION_MODERATOR,  DiscussionModeratorAgent,  "Discussion Moderator",        [AgentTrigger.EVENT_DRIVEN, AgentTrigger.SCHEDULED],  SubscriptionTier.FREE,        "*/60 * * * *"),
-            (AgentType.FIELD_FEEDBACK_AGENT,  FieldFeedbackAgent,        "Field Feedback Analyst",      [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FREE,        None),
-            # Document Generation agents
-            (AgentType.DOCUMENT_GENERATION,   DocumentGenerationAgent,   "Document Generation Engine",  [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.BUILDER,     None),
-            (AgentType.DOCUMENT_EXPORT,       DocumentExportAgent,       "Document Export Agent",       [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FREE,        None),
-            # Prompt -> Live App
-            (AgentType.APP_SCAFFOLD,          AppScaffoldAgent,          "App Scaffold Engine",         [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FOUNDER_PRO, None),
+            # (AgentType, Class, name, triggers, schedule)
+            (AgentType.VENTURE_INTAKE, VentureIntakeAgent, "Venture Intake", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.UNICORN_EVALUATOR, UnicornEvaluatorAgent, "Unicorn Probability Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.MARKET_INTELLIGENCE, MarketIntelligenceAgent, "Market Intelligence Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.PRODUCT_FEASIBILITY, ProductFeasibilityAgent, "Product Feasibility Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.STARTUP_STRATEGY, StartupStrategyAgent, "Startup Strategy Generator", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.FINANCE_STRATEGY, FinanceStrategyAgent, "Finance Strategy Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.INVESTOR_INTELLIGENCE, InvestorIntelligenceAgent, "Investor Intelligence Engine", [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN], "0 0 * * *"),
+            (AgentType.BUSINESS_PLAN_GEN, BusinessPlanGeneratorAgent, "Business Plan Generator", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.TECH_ARCHITECT, TechArchitectAgent, "Tech Architecture Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.PIVOT_INTELLIGENCE, PivotIntelligenceAgent, "Pivot Intelligence Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.TOUR_GUIDE, TourGuideAgent, "AI Tour Guide", [AgentTrigger.SCHEDULED, AgentTrigger.ON_DEMAND], "0 6 * * *"),
+            (AgentType.ADAPTIVE_TRAINING, AdaptiveTrainingAgent, "Adaptive Training Agent", [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN], "0 2 * * 1"),
+            (AgentType.MATCHING, MatchingAgent, "Team Matching Engine", [AgentTrigger.ON_DEMAND, AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.RISK_EVALUATOR, RiskEvaluatorAgent, "Risk Evaluator Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.WORKSPACE_ASSISTANT, WorkspaceAssistantAgent, "Workspace Assistant", [AgentTrigger.ON_DEMAND, AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.FEED_INTELLIGENCE, FeedIntelligenceAgent, "Feed Intelligence Engine", [AgentTrigger.SCHEDULED], "*/30 * * * *"),
+            (AgentType.DASHBOARD_INTELLIGENCE, DashboardIntelligenceAgent, "Dashboard Intelligence", [AgentTrigger.ON_DEMAND, AgentTrigger.SCHEDULED], "*/30 * * * *"),
+            (AgentType.AI_PROFILE, AIProfileAgent, "AI Profile Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.ORG_SPHERE, OrgSphereAgent, "Org Sphere Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.ADMIN_MONITOR, AdminMonitorAgent, "Admin Monitor Agent", [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN], "*/15 * * * *"),
+            (AgentType.GSIS_COMPUTE, GSISComputeAgent, "GSIS Compute Agent", [AgentTrigger.ON_DEMAND, AgentTrigger.SCHEDULED], "*/30 * * * *"),
+            (AgentType.PROBLEM_ANALYZER, ProblemAnalyzerAgent, "Problem Analyzer", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.SOLUTION_SYNTHESIZER, SolutionSynthesizerAgent, "Solution Synthesizer", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.IMPACT_PREDICTOR, ImpactPredictorAgent, "Impact Predictor", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.FEASIBILITY_ESTIMATOR, FeasibilityEstimatorAgent, "Feasibility Estimator", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.PROBLEM_DISCOVERY, ProblemDiscoveryAgent, "Problem Discovery Engine", [AgentTrigger.SCHEDULED, AgentTrigger.ON_DEMAND], "0 6 * * *"),
+            (AgentType.SOLUTION_MATCHER, SolutionMatcherAgent, "Solution Matching Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.DEPLOYMENT_PLANNER, DeploymentPlannerAgent, "Deployment Planner", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.GRANT_MATCHER, GrantMatcherAgent, "Grant Matching Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.DISCUSSION_MODERATOR, DiscussionModeratorAgent, "Discussion Moderator", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.SCHEDULED], "*/60 * * * *"),
+            (AgentType.FIELD_FEEDBACK_AGENT, FieldFeedbackAgent, "Field Feedback Analyst", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.DOCUMENT_GENERATION, DocumentGenerationAgent, "Document Generation Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.DOCUMENT_EXPORT, DocumentExportAgent, "Document Export Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.APP_SCAFFOLD, AppScaffoldAgent, "App Scaffold Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
         ]
-        for atype, cls, name, triggers, min_tier, schedule in registry:
-            config = AgentConfig(atype, name, f"TechIT {name}", triggers, schedule, 60, 3, min_tier)
+        for atype, cls, name, triggers, schedule in registry:
+            config = AgentConfig(atype, name, f"TechIT {name}", triggers, schedule, 60, 3)
             self.agents[atype] = cls(config, self.ai_brain)
 
     async def trigger_agent(self, agent_type: AgentType, context: AgentContext) -> AgentResult:
@@ -1452,11 +1443,8 @@ class AgentOrchestrator:
         Training agent adapts on lifecycle events (mvp_shipped, pivot_detected, etc.).
 
         System context elevation:
-          InvestorIntelligenceAgent requires Investor+ tier.
-          When fired from a lifecycle event (revenue_went_live, investor_expressed_interest)
-          triggered by a founder, we elevate the context to a system-level investor context
-          so the agent can run without a PermissionError.  The output is then written to the
-          project's investor_evi_snapshots row, not returned to the founder directly.
+          Lifecycle-triggered investor intelligence runs with a system actor so
+          audit trails distinguish it from a direct user request.
         """
         etype = event.get("type")
         uc    = event.get("user_context")
@@ -1472,8 +1460,6 @@ class AgentOrchestrator:
             system_uc = UserContext(
                 user_id=f"system_investor_{uc.user_id if uc else 'anon'}",
                 role=UserRole.INVESTOR,
-                subscription_tier=SubscriptionTier.INVESTOR,
-                credits_remaining=9999,
                 project_id=uc.project_id if uc else None,
                 project_stage=uc.project_stage if uc else "idea",
                 industry=uc.industry if uc else "general",
@@ -1569,7 +1555,6 @@ async def _demo() -> None:
 
     uc = UserContext(
         user_id="founder_demo", role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FOUNDER_PRO, credits_remaining=150,
         project_id=None, project_stage="idea", industry="edtech",
         tech_stack=[], past_feedback=[],
         training_progress={"completion_percentage": 0},

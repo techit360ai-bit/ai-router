@@ -39,7 +39,6 @@ from integration_guide import (
     OrgSphereService,
     MarketReadinessService,
     AdminMonitorService,
-    HybridBillingService,
     GSISService,
     IdeaSolutionHubService,
     DocumentGenerationService,
@@ -57,8 +56,9 @@ from integration_guide import (
     WorkspaceService,
     HackathonService,
 )
-from ai_router_core import UserContext, UserRole, SubscriptionTier
-from credit_ledger import SQLAlchemySessionFactoryCreditLedger
+from ai_router_core import ModelRouter, TaskType, UserContext, UserRole
+from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationError
+from model_registry import ModelRegistry, RegistryError
 from runtime_config import (
     PROD_ENVS,
     RuntimeCheck,
@@ -95,10 +95,6 @@ async def lifespan(app: FastAPI):
             raise
 
     brain = TechITAIBrain()
-    if ENVIRONMENT in PROD_ENVS:
-        brain.command_layer.credit_ledger = SQLAlchemySessionFactoryCreditLedger(
-            _db_session_factory()
-        )
     logger.info(
         "techit_ai_brain_ready",
         agents=34,
@@ -189,22 +185,11 @@ def _role_from_claim(value: Any) -> UserRole:
     return UserRole.FOUNDER
 
 
-def _tier_from_claim(value: Any) -> SubscriptionTier:
-    if isinstance(value, str):
-        try:
-            return SubscriptionTier(value.strip().lower())
-        except ValueError:
-            pass
-    return SubscriptionTier.FREE
-
-
 def _demo_user_context() -> UserContext:
-    """Demo Founder Pro context for local dev / anonymous requests (ALLOW_DEMO_AUTH)."""
+    """Demo context for local development only (ALLOW_DEMO_AUTH)."""
     return UserContext(
         user_id="demo_user_001",
         role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FOUNDER_PRO,
-        credits_remaining=150,
         project_id=None,
         project_stage="idea",
         industry="edtech",
@@ -233,10 +218,6 @@ def _context_from_claim(user_id: str, payload: Dict[str, Any]) -> UserContext:
     return UserContext(
         user_id=str(user_id),
         role=_role_from_claim(payload.get("role")),
-        subscription_tier=_tier_from_claim(
-            payload.get("subscription_tier") or payload.get("tier")
-        ),
-        credits_remaining=_int("credits_remaining", _int("credits", 0)),
         project_id=payload.get("project_id"),
         project_stage=payload.get("project_stage"),
         industry=payload.get("industry"),
@@ -253,14 +234,7 @@ def _context_from_claim(user_id: str, payload: Dict[str, Any]) -> UserContext:
 
 
 def _hydrate_from_db(ctx: UserContext, db) -> UserContext:
-    """Override security-critical fields (role, subscription_tier,
-    credits_remaining) with DB values. Identity (user_id) and incidental
-    fields (project, industry, etc.) stay from claim — a forged claim
-    inflating `credits_remaining` cannot bypass the paywall because the DB
-    is authoritative for usage state.
-
-    DB unavailable or user not found → return ctx unchanged. The warning
-    log surfaces ops issues without blocking auth."""
+    """Hydrate only identity/role metadata; execution authorization is separate."""
     from dataclasses import replace as dc_replace
 
     try:
@@ -276,16 +250,9 @@ def _hydrate_from_db(ctx: UserContext, db) -> UserContext:
     if row is None:
         return ctx
 
-    def _enum_str(v: Any) -> str:
-        return v.value if hasattr(v, "value") else str(v)
-
     return dc_replace(
         ctx,
-        role=_role_from_claim(_enum_str(row.role)),
-        subscription_tier=_tier_from_claim(_enum_str(row.subscription_tier)),
-        credits_remaining=int(
-            (row.subscription_credits_remaining or 0) + (row.payg_credits_balance or 0)
-        ),
+        role=_role_from_claim(row.role.value if hasattr(row.role, "value") else str(row.role)),
     )
 
 
@@ -296,12 +263,10 @@ async def get_user_context(request: Request) -> UserContext:
       1. Read Authorization header -> "Bearer <jwt_token>"
       2. Decode + verify the JWT (HS256) with SECRET_KEY (python-jose)
       3. Build a UserContext from claims
-      4. Override role + subscription_tier + credits_remaining with DB values
-         keyed by `sub` (closes ai-router #13) — a forged claim cannot bypass
-         the paywall because the DB owns operational state.
-      2. Decode + verify the JWT (HS256) with JWT_SECRET (python-jose).
+      4. Decode + verify the JWT (HS256) with JWT_SECRET (python-jose).
          Uses SECRET_KEY only if JWT_SECRET is unset (legacy alias).
-      3. Build a UserContext from the token claims
+      5. Build a UserContext from the token claims and optionally attach a
+         backend-signed execution grant.
 
     A request WITH a token is always validated (401 on missing/invalid).
     A request WITHOUT a token falls back to the demo context only when
@@ -334,6 +299,19 @@ async def get_user_context(request: Request) -> UserContext:
         raise HTTPException(status_code=401, detail="Token missing subject claim")
 
     ctx = _context_from_claim(str(user_id), payload)
+
+    grant_token = request.headers.get("X-AI-Execution-Grant", "").strip()
+    if grant_token:
+        try:
+            grant = ExecutionGrantVerifier().verify(grant_token)
+        except ExecutionAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if grant.subject != ctx.user_id:
+            raise HTTPException(status_code=403, detail="Execution grant subject mismatch")
+        from dataclasses import replace as dc_replace
+        ctx = dc_replace(ctx, workspace_id=grant.workspace_id, execution_grant=grant)
+    elif os.getenv("REQUIRE_AI_EXECUTION_GRANT", "false").lower() in {"1", "true", "yes"}:
+        raise HTTPException(status_code=403, detail="AI execution grant is required")
 
     # Hydrate from DB. We resolve the session lazily here (instead of via
     # FastAPI Depends) so endpoints that use get_user_context don't have to
@@ -395,7 +373,7 @@ async def health():
         "ai_brain":       "operational",
         "version":        "3.0.0",
         "agents":         34,
-        "task_types":     51,
+        "task_types":     len(TaskType),
         "scoring_models": 20,
         "db_tables":      42,
     }
@@ -405,6 +383,16 @@ async def health():
 async def ready():
     """Readiness check for runtime config and dependency reachability."""
     checks = runtime_checks()
+
+    try:
+        registry = brain.model_router.registry if brain else ModelRegistry()
+        checks.append(RuntimeCheck(
+            "ai.registry",
+            bool(registry.models) and set(registry.task_policies) == {task.value for task in TaskType},
+            f"version={registry.version}; models={len(registry.models)}; tasks={len(registry.task_policies)}",
+        ))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(RuntimeCheck("ai.registry", False, str(exc)))
 
     db_ok = True
     db_detail = "ok"
@@ -458,7 +446,7 @@ async def run_pipeline(
     Intake -> Unicorn -> Market -> Feasibility -> Strategy -> Finance ->
     BusinessPlan -> TechArch -> InvestorIntel -> AppScaffold
 
-    Cost: 12 credits. Min tier: Investor+
+    Cost: 12 execution budget units. Min tier: Investor+
     """
     return await IncubationHubService(brain).run_full_venture_pipeline(user, venture_data)
 
@@ -508,7 +496,7 @@ async def fast_track_run(
     Fetches public repo metadata (languages, README, file tree) to enrich the
     analysis context before running the full 10-agent pipeline.
 
-    Cost: 12 credits. Min tier: Builder+
+    Cost: 12 execution budget units. Min tier: Builder+
     """
     enriched = dict(venture_data)
 
@@ -593,7 +581,7 @@ async def diagnose_idea(
     idea_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Quick idea diagnostic -- 1 credit, Free+"""
+    """Quick idea diagnostic -- 1 execution budget unit, Free+"""
     return await IncubationHubService(brain).run_idea_diagnostic(user, idea_data)
 
 
@@ -602,7 +590,7 @@ async def unicorn_analyze(
     venture_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """10-driver Unicorn Potential Score -- 2 credits, Builder+"""
+    """10-driver Unicorn Potential Score -- 2 execution budget units, Builder+"""
     return await IncubationHubService(brain).run_unicorn_analysis(user, venture_data)
 
 
@@ -611,7 +599,7 @@ async def market_analyze(
     venture_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """TAM/SAM/SOM + competitive landscape -- 2 credits, Builder+"""
+    """TAM/SAM/SOM + competitive landscape -- 2 execution budget units, Builder+"""
     return await IncubationHubService(brain).run_market_intelligence(user, venture_data)
 
 
@@ -620,7 +608,7 @@ async def generate_strategy(
     venture_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """GTM, pricing, growth strategy -- 3 credits, Founder Pro+"""
+    """GTM, pricing, growth strategy -- 3 execution budget units, Founder Pro+"""
     return await IncubationHubService(brain).run_startup_strategy(user, venture_data)
 
 
@@ -629,7 +617,7 @@ async def generate_business_plan(
     venture_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Executive summary + 10-section business plan -- 6 credits, Investor+"""
+    """Executive summary + 10-section business plan -- 6 execution budget units, Investor+"""
     return await IncubationHubService(brain).generate_business_plan(user, venture_data)
 
 
@@ -638,7 +626,7 @@ async def pivot_analyze(
     data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Pivot intelligence -- when to pivot and where -- 2 credits, Builder+"""
+    """Pivot intelligence -- when to pivot and where -- 2 execution budget units, Builder+"""
     return await IncubationHubService(brain).run_pivot_intelligence(
         user,
         data.get("venture_data", {}),
@@ -651,7 +639,7 @@ async def investor_readiness(
     venture_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Investor readiness report -- 2 credits, Investor+"""
+    """Investor readiness report -- 2 execution budget units, Investor+"""
     return await IncubationHubService(brain).generate_investor_readiness_report(
         user, venture_data
     )
@@ -669,7 +657,7 @@ async def generate_scaffold(
     """
     Generate a complete application scaffold from the venture profile.
   
-    5 credits. Founder Pro+
+    5 execution budget units. Founder Pro+
 
     Body params:
       project_id    (required) str
@@ -694,7 +682,7 @@ async def deploy_scaffold(
 ):
     """
     Trigger 1-click Vercel deployment of a generated scaffold.
-    3 credits. Founder Pro+
+    3 execution budget units. Founder Pro+
     Returns: deploy_status, live_url, build_logs_url, estimated_ready_seconds
     """
     return await AppScaffoldService(brain).deploy_scaffold(
@@ -709,7 +697,7 @@ async def scaffold_status(
     scaffold_id: str,
     user: UserContext = Depends(get_user_context),
 ):
-    """Poll deployment status. 0 credits, Free+"""
+    """Poll deployment status. 0 execution budget units, Free+"""
     return AppScaffoldService(brain).get_deploy_status(scaffold_id)
 
 
@@ -718,7 +706,7 @@ async def scaffold_live_url(
     scaffold_id: str,
     user: UserContext = Depends(get_user_context),
 ):
-    """Get live URL after deployment. 0 credits, Free+"""
+    """Get live URL after deployment. 0 execution budget units, Free+"""
     return AppScaffoldService(brain).get_live_url(scaffold_id)
 
 
@@ -727,7 +715,7 @@ async def get_scaffold(
     project_id: str,
     user: UserContext = Depends(get_user_context),
 ):
-    """Retrieve scaffold for a project. 0 credits, Free+"""
+    """Retrieve scaffold for a project. 0 execution budget units, Free+"""
     # Production: SELECT * FROM app_scaffolds WHERE project_id = :project_id
     return {
         "project_id": project_id,
@@ -738,7 +726,7 @@ async def get_scaffold(
 
 @app.get("/api/v1/scaffold/stacks", tags=["Prompt -> Live App"])
 async def get_stacks(user: UserContext = Depends(get_user_context)):
-    """List all supported stacks with credit costs and deploy times. 0 credits, Free+"""
+    """List all supported stacks with execution budget unit costs and deploy times. 0 execution budget units, Free+"""
     return AppScaffoldService(brain).get_available_stacks()
 
 
@@ -748,13 +736,13 @@ async def get_stacks(user: UserContext = Depends(get_user_context)):
 
 @app.get("/api/v1/dashboard/intelligence", tags=["Dashboard"])
 async def dashboard_intelligence(user: UserContext = Depends(get_user_context)):
-    """Real-time GSIS + EVI-I + decay signals for the dashboard. 0 credits."""
+    """Real-time GSIS + EVI-I + decay signals for the dashboard. 0 execution budget units."""
     return await DashboardIntelligenceService(brain).get_dashboard_intelligence(user)
 
 
 @app.get("/api/v1/organization/dashboard", tags=["Organization"])
 async def organization_dashboard(user: UserContext = Depends(get_user_context)):
-    """Organization dashboard metrics from persisted org/program records. 0 credits."""
+    """Organization dashboard metrics from persisted org/program records. 0 execution budget units."""
     return await OrgSphereService(brain).get_dashboard(user)
 
 
@@ -763,7 +751,7 @@ async def compute_gsis(
     scores: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Compute GSIS from component scores. 1 credit, Free+"""
+    """Compute GSIS from component scores. 1 execution budget unit, Free+"""
     return await GSISService(brain).compute_with_narrative(user, scores)
 
 
@@ -776,7 +764,7 @@ async def trust_profile(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Current metadata-only trust profile. 0 credits, Free+."""
+    """Current metadata-only trust profile. 0 execution budget units, Free+."""
     return TrustVerificationService(brain).get_profile(user, db)
 
 
@@ -785,7 +773,7 @@ async def trust_badges(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Derived expiring trust badges. 0 credits, Free+."""
+    """Derived expiring trust badges. 0 execution budget units, Free+."""
     return TrustVerificationService(brain).get_badges(user, db)
 
 
@@ -795,7 +783,7 @@ async def trust_history(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Append-only verification history. 0 credits, Free+."""
+    """Append-only verification history. 0 execution budget units, Free+."""
     return TrustVerificationService(brain).get_history(user, db, limit)
 
 
@@ -805,7 +793,7 @@ async def trust_share_profile_preview(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Build an investor-safe Trust Profile preview after explicit founder opt-in. 0 credits, Free+."""
+    """Build an investor-safe Trust Profile preview after explicit founder opt-in. 0 execution budget units, Free+."""
     return TrustVerificationService(brain).build_share_profile(user, body, db)
 
 
@@ -814,7 +802,7 @@ async def trust_integrations(
     provider: Optional[str] = None,
     user: UserContext = Depends(get_user_context),
 ):
-    """Provider integration manifests with permissions and metadata-only storage policy. 0 credits, Free+."""
+    """Provider integration manifests with permissions and metadata-only storage policy. 0 execution budget units, Free+."""
     try:
         return TrustVerificationService(brain).get_integration_manifests(provider)
     except ValueError as exc:
@@ -829,7 +817,7 @@ async def trust_verify_source(
     db=Depends(get_db),
 ):
     """
-    Submit metadata-only verification result for a source. 1 credit, Free+.
+    Submit metadata-only verification result for a source. 1 execution budget unit, Free+.
 
     This endpoint accepts provider adapter metadata only; it never accepts or
     stores raw provider payloads, OAuth tokens, source code, analytics events,
@@ -848,7 +836,7 @@ async def trust_verify_adapter_payload(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Normalize provider metadata through a privacy adapter, then append a Trust verification row. 1 credit, Free+."""
+    """Normalize provider metadata through a privacy adapter, then append a Trust verification row. 1 execution budget unit, Free+."""
     try:
         return TrustVerificationService(brain).verify_adapter_payload(user, provider, body, db)
     except ValueError as exc:
@@ -862,7 +850,7 @@ async def trust_disconnect_source(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Disconnect a trust source and append a disconnected history row. 0 credits, Free+."""
+    """Disconnect a trust source and append a disconnected history row. 0 execution budget units, Free+."""
     try:
         return TrustVerificationService(brain).disconnect_source(user, source, body, db)
     except ValueError as exc:
@@ -876,7 +864,7 @@ async def trust_refresh_source(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Trigger a metadata-only manual re-verification contract. 1 credit, Free+."""
+    """Trigger a metadata-only manual re-verification contract. 1 execution budget unit, Free+."""
     try:
         return TrustVerificationService(brain).refresh_source(user, source, body, db)
     except ValueError as exc:
@@ -888,7 +876,7 @@ async def trust_refresh_plan(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Compute continuous-verification refresh states without mutating history. 0 credits, Free+."""
+    """Compute continuous-verification refresh states without mutating history. 0 execution budget units, Free+."""
     return TrustVerificationService(brain).get_refresh_plan(user, body)
 
 
@@ -898,7 +886,7 @@ async def trust_continuous_verification_run(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Prepare or execute metadata-only continuous verification actions. 0 credits, Free+."""
+    """Prepare or execute metadata-only continuous verification actions. 0 execution budget units, Free+."""
     try:
         return TrustVerificationService(brain).run_continuous_verification(user, body, db)
     except ValueError as exc:
@@ -911,7 +899,7 @@ async def trust_submit_milestone(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Submit milestone evidence metadata for review. 1 credit, Free+."""
+    """Submit milestone evidence metadata for review. 1 execution budget unit, Free+."""
     return TrustVerificationService(brain).submit_milestone(user, body, db)
 
 
@@ -921,7 +909,7 @@ async def trust_review_milestone(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Review milestone evidence metadata and append approved/rejected Trust state. 1 credit."""
+    """Review milestone evidence metadata and append approved/rejected Trust state. 1 execution budget unit."""
     return TrustVerificationService(brain).review_milestone(user, body, db)
 
 
@@ -931,7 +919,7 @@ async def trust_invite_team_member(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Prepare a metadata-only team invitation notification intent. 0 credits, Free+."""
+    """Prepare a metadata-only team invitation notification intent. 0 execution budget units, Free+."""
     return TrustVerificationService(brain).invite_team_member(user, body, db)
 
 
@@ -941,7 +929,7 @@ async def trust_verify_team_member(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Verify a team member through metadata-only Trust state. 1 credit, Free+."""
+    """Verify a team member through metadata-only Trust state. 1 execution budget unit, Free+."""
     return TrustVerificationService(brain).verify_team_member(user, body, db)
 
 
@@ -950,7 +938,7 @@ async def trust_notifications_preview(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Build founder-only Trust notification intents without executing delivery. 0 credits, Free+."""
+    """Build founder-only Trust notification intents without executing delivery. 0 execution budget units, Free+."""
     return TrustVerificationService(brain).preview_notifications(user, body)
 
 
@@ -963,7 +951,7 @@ async def daily_check_in(
     body: Optional[Dict[str, Any]] = Body(default=None),
     user: UserContext = Depends(get_user_context),
 ):
-    """Daily momentum check-in. 0 credits, Free+"""
+    """Daily momentum check-in. 0 execution budget units, Free+"""
     return await TourGuideService(brain).daily_check_in(user, body or {})
 
 
@@ -978,7 +966,7 @@ async def generate_curriculum(
 ):
     """
     Generate adaptive curriculum. Duration computed from TimeToMVPEngine --
-    NOT fixed weeks. 1 credit, Free+
+    NOT fixed weeks. 1 execution budget unit, Free+
     """
     svc = AdaptiveTrainingService(brain)
     return await svc.generate_curriculum(
@@ -995,7 +983,7 @@ async def adapt_curriculum(
     data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Adapt curriculum based on trigger event (mvp_shipped, pivot, etc.). 1 credit."""
+    """Adapt curriculum based on trigger event (mvp_shipped, pivot, etc.). 1 execution budget unit."""
     return await AdaptiveTrainingService(brain).adapt_curriculum(
         user, data.get("trigger_event", ""), data
     )
@@ -1006,7 +994,7 @@ async def update_progress(
     data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Mark a module complete and advance curriculum. 0 credits."""
+    """Mark a module complete and advance curriculum. 0 execution budget units."""
     return await AdaptiveTrainingService(brain).mark_module_complete(
         user,
         data.get("module_id", ""),
@@ -1023,7 +1011,7 @@ async def find_collaborators(
     criteria: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Find compatible collaborators via vector + rules + LLM. 1 credit, Builder+"""
+    """Find compatible collaborators via vector + rules + LLM. 1 execution budget unit, Builder+"""
     return await MatchingEngineService(brain).find_collaborators(user, criteria)
 
 
@@ -1036,7 +1024,7 @@ async def feed_curated(
     limit: int = 30,
     user: UserContext = Depends(get_user_context),
 ):
-    """Curated community feed from persisted feed posts. 0 credits."""
+    """Curated community feed from persisted feed posts. 0 execution budget units."""
     return await FeedIntelligenceService(brain).curate_feed(user, [], limit)
 
 
@@ -1054,7 +1042,7 @@ async def investor_trust_startups(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Investor-safe Trust startup list. 0 credits, Investor only."""
+    """Investor-safe Trust startup list. 0 execution budget units, Investor only."""
     _require_investor_role(user)
     return InvestorTrustReadService().get_startups(user, db)
 
@@ -1066,7 +1054,7 @@ async def investor_trust_search(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Investor-safe startup directory search. 0 credits, Investor only."""
+    """Investor-safe startup directory search. 0 execution budget units, Investor only."""
     _require_investor_role(user)
     return InvestorTrustReadService().search_startups(user, query, db, limit)
 
@@ -1077,7 +1065,7 @@ async def investor_trust_dashboard(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Investor-safe Trust dashboard read model. 0 credits, Investor only."""
+    """Investor-safe Trust dashboard read model. 0 execution budget units, Investor only."""
     _require_investor_role(user)
     try:
         return InvestorTrustReadService().get_dashboard(user, startup_id, db)
@@ -1092,7 +1080,7 @@ async def investor_trust_notes(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Persist investor-private Trust notes. 0 credits, Investor only."""
+    """Persist investor-private Trust notes. 0 execution budget units, Investor only."""
     _require_investor_role(user)
     try:
         return InvestorTrustReadService().save_notes(user, startup_id, notes, db)
@@ -1102,7 +1090,7 @@ async def investor_trust_notes(
 
 @app.get("/api/v1/investor/deal-flow", tags=["Investor"])
 async def deal_flow(user: UserContext = Depends(get_user_context)):
-    """Ranked deal flow with EVI-I signals. 0 credits, Investor+"""
+    """Ranked deal flow with EVI-I signals. 0 execution budget units, Investor+"""
     return await InvestorSectionService(brain).get_deal_flow_ranking(user)
 
 
@@ -1112,13 +1100,13 @@ async def investor_evi(
     startup_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """6-dimensional EVI-I investor execution signal. 2 credits, Investor+"""
+    """6-dimensional EVI-I investor execution signal. 2 execution budget units, Investor+"""
     return await InvestorSectionService(brain).get_investor_evi(user, startup_data)
 
 
 @app.get("/api/v1/investor/capital-pools", tags=["Investor"])
 async def investor_capital_pools(user: UserContext = Depends(get_user_context)):
-    """Investor micro-fund capital pools with deployment + milestone release. 0 credits."""
+    """Investor micro-fund capital pools with deployment + milestone release. 0 execution budget units."""
     return await CapitalPoolService(brain).get_capital_pools(user)
 
 
@@ -1127,7 +1115,7 @@ async def investor_create_pool(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Create a new capital pool. 0 credits. Body: { name, totalCapital, rules }"""
+    """Create a new capital pool. 0 execution budget units. Body: { name, totalCapital, rules }"""
     return await CapitalPoolService(brain).create_pool(user, body)
 
 
@@ -1137,13 +1125,13 @@ async def investor_pool_release(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Release escrowed capital on a hit milestone. 0 credits. Body: { projectId, milestone, amount }"""
+    """Release escrowed capital on a hit milestone. 0 execution budget units. Body: { projectId, milestone, amount }"""
     return await CapitalPoolService(brain).release_on_milestone(user, {**body, "poolId": pool_id})
 
 
 @app.get("/api/v1/investor/deal-rooms", tags=["Investor"])
 async def investor_deal_rooms(user: UserContext = Depends(get_user_context)):
-    """Deal-room list metadata (status/stage/activity per startup). 0 credits."""
+    """Deal-room list metadata (status/stage/activity per startup). 0 execution budget units."""
     return await DealRoomService(brain).get_deal_rooms(user)
 
 
@@ -1155,14 +1143,14 @@ async def investor_deal_room(
 ):
     """
     Deal-room detail: term sheet (valuation ARR×8), milestone tranches, documents,
-    negotiation stepper. 0 credits. Optional body: startup data (for valuation).
+    negotiation stepper. 0 execution budget units. Optional body: startup data (for valuation).
     """
     return await DealRoomService(brain).get_deal_room(user, project_id, startup)
 
 
 @app.get("/api/v1/investor/data-rooms", tags=["Investor"])
 async def investor_data_rooms(user: UserContext = Depends(get_user_context)):
-    """Per-startup data-room vault metadata + access. 0 credits, Investor+"""
+    """Per-startup data-room vault metadata + access. 0 execution budget units, Investor+"""
     return await DataRoomService(brain).get_data_rooms(user)
 
 
@@ -1172,7 +1160,7 @@ async def investor_data_room_access(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Share a data room with an investor. 0 credits. Body: { investorId, canDownload }"""
+    """Share a data room with an investor. 0 execution budget units. Body: { investorId, canDownload }"""
     return await DataRoomService(brain).grant_access(user, {**body, "projectId": project_id})
 
 
@@ -1180,14 +1168,14 @@ async def investor_data_room_access(
 async def investor_reputation(user: UserContext = Depends(get_user_context)):
     """
     Investor reputation: composite score, component metrics, founder reviews,
-    score progression, leaderboard position. 0 credits, Investor+.
+    score progression, leaderboard position. 0 execution budget units, Investor+.
     """
     return await InvestorReputationService(brain).get_reputation(user)
 
 
 @app.get("/api/v1/investor/heatmap", tags=["Investor"])
 async def investor_heatmap(user: UserContext = Depends(get_user_context)):
-    """Geographic signal: per-region readiness/compliance + per-sector growth. 0 credits."""
+    """Geographic signal: per-region readiness/compliance + per-sector growth. 0 execution budget units."""
     return await GeoSignalService(brain).get_heatmap(user)
 
 
@@ -1212,7 +1200,7 @@ async def workspace_suggest_tasks(
     request: Request,
     user: UserContext = Depends(get_user_context),
 ):
-    """AI task suggestions for the workspace. 0 credits.
+    """AI task suggestions for the workspace. 0 execution budget units.
 
     Forwards the caller's Bearer token to BACKEND/api/mcp so suggestions are
     tool-aware (catalogue passed into the agent's prompt context)."""
@@ -1226,7 +1214,7 @@ async def workspace_list_tools(
     request: Request,
     user: UserContext = Depends(get_user_context),
 ):
-    """List plugin tools the user can invoke. 0 credits. Requires Bearer token."""
+    """List plugin tools the user can invoke. 0 execution budget units. Requires Bearer token."""
     token = _extract_bearer_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Bearer token required to list MCP tools")
@@ -1239,7 +1227,7 @@ async def workspace_invoke_tool(
     request: Request,
     user: UserContext = Depends(get_user_context),
 ):
-    """Invoke a plugin tool as the authenticated user. 0 credits.
+    """Invoke a plugin tool as the authenticated user. 0 execution budget units.
     Body: { plugin, tool, params? }. Forwards the caller's Bearer to
     BACKEND/api/mcp — role enforcement + audit happen there."""
     token = _extract_bearer_token(request)
@@ -1258,7 +1246,7 @@ async def workspace_review_code(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """AI code review. 1 credit, Founder Pro+. Body: { code, language, context }"""
+    """AI code review. 1 execution budget unit, Founder Pro+. Body: { code, language, context }"""
     return await WorkspaceAIService(brain).review_code(user, body)
 
 
@@ -1267,7 +1255,7 @@ async def workspace_plan_sprint(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """AI sprint planning. 0 credits."""
+    """AI sprint planning. 0 execution budget units."""
     return await WorkspaceAIService(brain).plan_sprint(user, body)
 
 
@@ -1277,7 +1265,7 @@ async def workspace_plan_sprint(
 
 @app.get("/api/v1/founder/projects", tags=["Founder"])
 async def founder_projects(user: UserContext = Depends(get_user_context)):
-    """A founder's portfolio of ventures (multiple separate startups). 0 credits."""
+    """A founder's portfolio of ventures (multiple separate startups). 0 execution budget units."""
     return await ProjectService(brain).list_founder_projects(user)
 
 
@@ -1286,7 +1274,7 @@ async def founder_create_project(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Create a new venture. 0 credits.
+    """Create a new venture. 0 execution budget units.
     Body: { title, tagline?, industry?, stage?, hackathonId?, teamId? }.
     hackathonId+teamId are recorded on the project's origin field when both are
     provided, so a venture promoted from a hackathon knows where it came from."""
@@ -1299,7 +1287,7 @@ async def founder_create_project(
 
 @app.get("/api/v1/workspaces", tags=["Workspace"])
 async def list_workspaces(user: UserContext = Depends(get_user_context)):
-    """List the founder's workspaces (each bound to a project). 0 credits."""
+    """List the founder's workspaces (each bound to a project). 0 execution budget units."""
     return await WorkspaceService(brain).list_workspaces(user)
 
 
@@ -1310,7 +1298,7 @@ async def provision_workspace(
 ):
     """
     Provision (or fetch) a workspace bound to an analyzed project, seeded from
-    its latest Incubation Hub analysis. 0 credits. Body: { projectId, name? }
+    its latest Incubation Hub analysis. 0 execution budget units. Body: { projectId, name? }
     """
     return await WorkspaceService(brain).provision_workspace(user, body)
 
@@ -1321,7 +1309,7 @@ async def workspace_context(
     project_id: Optional[str] = None,
     user: UserContext = Depends(get_user_context),
 ):
-    """Project-scoped workspace context (loads the bound venture's blueprint). 0 credits."""
+    """Project-scoped workspace context (loads the bound venture's blueprint). 0 execution budget units."""
     return await WorkspaceService(brain).get_workspace_context(user, workspace_id, project_id)
 
 
@@ -1335,7 +1323,7 @@ async def generate_suggestions(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Generate personalized suggestions for a user. 0 credits (WORKSPACE_ASSISTANT).
+    """Generate personalized suggestions for a user. 0 execution budget units (WORKSPACE_ASSISTANT).
 
     Called by background job to pre-compute suggestions. Body accepts:
     { currentState, role, gsisScore, gsisBreakdown, recentAgentRuns, openTasks }
@@ -1367,11 +1355,11 @@ def _compute_do_now(role, state, weakest_component, weakest_score, gsis_score):
     if role == "founder":
         if weakest_component and weakest_score < 50:
             action_map = {
-                "market_readiness": ("Run Market Intelligence", "/incubation-hub", 2),
-                "product_feasibility": ("Run Feasibility Analysis", "/incubation-hub", 2),
-                "team_strength": ("Connect GitHub or invite a collaborator", "/founder/trust", 0),
-                "financial_viability": ("Run Finance Strategy Analysis", "/incubation-hub", 2),
-                "innovation_score": ("Run Unicorn Potential Analysis", "/incubation-hub", 2),
+                "market_readiness": ("Run Market Intelligence", "/incubation-hub"),
+                "product_feasibility": ("Run Feasibility Analysis", "/incubation-hub"),
+                "team_strength": ("Connect GitHub or invite a collaborator", "/founder/trust"),
+                "financial_viability": ("Run Finance Strategy Analysis", "/incubation-hub"),
+                "innovation_score": ("Run Unicorn Potential Analysis", "/incubation-hub"),
             }
             entry = action_map.get(weakest_component)
             if entry:
@@ -1379,7 +1367,6 @@ def _compute_do_now(role, state, weakest_component, weakest_score, gsis_score):
                     "action": entry[0],
                     "reason": f"Your {weakest_component.replace('_', ' ')} is {int(weakest_score)}/100 — your lowest GSIS component.",
                     "timeEstimate": "15 min",
-                    "credits": entry[2],
                     "url": entry[1],
                 }
         if state == "idea":
@@ -1387,7 +1374,6 @@ def _compute_do_now(role, state, weakest_component, weakest_score, gsis_score):
                 "action": "Run your first venture analysis",
                 "reason": "Transform your idea into a structured startup profile with AI-powered insights.",
                 "timeEstimate": "10 min",
-                "credits": 2,
                 "url": "/incubation-hub",
             }
         if state == "validating":
@@ -1395,7 +1381,6 @@ def _compute_do_now(role, state, weakest_component, weakest_score, gsis_score):
                 "action": "Generate your business plan",
                 "reason": "You have analysis results — turn them into a structured plan for investors.",
                 "timeEstimate": "20 min",
-                "credits": 3,
                 "url": "/incubation-hub",
             }
     elif role == "collaborator":
@@ -1404,7 +1389,6 @@ def _compute_do_now(role, state, weakest_component, weakest_score, gsis_score):
                 "action": "Apply to your first project",
                 "reason": "Your CBS score builds from real contributions. Apply to start building your portfolio.",
                 "timeEstimate": "10 min",
-                "credits": 0,
                 "url": "/collaborator/opportunities",
             }
         if state == "applied":
@@ -1412,7 +1396,6 @@ def _compute_do_now(role, state, weakest_component, weakest_score, gsis_score):
                 "action": "Connect your GitHub to boost visibility",
                 "reason": "Founders prioritize collaborators with verified technical credentials.",
                 "timeEstimate": "5 min",
-                "credits": 0,
                 "url": "/collaborator/reputation",
             }
     elif role == "investor":
@@ -1421,7 +1404,6 @@ def _compute_do_now(role, state, weakest_component, weakest_score, gsis_score):
                 "action": "Set your investment thesis",
                 "reason": "TechIT matches startups to your criteria. Define your thesis to get relevant deal flow.",
                 "timeEstimate": "10 min",
-                "credits": 0,
                 "url": "/investor/deal-intelligence",
             }
         if state == "actively_monitoring":
@@ -1429,7 +1411,6 @@ def _compute_do_now(role, state, weakest_component, weakest_score, gsis_score):
                 "action": "Review your watchlist movements",
                 "reason": "Startups on your watchlist may have new milestones or decay signals.",
                 "timeEstimate": "5 min",
-                "credits": 0,
                 "url": "/investor/watchlist",
             }
     elif role == "organisation":
@@ -1438,7 +1419,6 @@ def _compute_do_now(role, state, weakest_component, weakest_score, gsis_score):
                 "action": "Check cohort health dashboard",
                 "reason": "Monitor team progress and identify teams that need intervention.",
                 "timeEstimate": "10 min",
-                "credits": 0,
                 "url": "/org/analytics",
             }
     return None
@@ -1480,7 +1460,7 @@ def _compute_weekly_priority(role, state, gsis_score):
 
 @app.get("/api/v1/hackathons", tags=["Hackathon"])
 async def list_hackathons(user: UserContext = Depends(get_user_context)):
-    """List hackathons. 0 credits."""
+    """List hackathons. 0 execution budget units."""
     return await HackathonService(brain).list_hackathons(user)
 
 
@@ -1489,31 +1469,31 @@ async def create_hackathon(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Create a hackathon/program event. 0 credits."""
+    """Create a hackathon/program event. 0 execution budget units."""
     return await HackathonService(brain).create_hackathon(user, body)
 
 
 @app.get("/api/v1/hackathons/{hackathon_id}/overview", tags=["Hackathon"])
 async def hackathon_overview(hackathon_id: str, user: UserContext = Depends(get_user_context)):
-    """Org command-centre real-time stats. 0 credits."""
+    """Org command-centre real-time stats. 0 execution budget units."""
     return await HackathonService(brain).get_overview(user, hackathon_id)
 
 
 @app.get("/api/v1/hackathons/{hackathon_id}/velocity", tags=["Hackathon"])
 async def hackathon_velocity(hackathon_id: str, user: UserContext = Depends(get_user_context)):
-    """Per-team build-velocity heatmap from REAL check-ins (not random). 0 credits."""
+    """Per-team build-velocity heatmap from REAL check-ins (not random). 0 execution budget units."""
     return await HackathonService(brain).get_velocity_heatmap(user, hackathon_id)
 
 
 @app.get("/api/v1/hackathons/{hackathon_id}/leaderboard", tags=["Hackathon"])
 async def hackathon_leaderboard(hackathon_id: str, user: UserContext = Depends(get_user_context)):
-    """Composite-ranked leaderboard. 0 credits."""
+    """Composite-ranked leaderboard. 0 execution budget units."""
     return await HackathonService(brain).get_leaderboard(user, hackathon_id)
 
 
 @app.get("/api/v1/hackathons/{hackathon_id}/pipeline", tags=["Hackathon"])
 async def hackathon_pipeline(hackathon_id: str, user: UserContext = Depends(get_user_context)):
-    """CRS pipeline buckets (incubation/prototype/learning). 0 credits."""
+    """CRS pipeline buckets (incubation/prototype/learning). 0 execution budget units."""
     return await HackathonService(brain).get_pipeline(user, hackathon_id)
 
 
@@ -1521,7 +1501,7 @@ async def hackathon_pipeline(hackathon_id: str, user: UserContext = Depends(get_
 async def hackathon_register(
     hackathon_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context),
 ):
-    """Register a team/solo. 0 credits. Body: { name?, members? }"""
+    """Register a team/solo. 0 execution budget units. Body: { name?, members? }"""
     return await HackathonService(brain).register(user, {**body, "hackathonId": hackathon_id})
 
 
@@ -1529,7 +1509,7 @@ async def hackathon_register(
 async def hackathon_brief(
     hackathon_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context),
 ):
-    """Submit + score an idea brief. 0 credits. Body: { teamId, problem, solution, ... }"""
+    """Submit + score an idea brief. 0 execution budget units. Body: { teamId, problem, solution, ... }"""
     return await HackathonService(brain).submit_brief(user, {**body, "hackathonId": hackathon_id})
 
 
@@ -1537,7 +1517,7 @@ async def hackathon_brief(
 async def hackathon_checkin(
     hackathon_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context),
 ):
-    """Log a build check-in (feeds the velocity heatmap). 0 credits. Body: { teamId, note, progressDelta? }"""
+    """Log a build check-in (feeds the velocity heatmap). 0 execution budget units. Body: { teamId, note, progressDelta? }"""
     return await HackathonService(brain).log_check_in(user, {**body, "hackathonId": hackathon_id})
 
 
@@ -1545,7 +1525,7 @@ async def hackathon_checkin(
 async def hackathon_team_status(
     hackathon_id: str, team_id: str, user: UserContext = Depends(get_user_context),
 ):
-    """Team-facing status (brief, composite, check-ins, workspace). 0 credits."""
+    """Team-facing status (brief, composite, check-ins, workspace). 0 execution budget units."""
     return await HackathonService(brain).get_team_status(user, hackathon_id, team_id)
 
 
@@ -1554,7 +1534,7 @@ async def hackathon_team_workspace(
     hackathon_id: str, team_id: str, body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Pipe the analyzed brief into a team workspace. 0 credits. Body: { projectId? }"""
+    """Pipe the analyzed brief into a team workspace. 0 execution budget units. Body: { projectId? }"""
     return await HackathonService(brain).provision_team_workspace(user, hackathon_id, team_id, body)
 
 
@@ -1563,7 +1543,7 @@ async def hackathon_team_report(
     hackathon_id: str, team_id: str, body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Report a team's idea+artifacts to organizers (promote pipeline). 0 credits.
+    """Report a team's idea+artifacts to organizers (promote pipeline). 0 execution budget units.
     Body: { workspaceId?, idea?, team?, artifacts?, stage? }"""
     return await HackathonService(brain).report_team_to_organizers(user, hackathon_id, team_id, body)
 
@@ -1577,7 +1557,7 @@ async def tour_guide_audio_briefing(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Momentum audio briefing (TTS). 0 credits. Body: { text }"""
+    """Momentum audio briefing (TTS). 0 execution budget units. Body: { text }"""
     return await TourGuideService(brain).get_audio_briefing(user, body.get("text", ""))
 
 
@@ -1590,7 +1570,7 @@ async def admin_monitor_scan(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Anomaly scan over signals. 0 credits, Admin only. Body: { signals: [...] }"""
+    """Anomaly scan over signals. 0 execution budget units, Admin only. Body: { signals: [...] }"""
     return await AdminMonitorService(brain).run_anomaly_scan(user, body.get("signals", []))
 
 
@@ -1599,7 +1579,7 @@ async def admin_stagnation_roster(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Stagnating-project roster (decay-based). 0 credits. Body: { projects: [...] }"""
+    """Stagnating-project roster (decay-based). 0 execution budget units. Body: { projects: [...] }"""
     return await AdminMonitorService(brain).check_stagnation_roster(user, body.get("projects", []))
 
 
@@ -1610,7 +1590,7 @@ async def admin_stagnation_roster(
 @app.get("/api/v1/collaborator/equity", tags=["Collaborator"])
 async def collaborator_equity(user: UserContext = Depends(get_user_context)):
     """
-    Collaborator equity holdings, totals, and vesting timeline. 0 credits, Free+.
+    Collaborator equity holdings, totals, and vesting timeline. 0 execution budget units, Free+.
     Returns { holdings, totals, vestingTimeline } in camelCase (matches the
     frontend EquityHolding / equityTotals / VestingTimelineSeries contracts).
     """
@@ -1623,7 +1603,7 @@ async def collaborator_equity_dilution(
     user: UserContext = Depends(get_user_context),
 ):
     """
-    Apply a dilution event with protection. 0 credits, Free+.
+    Apply a dilution event with protection. 0 execution budget units, Free+.
     Body: { projectId, newSharesPercent, consentGiven }
     Already-vested equity is shielded unless consent is given.
     """
@@ -1637,7 +1617,7 @@ async def collaborator_equity_dilution(
 @app.get("/api/v1/collaborator/earnings", tags=["Collaborator"])
 async def collaborator_earnings(user: UserContext = Depends(get_user_context)):
     """
-    Collaborator cash earnings, payout ledger, and totals. 0 credits, Free+.
+    Collaborator cash earnings, payout ledger, and totals. 0 execution budget units, Free+.
     Returns { cashEarnings, payouts, totals } in camelCase (matches frontend
     CashEarning / Payout / cashTotals contracts).
     """
@@ -1649,7 +1629,7 @@ async def collaborator_withdraw(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Request a withdrawal of pending funds. 0 credits. Body: { amount, destination? }"""
+    """Request a withdrawal of pending funds. 0 execution budget units. Body: { amount, destination? }"""
     return await PayoutService(brain).request_withdrawal(user, body)
 
 
@@ -1662,7 +1642,7 @@ async def submit_problem(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Submit a real-world problem to the Global Problems Board. 2 credits, Free+"""
+    """Submit a real-world problem to the Global Problems Board. 2 execution budget units, Free+"""
     return await IdeaSolutionHubService(brain).submit_problem(
         user,
         title=body["title"],
@@ -1682,7 +1662,7 @@ async def get_problems_board(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Global Problems Board -- verified problems ranked by priority score. 0 credits, Free+"""
+    """Global Problems Board -- verified problems ranked by priority score. 0 execution budget units, Free+"""
     from database_schema import ProblemNode
 
     capped = min(max(limit, 1), 100)
@@ -1728,7 +1708,7 @@ async def analyze_problem(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Deep AI problem analysis -- stakeholder map, root causes. 2 credits, Builder+"""
+    """Deep AI problem analysis -- stakeholder map, root causes. 2 execution budget units, Builder+"""
     return await IdeaSolutionHubService(brain).analyze_problem(user, problem_id, body)
 
 
@@ -1738,7 +1718,7 @@ async def discover_problems(
     limit: int = 20,
     user: UserContext = Depends(get_user_context),
 ):
-    """Auto-discover problems from external signals. 2 credits, Builder+"""
+    """Auto-discover problems from external signals. 2 execution budget units, Builder+"""
     return await IdeaSolutionHubService(brain).discover_problems(user, region, limit)
 
 
@@ -1748,7 +1728,7 @@ async def convert_discussion(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Convert matured discussion to Solution Project. 3 credits, Founder Pro+"""
+    """Convert matured discussion to Solution Project. 3 execution budget units, Founder Pro+"""
     return await IdeaSolutionHubService(brain).convert_to_solution(
         user,
         problem_id=body["problem_id"],
@@ -1765,7 +1745,7 @@ async def create_solution_deployment(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Create real-world deployment plan for a validated solution. 2 credits, Founder Pro+"""
+    """Create real-world deployment plan for a validated solution. 2 execution budget units, Founder Pro+"""
     from idea_solution_hub import (SolutionProject, SolutionType, FundingType,
                                     SolutionStage, ContributorRole)
     sol = SolutionProject(
@@ -1792,7 +1772,7 @@ async def submit_field_feedback(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Submit field feedback from a live deployment. 1 credit, Free+"""
+    """Submit field feedback from a live deployment. 1 execution budget unit, Free+"""
     return await IdeaSolutionHubService(brain).submit_field_feedback(
         user, deployment_id,
         body["solution_id"], body["field_report"],
@@ -1805,7 +1785,7 @@ async def generate_grant(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Generate AI grant application for a solution. 3 credits, Founder Pro+"""
+    """Generate AI grant application for a solution. 3 execution budget units, Founder Pro+"""
     from idea_solution_hub import (SolutionProject, SolutionType, FundingType,
                                     SolutionStage)
     sol = SolutionProject(
@@ -1830,7 +1810,7 @@ async def global_impact(
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Global Impact Dashboard -- live aggregates over deployments + impact snapshots. 0 credits, Free+"""
+    """Global Impact Dashboard -- live aggregates over deployments + impact snapshots. 0 execution budget units, Free+"""
     from sqlalchemy import func
     from database_schema import (
         ProblemNode, SolutionProject, SolutionDeployment, ImpactSnapshot,
@@ -1876,7 +1856,7 @@ async def global_impact(
 
 @app.get("/api/v1/documents/templates", tags=["Document Generation"])
 async def get_doc_templates(user: UserContext = Depends(get_user_context)):
-    """List all 8 document types with credit costs and page estimates. 0 credits, Free+"""
+    """List all 8 document types with execution budget unit costs and page estimates. 0 execution budget units, Free+"""
     return DocumentGenerationService(brain).get_available_templates()
 
 
@@ -1887,7 +1867,7 @@ async def generate_document(
 ):
     """
     Generate any of the 8 document types.
-    2–4 credits depending on type. Founder Pro+
+    2–4 execution budget units depending on type. Founder Pro+
 
     Body params:
       project_id       (required)
@@ -1922,7 +1902,7 @@ async def investor_pack(
     """
     Generate the complete investor pack in one call:
     Executive Summary + Pitch Deck + Business Plan + Investor Report.
-    8 credits. Investor+
+    8 execution budget units. Investor+
     """
     return await DocumentGenerationService(brain).generate_investor_pack(
         user,
@@ -1938,7 +1918,7 @@ async def edit_document(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """AI-powered in-document editing. 2 credits, Builder+"""
+    """AI-powered in-document editing. 2 execution budget units, Builder+"""
     return await DocumentGenerationService(brain).edit_with_ai(
         user, document_id,
         body["current_content"],
@@ -1953,7 +1933,7 @@ async def share_document(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Generate shareable link with expiry. 0 credits, Free+"""
+    """Generate shareable link with expiry. 0 execution budget units, Free+"""
     return await DocumentGenerationService(brain).share_document(
         user, document_id,
         body.get("expiry_days", 30),
@@ -1966,7 +1946,7 @@ async def share_document(
 
 @app.get("/api/v1/ip-protection/status", tags=["IP Protection"])
 async def ip_protection_status(user: UserContext = Depends(get_user_context)):
-    """Three-layer IP protection status. 0 credits, Founder Pro+"""
+    """Three-layer IP protection status. 0 execution budget units, Founder Pro+"""
     return IPProtectionService(brain).get_protection_status()
 
 
@@ -1978,7 +1958,7 @@ async def check_fingerprint(
     """
     Check if a fingerprint matches any stored idea fingerprints.
     Returns action=block on collision, action=allow on clear.
-    0 credits, Founder Pro+
+    0 execution budget units, Founder Pro+
     """
     svc = IPProtectionService(brain)
     fp = svc.fingerprint(body.get("idea_text", ""))
@@ -1991,7 +1971,7 @@ async def embed_idea(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
-    """Create vector embedding for IP leak detection. 1 credit, Founder Pro+"""
+    """Create vector embedding for IP leak detection. 1 execution budget unit, Founder Pro+"""
     return await IPProtectionService(brain).create_idea_embedding(
         user_context=user,
         project_id=body.get("project_id", user.project_id or ""),
@@ -2000,178 +1980,25 @@ async def embed_idea(
 
 
 # ============================================================================
-# BILLING & CREDITS
+# MODEL CATALOG / EXECUTION ROUTING
 # ============================================================================
 
-@app.get("/api/v1/credits/summary", tags=["Billing"])
-async def credits_summary(
-    user: UserContext = Depends(get_user_context),
-    db=Depends(get_db),
-):
-    """
-    Current credit balance and usage summary from credit_ledger + credit_purchases.
-    0 credits, Free+
-    """
-    from sqlalchemy import func
-    from database_schema import CreditLedger, CreditPurchase
-
-    try:
-        latest = (
-            db.query(CreditLedger)
-            .filter(CreditLedger.user_id == user.user_id)
-            .order_by(CreditLedger.created_at.desc())
-            .first()
-        )
-        balance = latest.credits_after if latest else user.credits_remaining
-
-        spent = db.query(func.coalesce(func.sum(CreditLedger.credits_delta), 0)).filter(
-            CreditLedger.user_id == user.user_id,
-            CreditLedger.credits_delta < 0,
-        ).scalar() or 0
-
-        credits_purchased = db.query(func.coalesce(func.sum(CreditPurchase.credits_qty), 0)).filter(
-            CreditPurchase.user_id == user.user_id,
-            CreditPurchase.status == "completed",
-        ).scalar() or 0
-
-        usd_spent = db.query(func.coalesce(func.sum(CreditPurchase.amount_usd), 0)).filter(
-            CreditPurchase.user_id == user.user_id,
-            CreditPurchase.status == "completed",
-        ).scalar() or 0
-
-        recent = (
-            db.query(CreditLedger)
-            .filter(CreditLedger.user_id == user.user_id)
-            .order_by(CreditLedger.created_at.desc())
-            .limit(10)
-            .all()
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.error("credits_summary_query_failed", error=str(e))
-        raise HTTPException(status_code=503, detail="Credit summary temporarily unavailable")
-
-    return {
-        "user_id":            user.user_id,
-        "subscription_tier":  user.subscription_tier.value,
-        "balance":            int(balance or 0),
-        "credits_purchased":  int(credits_purchased),
-        "credits_spent":      abs(int(spent)),
-        "usd_spent":          float(usd_spent),
-        "recent_transactions": [
-            {
-                "id":            str(t.id),
-                "event_type":    t.event_type.value if hasattr(t.event_type, "value") else str(t.event_type),
-                "credits_delta": t.credits_delta,
-                "credits_after": t.credits_after,
-                "task_type":     t.task_type,
-                "description":   t.description,
-                "created_at":    t.created_at.isoformat() if t.created_at else None,
-            }
-            for t in recent
-        ],
-    }
-
-
-@app.post("/api/v1/billing/paywall/{operation_id}", tags=["Billing"])
-async def check_paywall(
-    operation_id: str,
+@app.get("/api/v1/models", tags=["AI Execution"])
+async def list_models(
+    task_type: Optional[str] = None,
     user: UserContext = Depends(get_user_context),
 ):
-    """Check paywall status for an operation. 0 credits, Free+"""
-    from billing_system import CREDIT_OPERATIONS
-    op = CREDIT_OPERATIONS.get(operation_id)
-    if not op:
-        raise HTTPException(status_code=404, detail=f"Operation '{operation_id}' not found")
-    can_afford = user.credits_remaining >= op.credit_cost
-    return {
-        "operation_id":    operation_id,
-        "credit_cost":     op.credit_cost,
-        "credits_remaining": user.credits_remaining,
-        "can_proceed":     can_afford,
-        "paywall_active":  not can_afford,
-        "upgrade_message": f"Unlock {operation_id} -- upgrade your plan" if not can_afford else None,
-    }
-
-
-# ============================================================================
-# STRIPE WEBHOOK
-# ============================================================================
-
-@app.post("/api/v1/webhooks/stripe", tags=["Billing"])
-async def stripe_webhook(request: Request):
-    """
-    Stripe webhook handler with signature verification.
-
-    Verifies the `stripe-signature` header against STRIPE_WEBHOOK_SECRET, then
-    dispatches on event type. `checkout.session.completed` records a PAYG credit
-    purchase (idempotent on the Stripe id).
-    """
-    import stripe
-
-    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
-    if not webhook_secret:
-        logger.error("stripe_webhook_misconfigured", reason="STRIPE_WEBHOOK_SECRET not set")
-        raise HTTPException(status_code=500, detail="Stripe webhook is not configured")
-
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature", "")
-
+    """Return enabled user-selectable models, optionally filtered by task."""
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-    except ValueError:
-        # Malformed payload
-        raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
-
-    event_type = event.get("type", "")
-    obj = event.get("data", {}).get("object", {}) or {}
-
-    # Process known events. Failures here are logged but still return 200 so
-    # Stripe doesn't retry indefinitely once the signature is verified.
-    try:
-        if event_type == "checkout.session.completed":
-            _record_credit_purchase(obj)
-        else:
-            logger.info("stripe_webhook_ignored", event_type=event_type)
-    except Exception as e:  # noqa: BLE001
-        logger.error("stripe_webhook_processing_failed", event_type=event_type, error=str(e))
-
-    return {"received": True, "event_type": event_type}
+        router = brain.model_router if brain else ModelRouter(ModelRegistry())
+        return {"version": router.registry.version, "models": router.list_models(task_type)}
+    except RegistryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-def _record_credit_purchase(session_obj: Dict[str, Any]) -> None:
-    """Idempotently record a PAYG credit purchase from a completed checkout session."""
-    from database_schema import CreditPurchase
-
-    stripe_id = session_obj.get("id")
-    metadata = session_obj.get("metadata", {}) or {}
-    user_id = metadata.get("user_id")
-    credits_qty = int(metadata.get("credits", 0) or 0)
-    amount_usd = (session_obj.get("amount_total", 0) or 0) / 100.0  # cents -> USD
-
-    if not (stripe_id and user_id and credits_qty > 0):
-        logger.warning("stripe_checkout_missing_fields", stripe_id=stripe_id, user_id=user_id)
-        return
-
-    Session = _db_session_factory()
-    db = Session()
-    try:
-        exists = db.query(CreditPurchase).filter(CreditPurchase.stripe_id == stripe_id).first()
-        if exists:
-            logger.info("stripe_checkout_already_recorded", stripe_id=stripe_id)
-            return
-        db.add(CreditPurchase(
-            user_id=user_id,
-            credits_qty=credits_qty,
-            amount_usd=amount_usd,
-            stripe_id=stripe_id,
-            status="completed",
-        ))
-        db.commit()
-        logger.info("stripe_credit_purchase_recorded", user_id=user_id, credits=credits_qty)
-    finally:
-        db.close()
+@app.get("/api/v1/tasks/{task_type}/models", tags=["AI Execution"])
+async def list_task_models(task_type: str, user: UserContext = Depends(get_user_context)):
+    return await list_models(task_type=task_type, user=user)
 
 
 # ============================================================================

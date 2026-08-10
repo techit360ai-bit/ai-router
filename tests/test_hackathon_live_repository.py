@@ -22,7 +22,7 @@ os.environ.setdefault("SECRET_KEY", "test")
 os.environ["ENVIRONMENT"] = "development"
 os.environ.pop("DATABASE_URL", None)
 
-from ai_router_core import SubscriptionTier, UserContext, UserRole  # noqa: E402
+from ai_router_core import UserContext, UserRole  # noqa: E402
 from integration_guide import HackathonService  # noqa: E402
 from live_domain_repository import reset_memory_store_for_tests  # noqa: E402
 
@@ -31,8 +31,6 @@ def _user_ctx() -> UserContext:
     return UserContext(
         user_id="u_test",
         role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FOUNDER_PRO,
-        credits_remaining=100,
         project_id="p",
         project_stage="mvp",
         industry="saas",

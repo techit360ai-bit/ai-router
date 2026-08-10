@@ -126,7 +126,6 @@ def _expired_badge_batch() -> dict[str, Any]:
         "user_id": "u_trust_worker",
         "project_id": "p_trust_worker",
         "role": "founder",
-        "subscription_tier": "free",
         "project_stage": "mvp",
         "industry": "saas",
         "connections": [
@@ -154,7 +153,6 @@ def _expired_github_batch() -> dict[str, Any]:
         "user_id": "u_trust_worker",
         "project_id": "p_trust_worker",
         "role": "founder",
-        "subscription_tier": "free",
         "project_stage": "mvp",
         "industry": "saas",
         "connections": [
@@ -182,7 +180,6 @@ def test_worker_groups_due_trust_rows_with_badge_refs() -> None:
             last_sync_at="2020-01-01T00:00:00",
             expires_at="2020-01-01T12:00:00",
             role="FOUNDER",
-            subscription_tier="FREE",
             project_stage="MVP",
             industry="saas",
             active_badges=[{"badge_type": "product_live", "label": "Product Live"}],

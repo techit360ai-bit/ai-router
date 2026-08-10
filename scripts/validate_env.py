@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 MANIFEST_PATH = ROOT / "docs" / "deployment-manifest.json"
 REQUIRED_SERVICES = {"ai-router-api", "ai-router-worker", "ai-router-scheduler", "postgres-pgvector", "redis"}
 PROD_ENVS = {"production", "staging"}
@@ -132,10 +133,17 @@ def require_url_value(name: str, value: str, schemes: set[str]) -> None:
 
 
 def validate_integrations() -> None:
-    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"):
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         value = require_value(name)
         if "replace" in value.lower() or "your_key_here" in value.lower():
             fail(f"{name} must not be a placeholder")
+    from model_registry import ModelRegistry
+    ModelRegistry()
+
+    if os.getenv("REQUIRE_AI_EXECUTION_GRANT", "false").lower() in {"1", "true", "yes"}:
+        secret = os.getenv("AI_EXECUTION_GRANT_SECRET") or os.getenv("JWT_SECRET", "")
+        if len(secret) < 32:
+            fail("execution-grant verification requires a strong secret")
 
 
 def main() -> int:

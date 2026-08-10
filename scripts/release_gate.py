@@ -24,8 +24,7 @@ ENV_CONTRACT = {
     "MCP_TIMEOUT": "10",
     "OPENAI_API_KEY": "sk-ci-contract-value",
     "ANTHROPIC_API_KEY": "sk-ant-ci-contract-value",
-    "STRIPE_SECRET_KEY": "sk_live_ci_contract_value",
-    "STRIPE_WEBHOOK_SECRET": "whsec_ci_contract_value",
+    "REQUIRE_AI_EXECUTION_GRANT": "false",
 }
 
 TEST_ENV = {

@@ -89,23 +89,6 @@ SELECT
     p.gsis_score * EXP(-0.02 * p.days_since_update) AS live_gsis_adjusted
 FROM projects p;
 
--- Monthly credit burn view
-CREATE OR REPLACE VIEW monthly_credit_burn AS
-SELECT
-    u.id AS user_id, u.subscription_tier,
-    u.subscription_credits_remaining,
-    u.payg_credits_balance,
-    COUNT(cl.id) AS transactions_this_month,
-    SUM(ABS(cl.credits_delta)) FILTER (WHERE cl.event_type = 'CREDITS_DEDUCTED')
-        AS credits_consumed,
-    SUM(cl.usd_charged_payg) AS payg_usd_spent
-FROM users u
-LEFT JOIN credit_ledger cl
-    ON cl.user_id = u.id
-    AND cl.created_at >= date_trunc('month', NOW())
-GROUP BY u.id, u.subscription_tier,
-         u.subscription_credits_remaining, u.payg_credits_balance;
-
 -- Stagnation view
 CREATE OR REPLACE VIEW stagnating_projects AS
 SELECT p.id, p.title, p.owner_id, p.days_since_update,
