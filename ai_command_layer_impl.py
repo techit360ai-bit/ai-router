@@ -174,6 +174,12 @@ class ExecutionCommandLayer:
                     await self._record_successful_attempt(
                         request, config, request_id, attempt_number, output, attempt_started
                     )
+                    self.model_router.record_feedback(
+                        config.id,
+                        success=True,
+                        latency_ms=float(output["attempt_latency_ms"]),
+                        quality=float(output.get("confidence") or 1.0),
+                    )
                     return self._build_response(request, output, request_id, time.perf_counter())
                 except Exception as exc:  # noqa: BLE001 - fallback boundary
                     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
@@ -183,6 +189,12 @@ class ExecutionCommandLayer:
                     last_exc = exc
                     self.model_router.circuit_breaker.record_failure(circuit_key)
                     await self._record_failed_attempt(request, config, request_id, attempt_number, exc, attempt_started)
+                    self.model_router.record_feedback(
+                        config.id,
+                        success=False,
+                        latency_ms=float((time.perf_counter() - attempt_started) * 1000),
+                        quality=0.0,
+                    )
                     if not self._retryable(exc) or retry_number >= retries:
                         break
                     await asyncio.sleep(min(2.0, 0.25 * (2 ** retry_number) + random.random() * 0.15))

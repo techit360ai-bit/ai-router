@@ -81,6 +81,11 @@ class AgentType(Enum):
     BUSINESS_PLAN_GEN     = "business_plan_generator"
     TECH_ARCHITECT        = "tech_architect"
     PIVOT_INTELLIGENCE    = "pivot_intelligence"
+    FOUNDER_INTERROGATION = "founder_interrogation"
+    EVIDENCE_RESEARCH     = "evidence_research"
+    PMF_VALIDATION        = "pmf_validation"
+    GEOGRAPHIC_INTELLIGENCE = "geographic_intelligence"
+    MVP_BUILD_PLANNER     = "mvp_build_planner"
     # Platform
     TOUR_GUIDE            = "tour_guide"
     ADAPTIVE_TRAINING     = "adaptive_training"
@@ -164,10 +169,24 @@ class BaseAgent(ABC):
     async def _call_ai(self, task_type: TaskType, input_data: Dict,
                         user_context: UserContext, ip_protected: bool = False,
                         max_tokens: int = 3000) -> AIResponse:
+        venture = input_data.get("venture_profile") if isinstance(input_data.get("venture_profile"), dict) else {}
         return await self.ai_brain.process_request(AIRequest(
             task_type=task_type, user_context=user_context,
             input_data=input_data, ip_protected=ip_protected, max_tokens=max_tokens,
+            requested_model=input_data.get("model_id") or input_data.get("requested_model") or venture.get("model_id") or venture.get("requested_model"),
+            execution_profile=str(input_data.get("execution_profile") or venture.get("execution_profile") or "balanced"),
         ))
+
+    @staticmethod
+    def _structured(output: str, fallback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        import json
+        import re
+        try:
+            clean = re.sub(r"```(?:json)?|```", "", output or "").strip()
+            value = json.loads(clean)
+            return value if isinstance(value, dict) else (fallback or {})
+        except (TypeError, ValueError):
+            return fallback or {"analysis": output}
 
     def _log(self, result: AgentResult) -> None:
         self._history.append({
@@ -214,21 +233,22 @@ class VentureIntakeAgent(BaseAgent):
         if idea_text:
             try:
                 import hashlib as _hl
+                import json as _json
                 fingerprint = _hl.sha256(idea_text.encode()).hexdigest()
-                # Production: call embedding API then INSERT INTO idea_embeddings
-                # embed_resp = await self._call_ai(
-                #     TaskType.EMBEDDINGS,
-                #     {"text": idea_text, "model": "text-embedding-3-small"},
-                #     context.user_context, ip_protected=True,
-                # )
-                # INSERT INTO idea_embeddings (project_id, embedding, idea_fingerprint,
-                #     idea_text, embedding_model, is_protected, leak_detection_enabled)
-                # VALUES (project_id, embed_resp.output, fingerprint, idea_text,
-                #     'text-embedding-3-small', true, true)
+                embed_resp = await self._call_ai(
+                    TaskType.EMBEDDINGS,
+                    {"text": idea_text},
+                    context.user_context, ip_protected=True, max_tokens=1,
+                )
+                parsed = _json.loads(embed_resp.output)
+                vectors = parsed.get("embeddings") if isinstance(parsed, dict) else None
+                vector = vectors[0] if isinstance(vectors, list) and vectors else []
                 context.shared_memory["idea_fingerprint"] = fingerprint
-                context.shared_memory["idea_embedding_pending"] = True
+                context.shared_memory["idea_embedding"] = vector
+                context.shared_memory["idea_embedding_model"] = embed_resp.model_used
+                context.shared_memory["idea_embedding_pending"] = not bool(vector)
             except Exception:
-                pass  # Never let embedding failure block idea intake
+                context.shared_memory["idea_embedding_pending"] = True
         # ── END IP PROTECTION ────────────────────────────────────────────────
 
         ms = int((datetime.now() - t0).total_seconds() * 1000)
@@ -236,6 +256,8 @@ class VentureIntakeAgent(BaseAgent):
             AgentType.VENTURE_INTAKE, True,
             {"venture_profile": profile,
              "idea_fingerprint": context.shared_memory.get("idea_fingerprint", ""),
+             "idea_embedding": context.shared_memory.get("idea_embedding", []),
+             "idea_embedding_model": context.shared_memory.get("idea_embedding_model"),
              "ip_protected": True},
             ["Parsed raw founder input", "Built Structured Venture Profile",
              "Fingerprinted idea for IP leak detection"],
@@ -246,6 +268,74 @@ class VentureIntakeAgent(BaseAgent):
 
 
 class UnicornEvaluatorAgent(BaseAgent):
+    @staticmethod
+    def _numeric_market_score(value: Any) -> Optional[float]:
+        import re
+        text = str(value or "").lower().replace(",", "")
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(trillion|billion|million|bn|mm|m|k)?", text)
+        if not match: return None
+        amount = float(match.group(1)); unit = match.group(2) or ""
+        multiplier = {"trillion": 1e12, "billion": 1e9, "bn": 1e9, "million": 1e6, "mm": 1e6, "m": 1e6, "k": 1e3}.get(unit, 1.0)
+        dollars = amount * multiplier
+        if dollars >= 1e11: return 10.0
+        if dollars >= 1e10: return 9.0
+        if dollars >= 1e9: return 8.0
+        if dollars >= 1e8: return 6.5
+        if dollars >= 1e7: return 5.0
+        if dollars >= 1e6: return 3.5
+        return 2.0
+
+    @classmethod
+    def _derive_drivers(cls, profile: Dict[str, Any]) -> tuple[Dict[str, float], Dict[str, Dict[str, Any]]]:
+        """Derive scores only from supplied evidence, with confidence metadata.
+
+        Missing evidence lowers both the score and confidence. Founders may
+        supply explicit 0-10 driver evidence, but every value remains labelled
+        provisional until a human accepts the underlying assumptions.
+        """
+        text = " ".join(str(v) for v in profile.values() if isinstance(v, (str, int, float))).lower()
+        explicit = profile.get("unicorn_drivers") if isinstance(profile.get("unicorn_drivers"), dict) else {}
+        details: Dict[str, Dict[str, Any]] = {}
+
+        def score(name: str, derived: float, evidence: List[str], confidence: float) -> float:
+            raw = explicit.get(name)
+            source = "derived_from_founder_input"
+            if isinstance(raw, dict):
+                raw = raw.get("score")
+            try:
+                if raw is not None:
+                    derived = float(raw); source = "founder_supplied_score"
+            except (TypeError, ValueError):
+                pass
+            value = round(max(0.0, min(10.0, derived)), 2)
+            details[name] = {"raw_score": value, "confidence": round(max(0.05, min(1.0, confidence)), 2), "evidence": evidence or ["No direct evidence supplied"], "source": source, "human_review_required": True}
+            return value
+
+        market_raw = profile.get("market_size") or profile.get("tam")
+        market_numeric = cls._numeric_market_score(market_raw)
+        team = profile.get("team") if isinstance(profile.get("team"), list) else []
+        traction = str(profile.get("traction") or "")
+        problem = str(profile.get("problem") or "")
+        solution = str(profile.get("solution") or "")
+        customers = str(profile.get("target_customers") or "")
+        revenue = str(profile.get("revenue_model") or "")
+        competitors = profile.get("competitors") or profile.get("competition")
+        evidence_count = sum(bool(profile.get(k)) for k in ("customer_interviews", "users", "revenue", "pilots", "letters_of_intent", "retention"))
+
+        drivers = {
+            "market_size": score("market_size", market_numeric if market_numeric is not None else (3.0 + min(2.0, len(str(market_raw)) / 80)), [f"Founder market claim: {market_raw}" if market_raw else "No quantified TAM supplied"], 0.75 if market_numeric is not None else 0.25),
+            "problem_severity": score("problem_severity", 2.5 + min(3.0, len(problem) / 90) + (1.5 if any(w in text for w in ("urgent", "critical", "costly", "daily", "compliance", "life-threatening")) else 0) + min(2.0, evidence_count * 0.5), [problem or "No problem statement", f"Demand evidence fields present: {evidence_count}"], 0.3 + min(0.6, evidence_count * 0.12)),
+            "founder_advantage": score("founder_advantage", 2.5 + min(2.5, len(team) * 0.8) + (2.0 if any(w in text for w in ("years experience", "domain expert", "previous founder", "patent", "researcher")) else 0), [f"Team members supplied: {len(team)}", str(profile.get("founder_advantage") or "No explicit unfair advantage")], 0.25 + min(0.55, len(team) * 0.12)),
+            "technological_moat": score("technological_moat", 2.5 + (3.0 if any(w in solution.lower() for w in ("proprietary", "patent", "unique data", "algorithm", "deep tech")) else 0) + (1.5 if profile.get("ip") or profile.get("data_advantage") else 0), [solution or "No solution detail", str(profile.get("ip") or profile.get("data_advantage") or "No defensibility evidence")], 0.25 + (0.4 if profile.get("ip") or profile.get("data_advantage") else 0)),
+            "scalability": score("scalability", 3.0 + (3.5 if any(w in solution.lower() for w in ("software", "saas", "api", "platform", "marketplace", "ai")) else 1.0) - (1.0 if any(w in solution.lower() for w in ("hardware", "factory", "clinic", "inventory")) else 0), [solution or "No delivery model supplied"], 0.45),
+            "network_effects": score("network_effects", 2.0 + (4.5 if any(w in text for w in ("marketplace", "community", "network", "user-generated", "collaboration")) else 0) + (1.0 if profile.get("network_effect") else 0), [str(profile.get("network_effect") or "No explicit network-effect loop"), customers or "No customer sides identified"], 0.3 + (0.35 if profile.get("network_effect") else 0)),
+            "revenue_model_strength": score("revenue_model_strength", 2.0 + min(3.0, len(revenue) / 45) + (1.5 if any(w in revenue.lower() for w in ("subscription", "transaction", "license", "usage", "commission")) else 0) + (1.0 if profile.get("willingness_to_pay") else 0), [revenue or "No revenue model", str(profile.get("willingness_to_pay") or "No willingness-to-pay evidence")], 0.3 + (0.35 if profile.get("willingness_to_pay") else 0)),
+            "market_timing": score("market_timing", 3.0 + (2.0 if any(w in text for w in ("regulation", "mandate", "growing", "adoption", "shortage", "new standard")) else 0) + min(1.5, evidence_count * 0.3), [str(profile.get("market_timing") or "No timing catalyst supplied"), traction or "No traction"], 0.3 + min(0.4, evidence_count * 0.08)),
+            "competition_landscape": score("competition_landscape", 3.0 + (2.0 if competitors else 0) + (2.0 if profile.get("differentiation") else 0), [str(competitors or "Competitors not supplied"), str(profile.get("differentiation") or "Differentiation not supplied")], 0.25 + (0.25 if competitors else 0) + (0.25 if profile.get("differentiation") else 0)),
+            "capital_efficiency": score("capital_efficiency", 3.5 + (2.5 if any(w in solution.lower() for w in ("software", "saas", "api", "no-code")) else 0) + (1.0 if profile.get("existing_codebase") or profile.get("repo_url") else 0) - (1.5 if any(w in solution.lower() for w in ("factory", "hardware", "clinical trial")) else 0), [str(profile.get("budget") or "Budget not supplied"), "Existing codebase" if profile.get("repo_url") else "No existing codebase supplied"], 0.4),
+        }
+        return drivers, details
+
     async def execute(self, context: AgentContext) -> AgentResult:
         t0      = datetime.now()
         profile = context.shared_memory.get("venture_profile", context.trigger_event or {})
@@ -254,13 +344,14 @@ class UnicornEvaluatorAgent(BaseAgent):
             {"venture_profile": profile},
             context.user_context, ip_protected=True, max_tokens=4000,
         )
-        drivers = {
-            "market_size": 7.5, "problem_severity": 8.0, "founder_advantage": 6.5,
-            "technological_moat": 7.0, "scalability": 8.5, "network_effects": 7.0,
-            "revenue_model_strength": 6.5, "market_timing": 7.5,
-            "competition_landscape": 6.0, "capital_efficiency": 7.0,
-        }  # Production: parse from structured AI response
+        drivers, evidence = self._derive_drivers(profile)
         ups = ScoringEngine.compute_unicorn_potential_score(drivers)
+        ups["driver_breakdown"] = {
+            name: {**ups["driver_breakdown"][name], **evidence[name]}
+            for name in ups["driver_breakdown"]
+        }
+        ups["score_confidence"] = round(sum(item["confidence"] for item in evidence.values()) / len(evidence), 2)
+        ups["score_status"] = "provisional_human_review_required"
         context.shared_memory["unicorn_evaluation"] = ups
         ms = int((datetime.now() - t0).total_seconds() * 1000)
         recs = (
@@ -479,6 +570,122 @@ class PivotIntelligenceAgent(BaseAgent):
         )
 
 
+class FounderInterrogationAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        venture = context.shared_memory.get("venture_profile", context.trigger_event or {})
+        answers = (context.trigger_event or {}).get("founder_answers", {})
+        response = await self._call_ai(
+            TaskType.FOUNDER_INTERROGATION,
+            {"venture_profile": venture, "founder_answers": answers},
+            context.user_context,
+            ip_protected=True,
+            max_tokens=5000,
+        )
+        fallback_questions = [
+            {"id": "customer", "priority": "critical", "category": "customer", "question": "Who is the narrow first customer, in which geography?", "why_it_matters": "A broad customer definition makes demand evidence non-falsifiable.", "answer_type": "text"},
+            {"id": "pain", "priority": "critical", "category": "problem", "question": "How often does this customer experience the problem, and what do they do today?", "why_it_matters": "Frequency and an existing workaround reveal urgency.", "answer_type": "text"},
+            {"id": "evidence", "priority": "critical", "category": "validation", "question": "What direct evidence exists from interviews, usage, commitments, or revenue?", "why_it_matters": "Founder conviction is not customer evidence.", "answer_type": "text"},
+        ]
+        data = self._structured(response.output, {
+            "questions": fallback_questions,
+            "blocking_unknowns": [q["id"] for q in fallback_questions if q["id"] not in answers],
+            "contradictions": [],
+            "provisional_assumptions": [],
+            "validation_blocked": True,
+        })
+        unanswered = [q for q in data.get("questions", []) if not answers.get(str(q.get("id", "")))]
+        data["validation_blocked"] = bool(unanswered or data.get("blocking_unknowns"))
+        data["human_approval_required"] = True
+        context.shared_memory["founder_interrogation"] = data
+        return AgentResult(
+            AgentType.FOUNDER_INTERROGATION, True, data,
+            ["Identified blocking unknowns", "Generated prioritized founder questions"],
+            ["Answer critical questions before accepting a validation verdict"],
+            ["Submit founder answers", "Run evidence research"],
+            int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used,
+        )
+
+
+class EvidenceResearchAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        response = await self._call_ai(
+            TaskType.EVIDENCE_RESEARCH,
+            {"venture_profile": context.shared_memory.get("venture_profile", context.trigger_event or {}),
+             "geography": (context.trigger_event or {}).get("geography"),
+             "research_capability": (context.trigger_event or {}).get("research_capability", "model_knowledge")},
+            context.user_context, max_tokens=7000,
+        )
+        data = self._structured(response.output, {"sources": [], "competitors": [], "failed_attempts": [], "contradictory_evidence": [], "evidence_gaps": ["Live sources unavailable"], "research_mode": "model_knowledge"})
+        data["sources"] = [source for source in data.get("sources", []) if isinstance(source, dict) and source.get("url")]
+        data["human_review_required"] = True
+        context.shared_memory["evidence_research"] = data
+        return AgentResult(AgentType.EVIDENCE_RESEARCH, True, data,
+            ["Separated sources from model knowledge", "Reviewed competitors, substitutes and failed attempts"],
+            ["Verify high-impact sources and contradictory claims"], ["Run PMF validation"],
+            int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
+
+
+class PMFValidationAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        interrogation = context.shared_memory.get("founder_interrogation", {})
+        response = await self._call_ai(TaskType.PMF_VALIDATION, {
+            "venture_profile": context.shared_memory.get("venture_profile", context.trigger_event or {}),
+            "founder_interrogation": interrogation,
+            "evidence": context.shared_memory.get("evidence_research", {}),
+            "geography": context.shared_memory.get("geographic_intelligence", {}),
+        }, context.user_context, ip_protected=True, max_tokens=6000)
+        data = self._structured(response.output, {"provisional_score": 0, "confidence": 0, "status": "blocked", "riskiest_assumptions": [], "falsification_tests": [], "founder_questions": [], "kill_criteria": [], "human_approval_required": True})
+        data["provisional_score"] = max(0.0, min(100.0, float(data.get("provisional_score") or 0)))
+        data["confidence"] = max(0.0, min(1.0, float(data.get("confidence") or 0)))
+        if interrogation.get("validation_blocked"):
+            data["status"] = "blocked"
+        data["human_approval_required"] = True
+        data["ai_may_finalize"] = False
+        context.shared_memory["pmf_validation"] = data
+        return AgentResult(AgentType.PMF_VALIDATION, True, data,
+            ["Produced a provisional, confidence-aware PMF assessment", "Defined falsification tests and kill criteria"],
+            ["A founder or authorized reviewer must accept or reject the provisional verdict"],
+            ["Record human validation decision"], int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
+
+
+class GeographicIntelligenceAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        response = await self._call_ai(TaskType.GEOGRAPHIC_INTELLIGENCE, {
+            "venture_profile": context.shared_memory.get("venture_profile", context.trigger_event or {}),
+            "founder_selected_geography": (context.trigger_event or {}).get("geography") or (context.trigger_event or {}).get("target_geography"),
+        }, context.user_context, max_tokens=5000)
+        data = self._structured(response.output, {"primary_geography": {}, "local_constraints": [], "local_advantages": [], "regulatory_checks": [], "distribution_channels": [], "competitors": [], "localization": [], "confidence": 0, "evidence_gaps": ["Founder must select a geography"], "founder_questions": []})
+        data["human_selection_required"] = True
+        context.shared_memory["geographic_intelligence"] = data
+        return AgentResult(AgentType.GEOGRAPHIC_INTELLIGENCE, True, data,
+            ["Applied local market, regulation and distribution context"],
+            ["Founder must confirm the target geography"], ["Confirm target geography"],
+            int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
+
+
+class MVPBuildPlannerAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        response = await self._call_ai(TaskType.MVP_BUILD_PLANNING, {
+            "venture_profile": context.shared_memory.get("venture_profile", context.trigger_event or {}),
+            "pmf_validation": context.shared_memory.get("pmf_validation", {}),
+            "tech_architecture": context.shared_memory.get("tech_architecture", {}),
+            "founder_constraints": (context.trigger_event or {}).get("founder_constraints", {}),
+        }, context.user_context, ip_protected=True, max_tokens=10000)
+        data = self._structured(response.output, {})
+        data["human_approval_required"] = True
+        data["approval_action"] = "finalize_mvp_scope"
+        context.shared_memory["mvp_build_plan"] = data
+        return AgentResult(AgentType.MVP_BUILD_PLANNER, True, data,
+            ["Created one-day, three-day, one-week and production MVP scopes", "Included code and test plans"],
+            ["Choose the smallest scope that can falsify the riskiest assumption"],
+            ["Approve MVP scope before sandbox generation"], int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
+
+
 # ============================================================================
 # PLATFORM AGENTS
 # ============================================================================
@@ -678,6 +885,7 @@ class WorkspaceAssistantAgent(BaseAgent):
         ai  = await self._call_ai(
             TaskType.WORKSPACE_ASSISTANT,
             {"workspace": trigger.get("workspace_data", {}),
+             "workspace_context_pack": trigger.get("workspace_context_pack", {}),
              "available_tools": trigger.get("available_tools", []),
              "user": context.user_context.to_prompt_context()},
             context.user_context,
@@ -937,6 +1145,10 @@ class VenturePipeline:
         )
         results["business_plan"]  = tasks[0]
         results["tech_architect"] = tasks[1]
+        # The scaffold agent consumes the architecture through shared memory.
+        # Keep the inner value instead of the AgentResult wrapper so both
+        # on-demand and pipeline execution receive an identical contract.
+        shared["tech_architecture"] = tasks[1].output
 
         r = await self.orch.trigger_agent(AgentType.INVESTOR_INTELLIGENCE, ctx())
         results["investor"] = r
@@ -944,6 +1156,7 @@ class VenturePipeline:
         # Prompt -> Live App: scaffold runs after architecture is designed
         r = await self.orch.trigger_agent(AgentType.APP_SCAFFOLD, ctx())
         results["app_scaffold"] = r
+        shared["app_scaffold"] = r.output
 
         return results
 
@@ -1398,6 +1611,11 @@ class AgentOrchestrator:
             (AgentType.BUSINESS_PLAN_GEN, BusinessPlanGeneratorAgent, "Business Plan Generator", [AgentTrigger.EVENT_DRIVEN], None),
             (AgentType.TECH_ARCHITECT, TechArchitectAgent, "Tech Architecture Agent", [AgentTrigger.EVENT_DRIVEN], None),
             (AgentType.PIVOT_INTELLIGENCE, PivotIntelligenceAgent, "Pivot Intelligence Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.FOUNDER_INTERROGATION, FounderInterrogationAgent, "Founder Interrogation Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.EVIDENCE_RESEARCH, EvidenceResearchAgent, "Evidence Research Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.PMF_VALIDATION, PMFValidationAgent, "PMF Validation Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.GEOGRAPHIC_INTELLIGENCE, GeographicIntelligenceAgent, "Geographic Intelligence Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.MVP_BUILD_PLANNER, MVPBuildPlannerAgent, "MVP Build Planner Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
             (AgentType.TOUR_GUIDE, TourGuideAgent, "AI Tour Guide", [AgentTrigger.SCHEDULED, AgentTrigger.ON_DEMAND], "0 6 * * *"),
             (AgentType.ADAPTIVE_TRAINING, AdaptiveTrainingAgent, "Adaptive Training Agent", [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN], "0 2 * * 1"),
             (AgentType.MATCHING, MatchingAgent, "Team Matching Engine", [AgentTrigger.ON_DEMAND, AgentTrigger.EVENT_DRIVEN], None),

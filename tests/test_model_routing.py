@@ -19,7 +19,8 @@ def _ctx() -> UserContext:
 
 
 def _req(task: TaskType, **kwargs) -> AIRequest:
-    return AIRequest(task_type=task, user_context=_ctx(), input_data={}, **kwargs)
+    payload = kwargs.pop("input_data", {})
+    return AIRequest(task_type=task, user_context=_ctx(), input_data=payload, **kwargs)
 
 
 def test_registry_covers_every_task() -> None:
@@ -80,3 +81,21 @@ def test_profitability_and_quality_profiles_rank_differently() -> None:
         assert quality.quality_score >= economy.quality_score
     finally:
         os.environ.pop("OPENAI_API_KEY", None)
+
+
+def test_complexity_classifier_detects_code_and_deep_reasoning() -> None:
+    router = ModelRouter()
+    code_request = _req(TaskType.APP_SCAFFOLD_GENERATION, input_data={"files": ["src/app.tsx"], "schema": "create table ventures"}, max_tokens=8000)
+    assessment = router.classify_request(code_request)
+    assert assessment.tier == "code_generation"
+    assert assessment.score > 0
+
+    reasoning_request = _req(TaskType.PMF_VALIDATION, input_data={"evidence": "compare contradictory customer evidence and define falsification tests"}, max_tokens=5000)
+    assert router.classify_request(reasoning_request).score > 0.2
+
+
+def test_feedback_adjustment_is_bounded() -> None:
+    router = ModelRouter()
+    for _ in range(50):
+        router.record_feedback("gpt-5.6-sol", success=False, latency_ms=10_000, quality=0)
+    assert -8.0 <= router.feedback.adjustment("gpt-5.6-sol") <= 8.0

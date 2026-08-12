@@ -104,6 +104,12 @@ class TaskType(Enum):
     PIVOT_INTELLIGENCE       = "pivot_intelligence"
     EXECUTION_ROADMAP        = "execution_roadmap"
     RECOMMENDATION_ENGINE    = "recommendation_engine"
+    FOUNDER_INTERROGATION    = "founder_interrogation"
+    EVIDENCE_RESEARCH        = "evidence_research"
+    PMF_VALIDATION           = "pmf_validation"
+    GEOGRAPHIC_INTELLIGENCE  = "geographic_intelligence"
+    MVP_BUILD_PLANNING       = "mvp_build_planning"
+    MONETIZATION_STRATEGY    = "monetization_strategy"
     # Platform operations
     TRAINING_GENERATION      = "training_generation"
     CHAT                     = "chat"
@@ -116,6 +122,7 @@ class TaskType(Enum):
     RISK_ANALYSIS            = "risk_analysis"
     ADMIN_MONITOR            = "admin_monitor"
     WORKSPACE_ASSISTANT      = "workspace_assistant"
+    WORKSPACE_CONVERSATION   = "workspace_conversation"
     FEED_INTELLIGENCE        = "feed_intelligence"
     PROFILE_ANALYSIS         = "profile_analysis"
     DASHBOARD_INTELLIGENCE   = "dashboard_intelligence"
@@ -782,6 +789,7 @@ class PromptEngine:
         TaskType.RISK_ANALYSIS:           AP.RISK_EVALUATOR,
         # 15. WorkspaceAssistantAgent
         TaskType.WORKSPACE_ASSISTANT:     AP.WORKSPACE_ASSISTANT,
+        TaskType.WORKSPACE_CONVERSATION:  AP.WORKSPACE_CONVERSATION,
         # 16. FeedIntelligenceAgent
         TaskType.FEED_INTELLIGENCE:       AP.FEED_INTELLIGENCE,
         # 17. DashboardIntelligenceAgent
@@ -859,6 +867,12 @@ class PromptEngine:
         TaskType.EXECUTION_ROADMAP:       AP.EXECUTION_ROADMAP,
         TaskType.RECOMMENDATION_ENGINE:   AP.RECOMMENDATION_ENGINE,
         TaskType.MARKET_SURVEY_SIMULATION: AP.MARKET_SURVEY_SIMULATION,
+        TaskType.FOUNDER_INTERROGATION: AP.FOUNDER_INTERROGATION,
+        TaskType.EVIDENCE_RESEARCH: AP.EVIDENCE_RESEARCH,
+        TaskType.PMF_VALIDATION: AP.PMF_VALIDATION,
+        TaskType.GEOGRAPHIC_INTELLIGENCE: AP.GEOGRAPHIC_INTELLIGENCE,
+        TaskType.MVP_BUILD_PLANNING: AP.MVP_BUILD_PLANNING,
+        TaskType.MONETIZATION_STRATEGY: AP.MONETIZATION_STRATEGY,
 
         # ── Prompt -> Live App Engine ───────────────────────────────────────
         TaskType.APP_SCAFFOLD_GENERATION: (
