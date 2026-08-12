@@ -903,6 +903,96 @@ class UserContext:
 
 
 @dataclass
+class IncubationContext:
+    """
+    The startup's live incubation state, injected into every agent's system
+    prompt so AI actions are steered toward measurable business outcomes rather
+    than answered in a vacuum. Sourced from a workspace's bound venture
+    blueprint (see WorkspaceService.get_workspace_context) plus the latest GSIS.
+
+    Every field is optional: a workspace with no analyzed venture yields an
+    empty context whose to_prompt_context() returns "" (no prompt change, no
+    regression).
+    """
+    stage:          Optional[str] = None       # e.g. "Pre-Aha", "Early Traction"
+    gsis:           Optional[float] = None      # Global Startup Intelligence Score (0-100)
+    weakest_area:   Optional[str] = None        # lowest-scoring dimension to prioritise
+    market:         Optional[str] = None
+    industry:       Optional[str] = None
+    customer:       Optional[str] = None        # target user / ICP
+    business_model: Optional[str] = None
+    current_sprint: Optional[str] = None
+    milestone:      Optional[str] = None         # active milestone
+    next_goal:      Optional[str] = None         # the single next objective
+
+    def is_empty(self) -> bool:
+        return not any((
+            self.stage, self.gsis, self.weakest_area, self.market, self.industry,
+            self.customer, self.business_model, self.current_sprint, self.milestone,
+            self.next_goal,
+        ))
+
+    def to_prompt_context(self) -> str:
+        """Render as a prompt block, or "" when nothing is known."""
+        if self.is_empty():
+            return ""
+        rows = [
+            ("Stage",          self.stage),
+            ("GSIS",           f"{self.gsis:.1f}/100" if isinstance(self.gsis, (int, float)) else None),
+            ("Weakest Area",   self.weakest_area),
+            ("Market",         self.market),
+            ("Industry",       self.industry),
+            ("Customer",       self.customer),
+            ("Business Model", self.business_model),
+            ("Current Sprint", self.current_sprint),
+            ("Milestone",      self.milestone),
+            ("Next Goal",      self.next_goal),
+        ]
+        lines = "\n".join(f"  {label + ':':16}{value}" for label, value in rows if value)
+        return (
+            "INCUBATION CONTEXT (steer every recommendation toward this startup's "
+            "current business objective):\n" + lines
+        )
+
+    @staticmethod
+    def _first(d: Dict[str, Any], *keys: str) -> Optional[Any]:
+        """Return the first present, non-empty value across camelCase/snake_case keys."""
+        for k in keys:
+            v = d.get(k)
+            if v not in (None, "", [], {}):
+                return v
+        return None
+
+    @classmethod
+    def from_workspace_context(
+        cls, workspace_context: Optional[Dict[str, Any]], gsis: Optional[float] = None
+    ) -> "IncubationContext":
+        """
+        Build from the dict returned by WorkspaceService.get_workspace_context.
+        The venture blueprint's field names vary by analysis version, so we probe
+        several aliases and degrade gracefully to an empty context.
+        """
+        if not workspace_context:
+            return cls(gsis=gsis)
+        venture = workspace_context.get("venture") or {}
+        if not isinstance(venture, dict):
+            venture = {}
+        f = cls._first
+        return cls(
+            stage=f(venture, "stage", "currentStage", "current_stage", "projectStage"),
+            gsis=gsis if gsis is not None else f(venture, "gsis", "GSIS", "gsisScore"),
+            weakest_area=f(venture, "weakestArea", "weakest_area", "weakestDimension"),
+            market=f(venture, "market", "marketOpportunity", "market_opportunity", "targetMarket"),
+            industry=f(venture, "industry", "productCategory", "sector"),
+            customer=f(venture, "customer", "targetUsers", "target_users", "targetCustomer", "icp"),
+            business_model=f(venture, "businessModel", "business_model", "revenueModel"),
+            current_sprint=f(venture, "currentSprint", "current_sprint", "sprint"),
+            milestone=f(venture, "milestone", "currentMilestone", "activeMilestone", "nextMilestone"),
+            next_goal=f(venture, "nextGoal", "next_goal", "goal", "nextObjective"),
+        )
+
+
+@dataclass
 class AIRequest:
     task_type:                TaskType
     user_context:             UserContext
@@ -912,6 +1002,7 @@ class AIRequest:
     require_structured_output: bool = False
     ip_protected:             bool = False
     use_cache:                bool = True
+    incubation:               Optional["IncubationContext"] = None
 
 
 @dataclass
@@ -1305,8 +1396,12 @@ class PromptEngine:
             task_type, "You are TechIT's AI assistant. Provide structured, investor-grade responses."
         )
         ip_notice = context.get("ip_protection_notice", "")
+        incubation = context.get("incubation", "")
+        incubation_block = f"{incubation}\n\n" if incubation else ""
         return (
+            f"{AP.GLOBAL_FOUNDATION}\n\n"
             f"{system}\n\n"
+            f"{incubation_block}"
             f"USER CONTEXT:\n{context.get('user', '')}\n\n"
             f"TASK INPUT:\n{json.dumps(context.get('input', {}), indent=2, default=str)}\n\n"
             f"TIMESTAMP: {context.get('timestamp', '')}\n{ip_notice}"
@@ -1479,6 +1574,8 @@ class AICommandLayer:
             "input":     request.input_data,
             "timestamp": datetime.now().isoformat(),
         }
+        if request.incubation is not None:
+            context["incubation"] = request.incubation.to_prompt_context()
         if request.ip_protected:
             context["ip_protection_notice"] = (
                 "\nIP PROTECTION ACTIVE: This content is confidential. "

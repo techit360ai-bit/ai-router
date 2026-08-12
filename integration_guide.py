@@ -37,7 +37,7 @@ from ai_router_core import (
     AICommandLayer, ModelRouter, PromptEngine, SafetyEngine,
     AIRequest, UserContext, TaskType, UserRole,
     SubscriptionTier, ScoringEngine, CreditCost,
-    SubscriptionAccessControl,
+    SubscriptionAccessControl, IncubationContext,
 )
 from agent_orchestration import (
     AgentOrchestrator, AgentType, AgentContext, VenturePipeline,
@@ -62,6 +62,10 @@ from trust_team_notifications import (
     TrustTeamVerificationService as TrustTeamContract,
 )
 from live_domain_repository import LiveDomainRepository
+
+import structlog
+
+logger = structlog.get_logger()
 
 
 # ============================================================================
@@ -360,6 +364,26 @@ class DashboardIntelligenceService:
 class WorkspaceAIService:
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
+
+    def _incubation_context(
+        self, user_context: UserContext, workspace_id: Optional[str], project_id: Optional[str] = None
+    ) -> Optional[IncubationContext]:
+        """
+        Best-effort load of the workspace's incubation context for prompt
+        injection. Never raises and never blocks the AI call: any failure (no
+        workspace_id, no bound venture, DB down) yields None so the agent runs
+        exactly as before (no regression).
+        """
+        if not workspace_id:
+            return None
+        try:
+            wc = self.repo.workspace_context(user_context.user_id, workspace_id, project_id)
+            ctx = IncubationContext.from_workspace_context(wc)
+            return None if ctx.is_empty() else ctx
+        except Exception as exc:  # noqa: BLE001 — context is an enhancement, not a hard dep
+            logger.warning("incubation_context_unavailable", error=str(exc))
+            return None
 
     async def suggest_tasks(
         self,
@@ -375,11 +399,14 @@ class WorkspaceAIService:
         Without a token, the agent runs without that context (no regression).
         """
         available_tools = await self._safe_list_tools(user_token)
+        workspace_id = workspace_data.get("workspaceId") or workspace_data.get("workspace_id")
+        incubation = self._incubation_context(user_context, workspace_id)
         ctx = AgentContext(
             user_context=user_context,
             trigger_event={
                 "workspace_data": workspace_data,
                 "available_tools": available_tools,
+                "incubation_context": incubation.to_prompt_context() if incubation else "",
             },
         )
         r   = await self.brain.trigger_agent(AgentType.WORKSPACE_ASSISTANT, ctx)
@@ -390,9 +417,18 @@ class WorkspaceAIService:
         }
 
     async def review_code(self, user_context: UserContext, code_payload: Dict) -> Dict:
-        """POST /api/v1/workspace/code/review -- 1 credit, Founder Pro+"""
+        """POST /api/v1/workspace/code/review -- 1 credit, Founder Pro+
+
+        The review is scoped to the startup's incubation context (stage, GSIS,
+        weakest area, milestone, next goal) when the payload names a workspace,
+        so feedback advances the venture's current objective rather than being
+        generic. Falls back to a context-free review when none is available.
+        """
+        workspace_id = code_payload.get("workspaceId") or code_payload.get("workspace_id")
+        project_id = code_payload.get("projectId") or code_payload.get("project_id")
+        incubation = self._incubation_context(user_context, workspace_id, project_id)
         resp = await self.brain.process(
-            AIRequest(TaskType.CODE_REVIEW, user_context, code_payload)
+            AIRequest(TaskType.CODE_REVIEW, user_context, code_payload, incubation=incubation)
         )
         return {"review": resp.output, "cost": resp.cost}
 
