@@ -8,6 +8,40 @@ The AI Router remains execution-only. It contains no customer billing, credits,
 subscriptions, payment gateway, paywall, or customer-price logic. Provider cost
 metadata is infrastructure telemetry only.
 
+## Usage settlement contract
+
+The backend owns a private, HMAC-authenticated settlement service:
+
+- `POST /internal/usage-settlement/grant` reserves PAYG or subscription
+  allowance and returns a short-lived signed execution grant.
+- `POST /internal/usage-settlement/settle` accepts Router execution facts and
+  is idempotent by `request_id`.
+- `GET /internal/usage-settlement/health` reports pending reservations and last
+  settlement time for operations.
+
+The Router reports request ID, provider/model, prompt and completion tokens,
+provider cost, latency, attempts, cache state and terminal status. It never
+sends customer price or decides how many customer credits are consumed. The
+backend reconciles the reservation and owns subscription allowance, PAYG
+wallets, pricing, COGS and margin calculations. Conflicting facts for an
+already-settled request return `409` rather than double-charging.
+
+Required shared secrets are `AI_ROUTER_SETTLEMENT_SECRET` on the Router and
+backend, plus the backend execution-grant secret. Requests use timestamped
+HMAC headers and are rejected outside the configured clock-skew window.
+The Router key can settle execution facts but cannot reserve allowance or mint
+grants; those endpoints require the backend-only grant-issuer credential.
+Settlement facts are first written to `usage_settlement_outbox` and replayed
+after network or process failures until the backend accepts them idempotently.
+
+## Company-building validation
+
+Incubation now evaluates the company behind the product wedge: recurring
+customer value, buyer/user separation, repeatability, distribution, operating
+model, business model, expansion and compounding defensibility. A product
+feature list cannot receive a company-ready verdict without evidence. The
+company-building analysis remains provisional and requires founder review.
+
 AI autonomy is capped at 60%. The AI may ask questions, research, challenge
 claims, calculate provisional scores, draft roadmaps/tasks and generate private
 sandbox artifacts. Humans alone approve validation, assumptions, geography,
@@ -79,8 +113,9 @@ publishing, external outreach, spending and production changes.
 
 ## Deployment synchronization required
 
-1. Apply Alembic head `2b3c4d5e6f7a`.
-2. Configure production provider keys and signed backend execution grants.
+1. Apply Alembic head `c3d4e5f6a7b8`, which adds the durable settlement outbox.
+2. Configure production provider keys, signed backend execution grants, the
+   backend settlement URL and the shared service HMAC secret.
 3. Configure `SANDBOX_ARTIFACT_ROOT` on durable private storage or replace local
    artifact storage with object storage.
 4. Configure `DEPLOYMENT_BROKER_URL` and `DEPLOYMENT_BROKER_SECRET` for a
@@ -93,6 +128,9 @@ publishing, external outreach, spending and production changes.
    contracts.
 8. Verify real provider, database, object-storage, broker, preview-health and
    rollback integrations in staging before production rollout.
+9. Alert on pending `usage_settlement_outbox` rows and backend reservations;
+   replay delivery is automatic, while commercial reconciliation remains a
+   backend operations responsibility.
 
 ## Verification
 
@@ -102,4 +140,3 @@ publishing, external outreach, spending and production changes.
 - Frontend TypeScript production build: passed.
 - Alembic graph: one head.
 - Secret scan: no GitHub token or private key found in changed source files.
-

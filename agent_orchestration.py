@@ -86,6 +86,7 @@ class AgentType(Enum):
     PMF_VALIDATION        = "pmf_validation"
     GEOGRAPHIC_INTELLIGENCE = "geographic_intelligence"
     MVP_BUILD_PLANNER     = "mvp_build_planner"
+    COMPANY_BUILDING_VALIDATOR = "company_building_validator"
     # Platform
     TOUR_GUIDE            = "tour_guide"
     ADAPTIVE_TRAINING     = "adaptive_training"
@@ -684,6 +685,34 @@ class MVPBuildPlannerAgent(BaseAgent):
             ["Created one-day, three-day, one-week and production MVP scopes", "Included code and test plans"],
             ["Choose the smallest scope that can falsify the riskiest assumption"],
             ["Approve MVP scope before sandbox generation"], int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
+
+
+class CompanyBuildingValidationAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        response = await self._call_ai(TaskType.COMPANY_BUILDING_VALIDATION, {
+            "venture_profile": context.shared_memory.get("venture_profile", context.trigger_event or {}),
+            "founder_interrogation": context.shared_memory.get("founder_interrogation", {}),
+            "evidence": context.shared_memory.get("evidence_research", {}),
+            "pmf_validation": context.shared_memory.get("pmf_validation", {}),
+            "founder_constraints": (context.trigger_event or {}).get("founder_constraints", {}),
+        }, context.user_context, ip_protected=True, max_tokens=6500)
+        data = self._structured(response.output, {
+            "company_thesis": "A company thesis is not established yet; validate the recurring customer workflow and distribution loop.",
+            "wedge": {"status": "unknown"}, "ideal_customer_and_buyer": {}, "repeatability": {"status": "unknown"},
+            "distribution": {"status": "unknown"}, "business_model": {}, "operating_model": {},
+            "defensibility": {"status": "unknown"}, "market_expansion": {}, "company_risks": ["No company-level evidence supplied"],
+            "product_risks": [], "leading_indicators": [], "30_day_company_experiments": [], "founder_questions": [],
+            "human_approval_required": True,
+        })
+        data["human_approval_required"] = True
+        data["company_status"] = "provisional_human_review_required"
+        context.shared_memory["company_building_validation"] = data
+        return AgentResult(AgentType.COMPANY_BUILDING_VALIDATOR, True, data,
+            ["Separated product wedge from company thesis", "Tested repeatability, distribution, operating model and compounding advantage"],
+            ["Run company-level experiments alongside product validation"],
+            ["Founder selects company thesis and first repeatable distribution loop"],
+            int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
 
 
 # ============================================================================
@@ -1616,6 +1645,7 @@ class AgentOrchestrator:
             (AgentType.PMF_VALIDATION, PMFValidationAgent, "PMF Validation Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
             (AgentType.GEOGRAPHIC_INTELLIGENCE, GeographicIntelligenceAgent, "Geographic Intelligence Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
             (AgentType.MVP_BUILD_PLANNER, MVPBuildPlannerAgent, "MVP Build Planner Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.COMPANY_BUILDING_VALIDATOR, CompanyBuildingValidationAgent, "Company Building Validator", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
             (AgentType.TOUR_GUIDE, TourGuideAgent, "AI Tour Guide", [AgentTrigger.SCHEDULED, AgentTrigger.ON_DEMAND], "0 6 * * *"),
             (AgentType.ADAPTIVE_TRAINING, AdaptiveTrainingAgent, "Adaptive Training Agent", [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN], "0 2 * * 1"),
             (AgentType.MATCHING, MatchingAgent, "Team Matching Engine", [AgentTrigger.ON_DEMAND, AgentTrigger.EVENT_DRIVEN], None),

@@ -207,20 +207,36 @@ class IncubationHubService:
         session = self.repo.create_incubation_session(user_context.user_id, venture_data, venture_data.get("project_id") or venture_data.get("projectId"))
         shared = {"venture_profile": venture_data}
         base = AgentContext(user_context=user_context, trigger_event=venture_data, shared_memory=shared)
-        founder, evidence, geography = await asyncio.gather(
+        founder, evidence, geography, company = await asyncio.gather(
             self.brain.trigger_agent(AgentType.FOUNDER_INTERROGATION, base),
             self.brain.trigger_agent(AgentType.EVIDENCE_RESEARCH, base),
             self.brain.trigger_agent(AgentType.GEOGRAPHIC_INTELLIGENCE, base),
+            self.brain.trigger_agent(AgentType.COMPANY_BUILDING_VALIDATOR, base),
         )
         state_patch = {
             "founder_interrogation": founder.output,
             "evidence": evidence.output,
             "geography": geography.output,
+            "company_building": company.output,
             "founder_answers": {},
             "human_approval_required": True,
         }
         session = self.repo.update_incubation_session(user_context.user_id, session["id"], state_patch=state_patch, status="questions_pending", current_phase=2) or session
-        return {"session": session, "founder_questions": founder.output.get("questions", []), "evidence": evidence.output, "geography": geography.output, "workspace_id": workspace_id}
+        return {"session": session, "founder_questions": founder.output.get("questions", []), "evidence": evidence.output, "geography": geography.output, "company_building": company.output, "workspace_id": workspace_id}
+
+    async def run_company_building_validation(self, user_context: UserContext, venture_data: Dict[str, Any]) -> Dict[str, Any]:
+        ctx = AgentContext(user_context=user_context, trigger_event=venture_data, shared_memory={"venture_profile": venture_data})
+        founder, evidence, pmf = await asyncio.gather(
+            self.brain.trigger_agent(AgentType.FOUNDER_INTERROGATION, ctx),
+            self.brain.trigger_agent(AgentType.EVIDENCE_RESEARCH, ctx),
+            self.brain.trigger_agent(AgentType.PMF_VALIDATION, ctx),
+        )
+        ctx.shared_memory.update({"founder_interrogation": founder.output, "evidence_research": evidence.output, "pmf_validation": pmf.output})
+        result = await self.brain.trigger_agent(AgentType.COMPANY_BUILDING_VALIDATOR, ctx)
+        output = {**result.output, "human_approval_required": True}
+        if venture_data.get("project_id") or venture_data.get("projectId"):
+            self.repo.persist_analysis(user_context.user_id, venture_data, output, "company_building_validation")
+        return output
 
     async def submit_founder_answers(self, user_context: UserContext, session_id: str, answers: Dict[str, Any]) -> Dict[str, Any]:
         session = self.repo.get_incubation_session(user_context.user_id, session_id)

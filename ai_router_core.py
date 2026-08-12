@@ -110,6 +110,7 @@ class TaskType(Enum):
     GEOGRAPHIC_INTELLIGENCE  = "geographic_intelligence"
     MVP_BUILD_PLANNING       = "mvp_build_planning"
     MONETIZATION_STRATEGY    = "monetization_strategy"
+    COMPANY_BUILDING_VALIDATION = "company_building_validation"
     # Platform operations
     TRAINING_GENERATION      = "training_generation"
     CHAT                     = "chat"
@@ -873,6 +874,7 @@ class PromptEngine:
         TaskType.GEOGRAPHIC_INTELLIGENCE: AP.GEOGRAPHIC_INTELLIGENCE,
         TaskType.MVP_BUILD_PLANNING: AP.MVP_BUILD_PLANNING,
         TaskType.MONETIZATION_STRATEGY: AP.MONETIZATION_STRATEGY,
+        TaskType.COMPANY_BUILDING_VALIDATION: AP.COMPANY_BUILDING_VALIDATION,
 
         # ── Prompt -> Live App Engine ───────────────────────────────────────
         TaskType.APP_SCAFFOLD_GENERATION: (

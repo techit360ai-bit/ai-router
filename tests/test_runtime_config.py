@@ -31,6 +31,8 @@ BASE_PROD_ENV = {
     "MCP_BASE_URL": "https://api.techit.example/api/mcp",
     "OPENAI_API_KEY": "sk-live-openai",
     "ANTHROPIC_API_KEY": "sk-ant-live",
+    "BACKEND_USAGE_SETTLEMENT_URL": "https://api.techit.example/internal/usage-settlement",
+    "AI_ROUTER_SETTLEMENT_SECRET": "0123456789abcdef0123456789abcdef",
 }
 
 

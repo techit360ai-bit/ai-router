@@ -113,6 +113,19 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
                 "AI_EXECUTION_GRANT_SECRET or JWT_SECRET must securely verify execution grants",
             ))
 
+        checks.append(_check_url(
+            "settlement.backend_url",
+            values.get("BACKEND_USAGE_SETTLEMENT_URL"),
+            {"https"},
+            env_name,
+        ))
+        settlement_secret = values.get("AI_ROUTER_SETTLEMENT_SECRET", "")
+        checks.append(RuntimeCheck(
+            "settlement.hmac_secret",
+            len(settlement_secret) >= 32 and not _is_placeholder(settlement_secret),
+            "AI_ROUTER_SETTLEMENT_SECRET must be set, strong, and non-placeholder",
+        ))
+
     return checks
 
 

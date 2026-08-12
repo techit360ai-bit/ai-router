@@ -100,3 +100,75 @@ async def test_execution_grant_task_mismatch_and_replay(monkeypatch) -> None:
     await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=grant), use_cache=False))
     with pytest.raises(ExecutionAuthorizationError):
         await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=grant), use_cache=False))
+
+
+@pytest.mark.asyncio
+async def test_successful_execution_submits_backend_settlement(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    grant = ExecutionGrant(subject="u_test", workspace_id="w1", request_id="backend-r1", task_type="chat", grant_id="g1", reservation_id="res1", claims={"exp": 9999999999})
+    layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    settlements = []
+
+    async def fake_call(_config, _prompt, _request):
+        return {"text": "ok", "tokens": 3, "prompt_tokens": 2, "completion_tokens": 1, "confidence": 1.0, "duration_ms": 2}
+
+    async def fake_settle(**kwargs):
+        settlements.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(layer, "_call_llm", fake_call)
+    monkeypatch.setattr(layer.settlement, "settle", fake_settle)
+    response = await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=grant, workspace_id="w1"), use_cache=False))
+    assert response.metadata["request_id"] == "backend-r1"
+    assert settlements[0]["request_id"] == "backend-r1"
+    assert settlements[0]["status"] == "completed"
+    assert settlements[0]["reservation_id"] == "res1"
+    assert settlements[0]["prompt_tokens"] == 2
+
+
+@pytest.mark.asyncio
+async def test_terminal_execution_failure_releases_reservation(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    grant = ExecutionGrant(subject="u_test", workspace_id="w1", request_id="backend-r2", task_type="chat", grant_id="g2", reservation_id="res2", claims={"exp": 9999999999})
+    layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    settlements = []
+
+    async def fail_call(_config, _prompt, _request):
+        raise RuntimeError("provider unavailable")
+
+    async def fake_settle(**kwargs):
+        settlements.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(layer, "_call_llm", fail_call)
+    monkeypatch.setattr(layer.settlement, "settle", fake_settle)
+    with pytest.raises(RuntimeError):
+        await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=grant, workspace_id="w1"), use_cache=False))
+    assert settlements[0]["status"] == "failed"
+    assert settlements[0]["reservation_id"] == "res2"
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_reports_zero_incremental_provider_usage(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    settlements = []
+
+    async def fake_call(_config, _prompt, _request):
+        return {"text": "cached", "tokens": 8, "prompt_tokens": 5, "completion_tokens": 3,
+                "confidence": 1.0, "duration_ms": 2}
+
+    async def fake_settle(**kwargs):
+        settlements.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(layer, "_call_llm", fake_call)
+    monkeypatch.setattr(layer.settlement, "settle", fake_settle)
+    request = _request(TaskType.SUMMARY, use_cache=True)
+    await layer.process_request(request)
+    await layer.process_request(_request(TaskType.SUMMARY, use_cache=True))
+    assert settlements[-1]["cache_hit"] is True
+    assert settlements[-1]["prompt_tokens"] == 0
+    assert settlements[-1]["completion_tokens"] == 0
+    assert settlements[-1]["total_tokens"] == 0
+    assert settlements[-1]["provider_cost_usd"] == 0

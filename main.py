@@ -96,6 +96,7 @@ async def lifespan(app: FastAPI):
             raise
 
     brain = TechITAIBrain()
+    await brain.command_layer.settlement.start()
     logger.info(
         "techit_ai_brain_ready",
         agents=34,
@@ -105,6 +106,7 @@ async def lifespan(app: FastAPI):
         version="3.0.0",
     )
     yield
+    await brain.command_layer.settlement.close()
     logger.info("techit_shutdown")
 
 
@@ -626,6 +628,11 @@ async def pmf_validate(body: Dict[str, Any], user: UserContext = Depends(get_use
 @app.post("/api/v1/incubation/monetization/analyze", tags=["Incubation Hub"])
 async def monetization_analyze(venture_data: Dict[str, Any], user: UserContext = Depends(get_user_context)):
     return await IncubationHubService(brain).run_task_analysis(user, venture_data, TaskType.MONETIZATION_STRATEGY, "monetization", max_tokens=5000)
+
+
+@app.post("/api/v1/incubation/company/analyze", tags=["Incubation Hub"])
+async def company_building_analyze(venture_data: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    return await IncubationHubService(brain).run_company_building_validation(user, venture_data)
 
 
 @app.post("/api/v1/incubation/validation/start", tags=["Incubation Hub"])

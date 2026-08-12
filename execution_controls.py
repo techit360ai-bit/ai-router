@@ -33,6 +33,7 @@ class ExecutionGrant:
     max_output_tokens: Optional[int] = None
     max_provider_cost_usd: Optional[float] = None
     grant_id: Optional[str] = None
+    reservation_id: Optional[str] = None
     claims: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -77,6 +78,7 @@ class ExecutionGrantVerifier:
             max_output_tokens=_optional_int(claims.get("max_output_tokens")),
             max_provider_cost_usd=_optional_float(claims.get("max_provider_cost_usd")),
             grant_id=claims.get("jti"),
+            reservation_id=claims.get("reservation_id") or claims.get("reservationId"),
             claims=dict(claims),
         )
 
