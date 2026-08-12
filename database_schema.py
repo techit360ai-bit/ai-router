@@ -2345,6 +2345,70 @@ class VenturePipelineRun(Base):
     )
 
 
+class IncubationSession(Base):
+    """Versioned human-in-the-loop validation state for one venture."""
+    __tablename__ = "incubation_sessions"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
+    status      = Column(String(40), default="questions_pending", nullable=False)
+    current_phase = Column(Integer, default=2, nullable=False)
+    state       = Column(JSON, default=lambda: {})
+    version     = Column(Integer, default=1, nullable=False)
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at  = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_incubation_session_owner", "owner_id", "updated_at"),
+        Index("idx_incubation_session_project", "project_id", "updated_at"),
+    )
+
+
+class WorkspaceContextPack(Base):
+    """Immutable version of the context automatically injected into workspace AI calls."""
+    __tablename__ = "workspace_context_packs"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    version     = Column(Integer, nullable=False)
+    context_data = Column(JSON, default=lambda: {})
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_context_pack_workspace", "workspace_id", "version", unique=True),
+        Index("idx_context_pack_owner", "owner_id", "created_at"),
+    )
+
+
+class SandboxBuildArtifact(Base):
+    """Private, reversible build artifact; external deployment requires approval."""
+    __tablename__ = "sandbox_build_artifacts"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id    = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"))
+    status      = Column(String(40), default="draft", nullable=False)
+    scope       = Column(String(60), default="one_week_mvp")
+    manifest    = Column(JSON, default=lambda: {})
+    checks      = Column(JSON, default=lambda: {})
+    approvals   = Column(JSON, default=lambda: [])
+    artifact_path = Column(Text)
+    preview_url = Column(Text)
+    rollback_of_id = Column(UUID(as_uuid=True), ForeignKey("sandbox_build_artifacts.id"))
+    version     = Column(Integer, default=1, nullable=False)
+    created_at  = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at  = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_sandbox_build_project", "project_id", "created_at"),
+        Index("idx_sandbox_build_owner", "owner_id", "created_at"),
+    )
+
+
 # ============================================================================
 # HACKATHON INTELLIGENCE  (org host + team/founder real-time + idea→workspace)
 # ============================================================================

@@ -105,12 +105,42 @@ def test_production_requires_database_url() -> None:
             os.environ["DATABASE_URL"] = old_database_url
 
 
+def test_validation_sessions_context_packs_and_decisions_are_versioned() -> None:
+    reset_memory_store_for_tests()
+    repo = LiveDomainRepository()
+    project = repo.create_project("u1", {"title": "Context Venture", "stage": "idea"})["project"]
+    session = repo.create_incubation_session("u1", {"startup_name": "Context Venture"}, project["id"])
+    assert session["status"] == "questions_pending"
+    updated = repo.update_incubation_session("u1", session["id"], state_patch={"founder_answers": {"customer": "SMBs"}})
+    assert updated["version"] == 2
+    decision = repo.record_incubation_decision("u1", session["id"], "finalize_mvp_scope", "approved", "Smallest testable scope")
+    assert decision["status"] == "approved"
+    workspace = repo.provision_workspace("u1", {"projectId": project["id"]})["workspace"]
+    pack = repo.persist_workspace_context_pack("u1", workspace["id"], project["id"], {"decisions": decision["state"]["decisions"]})
+    assert pack["version"] == 1
+    context = repo.workspace_context("u1", workspace["id"])
+    assert context["contextVersion"] == 1
+    assert context["contextPack"]["decisions"]
+
+
+def test_sandbox_builds_are_private_and_versioned() -> None:
+    reset_memory_store_for_tests()
+    repo = LiveDomainRepository()
+    first = repo.create_sandbox_build("u1", "p1", {"status": "preview_ready", "scope": "one_day_prototype", "checks": {"secret_scan": {"passed": True}}})
+    second = repo.create_sandbox_build("u1", "p1", {"status": "rollback_ready", "scope": "one_day_prototype", "rollback_of_id": first["id"]})
+    assert first["version"] == 1
+    assert second["version"] == 2
+    assert repo.get_sandbox_build("u1", first["id"])["status"] == "preview_ready"
+
+
 def main() -> int:
     tests = [
         test_empty_states_are_empty_not_demo_records,
         test_project_analysis_workspace_pipeline_is_persisted,
         test_investor_and_collaborator_mutations_are_persisted,
         test_production_requires_database_url,
+        test_validation_sessions_context_packs_and_decisions_are_versioned,
+        test_sandbox_builds_are_private_and_versioned,
     ]
     for test in tests:
         try:

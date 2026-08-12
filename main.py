@@ -17,7 +17,7 @@ Start (production, via Docker):
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, Body, UploadFile, File as FastAPIFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 import os
@@ -68,6 +68,7 @@ from runtime_config import (
     runtime_checks,
 )
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
+from sandbox_build_service import SandboxBuildError, SandboxBuildService
 
 logger = structlog.get_logger()
 
@@ -603,6 +604,124 @@ async def market_analyze(
     return await IncubationHubService(brain).run_market_intelligence(user, venture_data)
 
 
+@app.post("/api/v1/incubation/intelligence/analyze", tags=["Incubation Hub"])
+async def market_intelligence_analyze(venture_data: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    return await IncubationHubService(brain).run_task_analysis(user, venture_data, TaskType.MARKET_INTELLIGENCE, "market_intelligence", max_tokens=6000)
+
+
+@app.post("/api/v1/incubation/pmf/validate", tags=["Incubation Hub"])
+async def pmf_validate(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    service = IncubationHubService(brain)
+    session_id = str(body.get("session_id") or "")
+    try:
+        if session_id:
+            return await service.run_pmf_validation(user, session_id)
+        result = await service.run_task_analysis(user, body, TaskType.PMF_VALIDATION, "pmf_validation", max_tokens=6000)
+        result.update({"status": "questions_required", "human_approval_required": True, "notice": "Start a validation session and answer founder questions before accepting a final verdict."})
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/monetization/analyze", tags=["Incubation Hub"])
+async def monetization_analyze(venture_data: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    return await IncubationHubService(brain).run_task_analysis(user, venture_data, TaskType.MONETIZATION_STRATEGY, "monetization", max_tokens=5000)
+
+
+@app.post("/api/v1/incubation/validation/start", tags=["Incubation Hub"])
+async def validation_start(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    return await IncubationHubService(brain).start_validation(user, body, workspace_id=body.get("workspace_id") or body.get("workspaceId"))
+
+
+@app.post("/api/v1/incubation/validation/{session_id}/answers", tags=["Incubation Hub"])
+async def validation_answers(session_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    try:
+        return await IncubationHubService(brain).submit_founder_answers(user, session_id, body.get("answers") or body)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validation/{session_id}/pmf", tags=["Incubation Hub"])
+async def validation_pmf(session_id: str, user: UserContext = Depends(get_user_context)):
+    try:
+        return await IncubationHubService(brain).run_pmf_validation(user, session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validation/{session_id}/mvp-plan", tags=["Incubation Hub"])
+async def validation_mvp_plan(session_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    try:
+        return await IncubationHubService(brain).generate_mvp_plan(user, session_id, body.get("founder_constraints") or body)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validation/{session_id}/decisions", tags=["Incubation Hub"])
+async def validation_decision(session_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    try:
+        return IncubationHubService(brain).record_human_decision(user, session_id, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validation/{session_id}/builds", tags=["Incubation Hub Build"])
+async def create_incubation_build(session_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    repo = IncubationHubService(brain).repo
+    session = repo.get_incubation_session(user.user_id, session_id)
+    if session is None: raise HTTPException(status_code=404, detail="incubation_session_not_found")
+    try:
+        return SandboxBuildService(repo).create(user.user_id, session, body)
+    except SandboxBuildError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/builds/{build_id}/artifact", tags=["Incubation Hub Build"])
+async def download_incubation_build(build_id: str, user: UserContext = Depends(get_user_context)):
+    try:
+        path = SandboxBuildService().artifact_path(user.user_id, build_id)
+        return FileResponse(path, media_type="application/zip", filename=f"techit-mvp-{build_id}.zip")
+    except SandboxBuildError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/builds/{build_id}/preview", tags=["Incubation Hub Build"])
+async def preview_incubation_build(build_id: str, user: UserContext = Depends(get_user_context)):
+    try:
+        return FileResponse(SandboxBuildService().preview_path(user.user_id, build_id), media_type="text/html")
+    except SandboxBuildError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/builds/{build_id}/preview/{asset_name}", tags=["Incubation Hub Build"])
+async def preview_incubation_asset(build_id: str, asset_name: str, user: UserContext = Depends(get_user_context)):
+    try:
+        path = SandboxBuildService().preview_asset_path(user.user_id, build_id, asset_name)
+        media = "text/css" if asset_name.endswith(".css") else "application/javascript"
+        return FileResponse(path, media_type=media)
+    except SandboxBuildError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validation/{session_id}/builds/{build_id}/deploy-preview", tags=["Incubation Hub Build"])
+async def deploy_incubation_preview(session_id: str, build_id: str, user: UserContext = Depends(get_user_context)):
+    service = SandboxBuildService()
+    session = service.repo.get_incubation_session(user.user_id, session_id)
+    if session is None: raise HTTPException(status_code=404, detail="incubation_session_not_found")
+    try:
+        return await service.deploy_preview(user.user_id, session, build_id)
+    except SandboxBuildError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/builds/{build_id}/rollback/{target_build_id}", tags=["Incubation Hub Build"])
+async def rollback_incubation_build(build_id: str, target_build_id: str, user: UserContext = Depends(get_user_context)):
+    try:
+        return SandboxBuildService().rollback(user.user_id, build_id, target_build_id)
+    except SandboxBuildError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/v1/incubation/strategy/generate", tags=["Incubation Hub"])
 async def generate_strategy(
     venture_data: Dict[str, Any],
@@ -610,6 +729,60 @@ async def generate_strategy(
 ):
     """GTM, pricing, growth strategy -- 3 execution budget units, Founder Pro+"""
     return await IncubationHubService(brain).run_startup_strategy(user, venture_data)
+
+
+@app.post("/api/v1/incubation/finance/analyze", tags=["Incubation Hub"])
+async def finance_analyze(
+    venture_data: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Capital efficiency, runway assumptions and unit-economics analysis."""
+    return await IncubationHubService(brain).run_finance_strategy(user, venture_data)
+
+
+@app.post("/api/v1/incubation/feasibility/analyze", tags=["Incubation Hub"])
+async def feasibility_analyze(
+    venture_data: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Technical, operational and delivery feasibility analysis."""
+    return await IncubationHubService(brain).run_product_feasibility(user, venture_data)
+
+
+@app.post("/api/v1/incubation/tech-stack/design", tags=["Incubation Hub"])
+async def tech_stack_design(
+    venture_data: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Design a scalable but MVP-conscious technical architecture."""
+    return await IncubationHubService(brain).run_tech_stack_design(
+        user, venture_data, str(venture_data.get("scale_target") or "1M users")
+    )
+
+
+@app.post("/api/v1/incubation/swot/analyze", tags=["Incubation Hub"])
+async def swot_analyze(venture_data: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    return await IncubationHubService(brain).run_risk_analysis(user, venture_data)
+
+
+@app.post("/api/v1/incubation/impact/analyze", tags=["Incubation Hub"])
+async def impact_analyze(venture_data: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    return await IncubationHubService(brain).run_impact_analysis(user, venture_data)
+
+
+@app.post("/api/v1/incubation/roadmap/generate", tags=["Incubation Hub"])
+async def roadmap_generate(venture_data: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    return await IncubationHubService(brain).run_execution_roadmap(user, venture_data)
+
+
+@app.post("/api/v1/incubation/survey/simulate", tags=["Incubation Hub"])
+async def survey_simulate(venture_data: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    return await IncubationHubService(brain).run_market_survey(user, venture_data)
+
+
+@app.post("/api/v1/incubation/recommendations/generate", tags=["Incubation Hub"])
+async def recommendations_generate(venture_data: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    return await IncubationHubService(brain).run_recommendations(user, venture_data)
 
 
 @app.post("/api/v1/incubation/business-plan/generate", tags=["Incubation Hub"])
@@ -1207,6 +1380,15 @@ async def workspace_suggest_tasks(
     return await WorkspaceAIService(brain).suggest_tasks(
         user, body, user_token=_extract_bearer_token(request),
     )
+
+
+@app.post("/api/v1/workspace/conversation", tags=["Workspace"])
+async def workspace_conversation(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    """Context-aware workspace copilot. It drafts and suggests; humans approve consequential actions."""
+    try:
+        return await WorkspaceAIService(brain).converse(user, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/workspace/tools", tags=["Workspace"])

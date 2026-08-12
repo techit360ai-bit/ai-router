@@ -41,6 +41,8 @@ def run_migrations_offline() -> None:
 
     """
     url = os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
+    if not url:
+        raise RuntimeError("DATABASE_URL or sqlalchemy.url is required for Alembic migrations")
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -62,6 +64,8 @@ def run_migrations_online() -> None:
     import os
     from sqlalchemy import create_engine
     db_url = os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL or sqlalchemy.url is required for Alembic migrations")
     connectable = create_engine(db_url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:

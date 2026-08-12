@@ -28,6 +28,7 @@ Services
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -127,15 +128,144 @@ class IncubationHubService:
         self, user_context: UserContext, venture_data: Dict
     ) -> Dict:
         """POST /api/v1/incubation/pipeline/run -- 12 execution budget units, Investor+"""
+        requested_workspace = venture_data.get("workspace_id") or venture_data.get("workspaceId")
+        requested_project = venture_data.get("project_id") or venture_data.get("projectId")
+        routed_context = replace(
+            user_context,
+            workspace_id=str(requested_workspace) if requested_workspace else user_context.workspace_id,
+            project_id=str(requested_project) if requested_project else user_context.project_id,
+        )
         pipeline = self.brain.venture_pipeline()
-        results  = await pipeline.run(user_context, venture_data)
+        results  = await pipeline.run(routed_context, venture_data)
         blueprint = self._compile_blueprint(venture_data, results)
 
         # Persist the analysis and bind it to a project so it can flow into a
         # workspace (instead of being returned ephemerally and discarded).
         project_id = self._persist_analysis(user_context, venture_data, blueprint)
         blueprint["project_id"] = project_id
+        intake = results.get("intake")
+        if intake and intake.success:
+            idea_text = " ".join(str(venture_data.get(key) or "") for key in ("problem", "solution", "market_size", "revenue_model")).strip()
+            embedding_status = self.repo.persist_idea_embedding(
+                user_context.user_id,
+                project_id,
+                str(intake.output.get("idea_fingerprint") or ""),
+                idea_text,
+                intake.output.get("idea_embedding") or [],
+                str(intake.output.get("idea_embedding_model") or ""),
+            )
+            blueprint["idea_embedding"] = {k: v for k, v in embedding_status.items() if k != "embedding"}
+        # Workspace creation is private, reversible and idempotent, so it can
+        # happen automatically. Committing tasks, publishing, repositories and
+        # deployment remain human-approved actions.
+        workspace_result = self.repo.provision_workspace(user_context.user_id, {
+            "projectId": project_id,
+            "name": f"{blueprint.get('venture_name') or 'Venture'} Workspace",
+        })
+        workspace = workspace_result.get("workspace") or {}
+        if workspace.get("id"):
+            blueprint["workspace_id"] = workspace["id"]
+
+        validation = await self.start_validation(
+            user_context, {**venture_data, "project_id": project_id}, workspace_id=workspace.get("id")
+        )
+        blueprint["validation"] = validation
+        blueprint["incubation_session_id"] = validation.get("session", {}).get("id")
+
+        if workspace.get("id"):
+            context_pack = self._build_context_pack(
+                blueprint=blueprint,
+                validation_state=(validation.get("session") or {}).get("state") or {},
+            )
+            pack = self.repo.persist_workspace_context_pack(
+                user_context.user_id, str(workspace["id"]), project_id, context_pack
+            )
+            blueprint["context_version"] = pack.get("version", 1)
         return blueprint
+
+    @staticmethod
+    def _build_context_pack(*, blueprint: Dict[str, Any], validation_state: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "schema_version": "1.0",
+            "venture": blueprint,
+            "founder_answers": validation_state.get("founder_answers", {}),
+            "evidence": validation_state.get("evidence", {}),
+            "assumptions": validation_state.get("assumptions", []),
+            "decisions": validation_state.get("decisions", []),
+            "roadmap": validation_state.get("roadmap", {}),
+            "tasks": validation_state.get("tasks", []),
+            "milestones": validation_state.get("milestones", []),
+            "artifacts": validation_state.get("artifacts", []),
+            "human_authority": {
+                "autonomy_cap": 0.60,
+                "ai_can": ["ask", "research", "recommend", "draft", "score_provisionally", "generate_sandbox_code"],
+                "human_only": ["validate", "accept_assumption", "pivot", "finalize_scope", "commit_roadmap", "create_repository", "deploy", "publish", "spend"],
+            },
+        }
+
+    async def start_validation(self, user_context: UserContext, venture_data: Dict[str, Any], workspace_id: Optional[str] = None) -> Dict[str, Any]:
+        session = self.repo.create_incubation_session(user_context.user_id, venture_data, venture_data.get("project_id") or venture_data.get("projectId"))
+        shared = {"venture_profile": venture_data}
+        base = AgentContext(user_context=user_context, trigger_event=venture_data, shared_memory=shared)
+        founder, evidence, geography = await asyncio.gather(
+            self.brain.trigger_agent(AgentType.FOUNDER_INTERROGATION, base),
+            self.brain.trigger_agent(AgentType.EVIDENCE_RESEARCH, base),
+            self.brain.trigger_agent(AgentType.GEOGRAPHIC_INTELLIGENCE, base),
+        )
+        state_patch = {
+            "founder_interrogation": founder.output,
+            "evidence": evidence.output,
+            "geography": geography.output,
+            "founder_answers": {},
+            "human_approval_required": True,
+        }
+        session = self.repo.update_incubation_session(user_context.user_id, session["id"], state_patch=state_patch, status="questions_pending", current_phase=2) or session
+        return {"session": session, "founder_questions": founder.output.get("questions", []), "evidence": evidence.output, "geography": geography.output, "workspace_id": workspace_id}
+
+    async def submit_founder_answers(self, user_context: UserContext, session_id: str, answers: Dict[str, Any]) -> Dict[str, Any]:
+        session = self.repo.get_incubation_session(user_context.user_id, session_id)
+        if session is None:
+            raise ValueError("incubation_session_not_found")
+        state = session.get("state") or {}
+        merged_answers = {**(state.get("founder_answers") or {}), **answers}
+        shared = {"venture_profile": state.get("venture_data") or {}, "founder_interrogation": state.get("founder_interrogation") or {}}
+        founder = await self.brain.trigger_agent(AgentType.FOUNDER_INTERROGATION, AgentContext(user_context=user_context, trigger_event={"founder_answers": merged_answers}, shared_memory=shared))
+        status = "research_pending" if not founder.output.get("validation_blocked") else "questions_pending"
+        updated = self.repo.update_incubation_session(user_context.user_id, session_id, state_patch={"founder_answers": merged_answers, "founder_interrogation": founder.output}, status=status, current_phase=2)
+        return {"session": updated, "founder_questions": founder.output.get("questions", []), "validation_blocked": founder.output.get("validation_blocked", True)}
+
+    async def run_pmf_validation(self, user_context: UserContext, session_id: str) -> Dict[str, Any]:
+        session = self.repo.get_incubation_session(user_context.user_id, session_id)
+        if session is None: raise ValueError("incubation_session_not_found")
+        state = session.get("state") or {}
+        shared = {
+            "venture_profile": state.get("venture_data") or {},
+            "founder_interrogation": state.get("founder_interrogation") or {},
+            "evidence_research": state.get("evidence") or {},
+            "geographic_intelligence": state.get("geography") or {},
+        }
+        result = await self.brain.trigger_agent(AgentType.PMF_VALIDATION, AgentContext(user_context=user_context, trigger_event={}, shared_memory=shared))
+        updated = self.repo.update_incubation_session(user_context.user_id, session_id, state_patch={"pmf_validation": result.output}, status="human_validation_required", current_phase=3)
+        return {"session": updated, "pmf_validation": result.output}
+
+    async def generate_mvp_plan(self, user_context: UserContext, session_id: str, founder_constraints: Dict[str, Any]) -> Dict[str, Any]:
+        session = self.repo.get_incubation_session(user_context.user_id, session_id)
+        if session is None: raise ValueError("incubation_session_not_found")
+        state = session.get("state") or {}
+        shared = {"venture_profile": state.get("venture_data") or {}, "pmf_validation": state.get("pmf_validation") or {}, "tech_architecture": state.get("tech_architecture") or {}}
+        result = await self.brain.trigger_agent(AgentType.MVP_BUILD_PLANNER, AgentContext(user_context=user_context, trigger_event={"founder_constraints": founder_constraints}, shared_memory=shared))
+        updated = self.repo.update_incubation_session(user_context.user_id, session_id, state_patch={"roadmap": result.output}, status="mvp_scope_approval_required", current_phase=5)
+        return {"session": updated, "mvp_plan": result.output}
+
+    def record_human_decision(self, user_context: UserContext, session_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        allowed = {"accept_assumption", "select_geography", "validate_idea", "approve_pivot", "abandon_idea", "finalize_mvp_scope", "commit_roadmap", "create_repository", "deploy_preview", "deploy_production", "publish_investor", "external_contact", "spend_money"}
+        action = str(body.get("action") or "")
+        if action not in allowed: raise ValueError("unsupported_human_decision_action")
+        decision = str(body.get("decision") or "")
+        if not decision: raise ValueError("decision_required")
+        updated = self.repo.record_incubation_decision(user_context.user_id, session_id, action, decision, str(body.get("rationale") or ""), user_context.user_id)
+        if updated is None: raise ValueError("incubation_session_not_found")
+        return {"session": updated, "recorded": True, "immutable_event": (updated.get("state") or {}).get("decisions", [])[-1]}
 
     def _persist_analysis(
         self, user_context: UserContext, venture_data: Dict, blueprint: Dict
@@ -183,6 +313,7 @@ class IncubationHubService:
             "executive_summary":       safe("business_plan", "executive_summary"),
             "full_business_plan":      safe("business_plan", "business_plan"),
             "tech_architecture":       safe("tech_architect", "tech_architecture"),
+            "app_scaffold":            results.get("app_scaffold").output if results.get("app_scaffold") and results.get("app_scaffold").success else None,
             "investment_score":        safe("investor", "investment_score"),
             "evi_i":                   safe("investor", "evi_i"),
             "investor_signals":        safe("investor", "investor_signals"),
@@ -214,6 +345,67 @@ class IncubationHubService:
         if venture_data.get("project_id") or venture_data.get("projectId"):
             self.repo.persist_analysis(user_context.user_id, venture_data, r.output, "market")
         return r.output
+
+    async def run_task_analysis(
+        self,
+        user_context: UserContext,
+        venture_data: Dict,
+        task_type: TaskType,
+        module: str,
+        *,
+        max_tokens: int = 4000,
+        ip_protected: bool = True,
+    ) -> Dict:
+        """Execute and persist a dedicated Incubation Hub analysis mode.
+
+        These routes intentionally map one UI mode to one task contract. This
+        prevents PMF, SWOT, roadmap, survey, impact, and recommendation views
+        from silently reusing an unrelated analysis endpoint.
+        """
+        response = await self.brain.process(AIRequest(
+            task_type=task_type,
+            user_context=user_context,
+            input_data={"venture_profile": venture_data},
+            max_tokens=max_tokens,
+            ip_protected=ip_protected,
+            require_structured_output=False,
+            requested_model=venture_data.get("model_id") or venture_data.get("requested_model"),
+            execution_profile=str(venture_data.get("execution_profile") or "balanced"),
+        ))
+        result = {
+            "analysis": response.output,
+            "task_type": task_type.value,
+            "model_used": response.model_used,
+            "provider": response.provider,
+            "confidence_score": response.confidence_score,
+        }
+        if venture_data.get("project_id") or venture_data.get("projectId"):
+            self.repo.persist_analysis(user_context.user_id, venture_data, result, module)
+        return result
+
+    async def run_startup_strategy(self, user_context: UserContext, venture_data: Dict) -> Dict:
+        return await self.run_task_analysis(user_context, venture_data, TaskType.STARTUP_STRATEGY, "strategy")
+
+    async def run_finance_strategy(self, user_context: UserContext, venture_data: Dict) -> Dict:
+        return await self.run_task_analysis(user_context, venture_data, TaskType.FINANCE_STRATEGY, "finance")
+
+    async def run_product_feasibility(self, user_context: UserContext, venture_data: Dict) -> Dict:
+        return await self.run_task_analysis(user_context, venture_data, TaskType.PRODUCT_FEASIBILITY, "feasibility")
+
+    async def run_risk_analysis(self, user_context: UserContext, venture_data: Dict) -> Dict:
+        return await self.run_task_analysis(user_context, venture_data, TaskType.RISK_ANALYSIS, "swot")
+
+    async def run_impact_analysis(self, user_context: UserContext, venture_data: Dict) -> Dict:
+        return await self.run_task_analysis(user_context, venture_data, TaskType.IMPACT_PREDICTION, "impact")
+
+    async def run_execution_roadmap(self, user_context: UserContext, venture_data: Dict) -> Dict:
+        return await self.run_task_analysis(user_context, venture_data, TaskType.EXECUTION_ROADMAP, "roadmap", max_tokens=6000)
+
+    async def run_market_survey(self, user_context: UserContext, venture_data: Dict) -> Dict:
+        return await self.run_task_analysis(user_context, venture_data, TaskType.MARKET_SURVEY_SIMULATION, "survey")
+
+    async def run_recommendations(self, user_context: UserContext, venture_data: Dict) -> Dict:
+        return await self.run_task_analysis(user_context, venture_data, TaskType.RECOMMENDATION_ENGINE, "recommendation")
 
     async def generate_business_plan(self, user_context: UserContext, venture_data: Dict) -> Dict:
         """POST /api/v1/incubation/business-plan/generate -- 6 execution budget units, Investor+"""
@@ -258,7 +450,7 @@ class IncubationHubService:
         ))
         if venture_data.get("project_id") or venture_data.get("projectId"):
             self.repo.persist_analysis(user_context.user_id, venture_data, resp.output, "investor_readiness")
-        return {"readiness_report": resp.output, "cost": resp.cost}
+        return {"readiness_report": resp.output, "provider_cost_usd": resp.provider_cost_usd}
 
 
 # ============================================================================
@@ -352,6 +544,14 @@ class DashboardIntelligenceService:
 class WorkspaceAIService:
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
+        self.repo = LiveDomainRepository()
+
+    def _context_pack(self, user_context: UserContext, payload: Dict[str, Any]) -> Dict[str, Any]:
+        workspace_id = payload.get("workspace_id") or payload.get("workspaceId") or user_context.workspace_id
+        if not workspace_id:
+            return {}
+        pack = self.repo.latest_workspace_context_pack(user_context.user_id, str(workspace_id))
+        return pack.get("contextData") or pack.get("context_data") or {}
 
     async def suggest_tasks(
         self,
@@ -367,33 +567,85 @@ class WorkspaceAIService:
         Without a token, the agent runs without that context (no regression).
         """
         available_tools = await self._safe_list_tools(user_token)
+        context_pack = self._context_pack(user_context, workspace_data)
         ctx = AgentContext(
             user_context=user_context,
             trigger_event={
                 "workspace_data": workspace_data,
+                "workspace_context_pack": context_pack,
                 "available_tools": available_tools,
             },
+            shared_memory={"workspace_context_pack": context_pack},
         )
         r   = await self.brain.trigger_agent(AgentType.WORKSPACE_ASSISTANT, ctx)
         return {
             "suggestions": r.output.get("task_suggestions"),
             "next_actions": r.recommendations,
             "available_tools": available_tools,
+            "context_injected": bool(context_pack),
+            "context_version": context_pack.get("schema_version") if context_pack else None,
         }
 
     async def review_code(self, user_context: UserContext, code_payload: Dict) -> Dict:
         """POST /api/v1/workspace/code/review -- 1 execution budget unit, Founder Pro+"""
-        resp = await self.brain.process(
-            AIRequest(TaskType.CODE_REVIEW, user_context, code_payload)
-        )
-        return {"review": resp.output, "cost": resp.cost}
+        context_pack = self._context_pack(user_context, code_payload)
+        resp = await self.brain.process(AIRequest(
+            TaskType.CODE_REVIEW, user_context,
+            {**code_payload, "workspace_context_pack": context_pack},
+            requested_model=code_payload.get("model_id") or code_payload.get("requested_model"),
+            execution_profile=str(code_payload.get("execution_profile") or "balanced"),
+        ))
+        return {"review": resp.output, "provider_cost_usd": resp.provider_cost_usd}
 
     async def plan_sprint(self, user_context: UserContext, sprint_data: Dict) -> Dict:
         """POST /api/v1/workspace/sprint/plan -- 0 execution budget units"""
+        context_pack = self._context_pack(user_context, sprint_data)
         ctx = AgentContext(user_context=user_context,
-                           trigger_event={"workspace_data": sprint_data, "mode": "sprint_planning"})
+                           trigger_event={"workspace_data": sprint_data, "workspace_context_pack": context_pack, "mode": "sprint_planning"},
+                           shared_memory={"workspace_context_pack": context_pack})
         r   = await self.brain.trigger_agent(AgentType.WORKSPACE_ASSISTANT, ctx)
         return r.output
+
+    async def converse(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
+        workspace_id = body.get("workspace_id") or body.get("workspaceId") or user_context.workspace_id
+        if not workspace_id:
+            raise ValueError("workspace_id_required")
+        context_pack = self._context_pack(user_context, {**body, "workspace_id": workspace_id})
+        if not context_pack:
+            # Still return a useful empty-context response, but make the gap
+            # explicit so the UI can guide the user to seed this workspace.
+            context_pack = {"schema_version": "1.0", "context_missing": True}
+        messages = body.get("messages") if isinstance(body.get("messages"), list) else []
+        messages = [item for item in messages[-20:] if isinstance(item, dict) and item.get("role") in {"user", "assistant"}]
+        message = str(body.get("message") or "").strip()
+        if not message:
+            raise ValueError("message_required")
+        restricted_actions = {
+            "validate_idea", "accept_assumption", "approve_pivot", "abandon_idea", "finalize_mvp_scope",
+            "commit_roadmap", "create_repository", "deploy_preview", "deploy_production", "publish_investor",
+            "external_contact", "spend_money",
+        }
+        requested_action = str(body.get("requested_action") or "")
+        scoped_context = replace(user_context, workspace_id=str(workspace_id))
+        response = await self.brain.process(AIRequest(
+            TaskType.WORKSPACE_CONVERSATION,
+            scoped_context,
+            {"workspace_context_pack": context_pack, "conversation": messages, "message": message, "requested_action": requested_action},
+            max_tokens=5000,
+            ip_protected=True,
+            requested_model=body.get("model_id") or body.get("requested_model"),
+            execution_profile=str(body.get("execution_profile") or "balanced"),
+        ))
+        return {
+            "message": response.output,
+            "model_used": response.model_used,
+            "provider": response.provider,
+            "context_injected": not bool(context_pack.get("context_missing")),
+            "context_version": context_pack.get("schema_version"),
+            "approval_required": requested_action in restricted_actions,
+            "approval_action": requested_action if requested_action in restricted_actions else None,
+            "executed": False,
+        }
 
     async def list_tools(self, user_context: UserContext, user_token: str) -> Dict[str, Any]:
         """GET /api/v1/workspace/tools -- 0 execution budget units.
@@ -476,7 +728,7 @@ class TourGuideService:
             {"week_data": week_data, "summary_type": "weekly_tour_guide"},
             max_tokens=4000,
         ))
-        return {"weekly_summary": resp.output, "cost": resp.cost}
+        return {"weekly_summary": resp.output, "provider_cost_usd": resp.provider_cost_usd}
 
     async def get_audio_briefing(self, user_context: UserContext, briefing_text: str) -> Dict:
         """POST /api/v1/tour-guide/audio-briefing -- 0 execution budget units"""
@@ -759,7 +1011,7 @@ class InvestorSectionService:
         resp = await self.brain.process(AIRequest(
             TaskType.INVESTOR_SIGNAL, user_context, startup_data, max_tokens=3000
         ))
-        return {"signals": resp.output, "cost": resp.cost}
+        return {"signals": resp.output, "provider_cost_usd": resp.provider_cost_usd}
 
 
 # ============================================================================
