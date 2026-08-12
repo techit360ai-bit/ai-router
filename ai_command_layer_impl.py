@@ -33,6 +33,7 @@ from provider_adapters import (
     ProviderTimeoutError,
     call_provider_model,
 )
+from usage_settlement_client import UsageSettlementClient
 
 
 class ExecutionCommandLayer:
@@ -51,99 +52,116 @@ class ExecutionCommandLayer:
         self.cache = ResponseCache()
         self.grant_replay_guard = ExecutionGrantReplayGuard()
         self.telemetry = ExecutionTelemetryRecorder()
+        self.settlement = UsageSettlementClient()
 
     async def process_request(self, request: Any) -> Any:
         started = time.perf_counter()
         policy = self.model_router.policy_for(request)
         grant = getattr(request.user_context, "execution_grant", None)
+        request_id = grant.request_id if grant is not None else str(uuid4())
 
         if os.getenv("REQUIRE_AI_EXECUTION_GRANT", "false").lower() in {"1", "true", "yes"} and grant is None:
             raise ExecutionAuthorizationError("A backend execution grant is required")
         if grant is not None:
-            ExecutionGrantVerifier.validate_request(
-                grant,
-                user_id=request.user_context.user_id,
-                task_type=request.task_type.value,
-            )
-            self.grant_replay_guard.consume(grant)
-
-        await self.rate_limiter.check(
-            request.user_context.user_id,
-            getattr(request.user_context, "workspace_id", None),
-        )
-        safety = await self.safety_engine.validate_request(request)
-        if not safety.approved:
-            raise PermissionError(f"Request blocked: {safety.reason}")
-
-        max_output = min(int(request.max_tokens or policy.max_output_tokens), policy.max_output_tokens)
-        if grant and grant.max_output_tokens is not None:
-            max_output = min(max_output, grant.max_output_tokens)
-        request.max_tokens = max(1, max_output)
-        request.provider_timeout_seconds = policy.timeout_seconds
-
-        context = {
-            "user": request.user_context.to_prompt_context(),
-            "input": request.input_data,
-            "timestamp": datetime.now().isoformat(),
-        }
-        if request.ip_protected:
-            context["ip_protection_notice"] = (
-                "\nIP PROTECTION ACTIVE: This content is confidential. "
-                "Do not retain or use for training.\n"
-            )
-
-        prompt = await self.prompt_engine.build_prompt(
-            request.task_type, context, request.user_context.role
-        )
-        max_input_tokens = policy.max_input_tokens
-        if grant and grant.max_input_tokens is not None:
-            max_input_tokens = min(max_input_tokens, grant.max_input_tokens)
-        estimated_input_tokens = max(1, len(prompt.encode("utf-8")) // 4)
-        if estimated_input_tokens > max_input_tokens:
-            raise ExecutionAuthorizationError(
-                f"Input exceeds task token budget ({estimated_input_tokens} > {max_input_tokens})"
-            )
-        request_id = str(uuid4())
-        cache_key = self.cache.key(
-            user_id=request.user_context.user_id,
-            workspace_id=getattr(request.user_context, "workspace_id", None),
-            task_type=request.task_type.value,
-            payload={
-                "prompt": prompt,
-                "profile": request.execution_profile,
-                "requested_model": request.requested_model,
-                "schema": request.output_schema or policy.output_schema,
-            },
-        )
+            try:
+                ExecutionGrantVerifier.validate_request(
+                    grant,
+                    user_id=request.user_context.user_id,
+                    task_type=request.task_type.value,
+                )
+            except Exception as exc:
+                # Do not release a reservation using untrusted request fields
+                # when the signed grant does not authorize this execution.
+                if grant.subject == request.user_context.user_id:
+                    await self._record_failed_execution(request, request_id, exc, started)
+                raise
         cache_allowed = (
             request.use_cache
             and not request.ip_protected
             and policy.cache_ttl_seconds > 0
         )
-        if cache_allowed:
-            cached = await self.cache.get(cache_key)
-            if cached:
-                return self._build_response(
-                    request, cached, request_id, started, cached=True
+        try:
+            await self.rate_limiter.check(
+                request.user_context.user_id,
+                getattr(request.user_context, "workspace_id", None),
+            )
+            safety = await self.safety_engine.validate_request(request)
+            if not safety.approved:
+                raise PermissionError(f"Request blocked: {safety.reason}")
+
+            max_output = min(int(request.max_tokens or policy.max_output_tokens), policy.max_output_tokens)
+            if grant and grant.max_output_tokens is not None:
+                max_output = min(max_output, grant.max_output_tokens)
+            request.max_tokens = max(1, max_output)
+            request.provider_timeout_seconds = policy.timeout_seconds
+
+            context = {
+                "user": request.user_context.to_prompt_context(),
+                "input": request.input_data,
+                # Deterministic tasks must not receive a fresh timestamp in
+                # their prompt or every otherwise-identical cache key differs.
+                "timestamp": "" if cache_allowed else datetime.now().isoformat(),
+            }
+            if request.ip_protected:
+                context["ip_protection_notice"] = (
+                    "\nIP PROTECTION ACTIVE: This content is confidential. "
+                    "Do not retain or use for training.\n"
                 )
 
-        chain = self.model_router.select_chain(request)
-        response = await self._execute_with_fallback(chain, prompt, request, policy, request_id)
-        if cache_allowed:
-            await self.cache.set(cache_key, {
-                "text": response.output,
-                "model": response.model_used,
-                "provider": response.provider,
-                "prompt_tokens": response.prompt_tokens,
-                "completion_tokens": response.completion_tokens,
-                "total_tokens": response.tokens_used,
-                "confidence": response.confidence_score,
-                "duration_ms": response.execution_time_ms,
-                "provider_cost_usd": response.provider_cost_usd,
-                "metadata": response.metadata,
-            }, policy.cache_ttl_seconds)
-        await self._record_execution(request, response, started)
-        return response
+            prompt = await self.prompt_engine.build_prompt(
+                request.task_type, context, request.user_context.role
+            )
+            max_input_tokens = policy.max_input_tokens
+            if grant and grant.max_input_tokens is not None:
+                max_input_tokens = min(max_input_tokens, grant.max_input_tokens)
+            estimated_input_tokens = max(1, len(prompt.encode("utf-8")) // 4)
+            if estimated_input_tokens > max_input_tokens:
+                raise ExecutionAuthorizationError(
+                    f"Input exceeds task token budget ({estimated_input_tokens} > {max_input_tokens})"
+                )
+            if grant is not None:
+                self.grant_replay_guard.consume(grant)
+
+            cache_key = self.cache.key(
+                user_id=request.user_context.user_id,
+                workspace_id=getattr(request.user_context, "workspace_id", None),
+                task_type=request.task_type.value,
+                payload={
+                    "prompt": prompt,
+                    "profile": request.execution_profile,
+                    "requested_model": request.requested_model,
+                    "schema": request.output_schema or policy.output_schema,
+                },
+            )
+            if cache_allowed:
+                cached = await self.cache.get(cache_key)
+                if cached:
+                    response = self._build_response(
+                        request, cached, request_id, started, cached=True
+                    )
+                    await self._record_execution(request, response, started)
+                    return response
+
+            chain = self.model_router.select_chain(request)
+            response = await self._execute_with_fallback(chain, prompt, request, policy, request_id)
+            if cache_allowed:
+                await self.cache.set(cache_key, {
+                    "text": response.output,
+                    "model": response.model_used,
+                    "provider": response.provider,
+                    "prompt_tokens": response.prompt_tokens,
+                    "completion_tokens": response.completion_tokens,
+                    "total_tokens": response.tokens_used,
+                    "confidence": response.confidence_score,
+                    "duration_ms": response.execution_time_ms,
+                    "provider_cost_usd": response.provider_cost_usd,
+                    "metadata": response.metadata,
+                }, policy.cache_ttl_seconds)
+            await self._record_execution(request, response, started)
+            return response
+        except Exception as exc:
+            await self._record_failed_execution(request, request_id, exc, started)
+            raise
 
     async def _execute_with_fallback(self, chain: List[Any], prompt: str,
                                      request: Any, policy: Any, request_id: str) -> Any:
@@ -330,3 +348,52 @@ class ExecutionCommandLayer:
             "timestamp": datetime.now().isoformat(),
         }
         self.execution_log.append(event)
+        grant = getattr(request.user_context, "execution_grant", None)
+        await self.settlement.settle(
+            request_id=str(response.metadata.get("request_id") or ""),
+            user_id=request.user_context.user_id,
+            workspace_id=getattr(request.user_context, "workspace_id", None),
+            task_type=request.task_type.value,
+            provider=response.provider,
+            model=response.model_used,
+            status="completed",
+            # Cached output is a platform service event, but it is not a new
+            # provider execution. Customer charging remains backend-owned.
+            prompt_tokens=0 if response.cached else response.prompt_tokens,
+            completion_tokens=0 if response.cached else response.completion_tokens,
+            total_tokens=0 if response.cached else response.tokens_used,
+            provider_cost_usd=0 if response.cached else response.provider_cost_usd,
+            latency_ms=response.execution_time_ms,
+            attempt_count=int(response.metadata.get("attempt") or 1),
+            cache_hit=response.cached,
+            grant_id=getattr(grant, "grant_id", None),
+            reservation_id=getattr(grant, "reservation_id", None),
+            metadata={"provider_cost_usd": response.provider_cost_usd, "execution_profile": request.execution_profile},
+        )
+
+    async def _record_failed_execution(self, request: Any, request_id: str, exc: Exception, started: float) -> None:
+        grant = getattr(request.user_context, "execution_grant", None)
+        attempts = [item for item in self.execution_log if item.get("request_id") == request_id and item.get("event") == "provider_attempt"]
+        last = attempts[-1] if attempts else {}
+        event = {
+            "event": "ai_execution", "request_id": request_id,
+            "user_id": request.user_context.user_id,
+            "workspace_id": getattr(request.user_context, "workspace_id", None),
+            "task_type": request.task_type.value, "provider": last.get("provider", "unknown"),
+            "model": last.get("model", "unknown"), "status": "failed",
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+            "provider_cost_usd": 0, "latency_ms": int((time.perf_counter() - started) * 1000),
+            "cache_hit": False, "error_type": type(exc).__name__, "error": str(exc)[:500],
+            "timestamp": datetime.now().isoformat(),
+        }
+        self.execution_log.append(event)
+        await self.settlement.settle(
+            request_id=request_id, user_id=request.user_context.user_id,
+            workspace_id=getattr(request.user_context, "workspace_id", None),
+            task_type=request.task_type.value, provider=str(last.get("provider") or "unknown"),
+            model=str(last.get("model") or "unknown"), status="failed",
+            prompt_tokens=0, completion_tokens=0, total_tokens=0, provider_cost_usd=0,
+            latency_ms=event["latency_ms"], attempt_count=len(attempts), cache_hit=False,
+            grant_id=getattr(grant, "grant_id", None), reservation_id=getattr(grant, "reservation_id", None),
+            metadata={"error_type": type(exc).__name__},
+        )

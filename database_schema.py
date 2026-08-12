@@ -393,6 +393,24 @@ class AIUsageLedger(Base):
     )
 
 
+class UsageSettlementOutbox(Base):
+    """Durable execution-fact delivery queue for backend settlement."""
+    __tablename__ = "usage_settlement_outbox"
+
+    id           = Column(String(64), primary_key=True)
+    request_id   = Column(String(128), nullable=False, unique=True)
+    payload      = Column(Text, nullable=False)
+    attempts     = Column(Integer, default=0, nullable=False)
+    last_error   = Column(Text)
+    created_at   = Column(TIMESTAMP(timezone=True), nullable=False)
+    updated_at   = Column(TIMESTAMP(timezone=True), nullable=False)
+    delivered_at = Column(TIMESTAMP(timezone=True))
+
+    __table_args__ = (
+        Index("idx_settlement_outbox_pending", "delivered_at", "created_at"),
+    )
+
+
 class AIAudioOutput(Base):
     """Audio versions of AI outputs (Tour Guide briefings, training narration)."""
     __tablename__ = "ai_audio_outputs"
