@@ -1,0 +1,180 @@
+{
+  "version": "2026-08-10.1",
+  "providers": [
+    {"id": "openai", "adapter": "openai_responses", "api_key_env": "OPENAI_API_KEY"},
+    {"id": "anthropic", "adapter": "anthropic_messages", "api_key_env": "ANTHROPIC_API_KEY"},
+    {"id": "google", "adapter": "gemini_generate", "api_key_env": "GEMINI_API_KEY"},
+    {"id": "cohere", "adapter": "cohere_embed", "api_key_env": "COHERE_API_KEY"},
+    {"id": "openrouter", "adapter": "openai_compatible", "api_key_env": "OPENROUTER_API_KEY", "base_url": "https://openrouter.ai/api/v1/chat/completions"},
+    {"id": "moonshot", "adapter": "openai_compatible", "api_key_env": "MOONSHOT_API_KEY", "base_url": "https://api.moonshot.ai/v1/chat/completions"},
+    {"id": "mistral", "adapter": "openai_compatible", "api_key_env": "MISTRAL_API_KEY", "base_url": "https://api.mistral.ai/v1/chat/completions"},
+    {"id": "custom_openai_compatible", "adapter": "openai_compatible", "api_key_env": "CUSTOM_LLM_API_KEY", "base_url": "${CUSTOM_LLM_BASE_URL}", "enabled": false}
+  ],
+  "models": [
+    {
+      "id": "gpt-5.6-sol", "provider": "openai", "upstream_model": "gpt-5.6-sol",
+      "enabled": true, "user_selectable": true, "quality_tier": "frontier", "quality_score": 100,
+      "latency_score": 42, "context_window": 1050000, "max_output_tokens": 128000,
+      "input_cost_per_million": 5.0, "cached_input_cost_per_million": 0.5, "output_cost_per_million": 30.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 10, "tags": ["openai", "flagship", "sol"]
+    },
+    {
+      "id": "gpt-5.6-terra", "provider": "openai", "upstream_model": "gpt-5.6-terra",
+      "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 94,
+      "latency_score": 62, "context_window": 1050000, "max_output_tokens": 128000,
+      "input_cost_per_million": 2.0, "cached_input_cost_per_million": 0.2, "output_cost_per_million": 12.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 20, "tags": ["openai", "balanced", "terra"]
+    },
+    {
+      "id": "gpt-5.6-luna", "provider": "openai", "upstream_model": "gpt-5.6-luna",
+      "enabled": true, "user_selectable": true, "quality_tier": "efficient", "quality_score": 84,
+      "latency_score": 88, "context_window": 1050000, "max_output_tokens": 128000,
+      "input_cost_per_million": 0.2, "cached_input_cost_per_million": 0.02, "output_cost_per_million": 1.2,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 30, "tags": ["openai", "economy", "luna"]
+    },
+    {
+      "id": "gpt-5.5", "provider": "openai", "upstream_model": "gpt-5.5",
+      "enabled": true, "user_selectable": true, "quality_tier": "frontier", "quality_score": 96,
+      "latency_score": 44, "context_window": 1050000, "max_output_tokens": 128000,
+      "input_cost_per_million": 5.0, "cached_input_cost_per_million": 0.5, "output_cost_per_million": 30.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 55, "tags": ["openai", "compatibility"]
+    },
+    {
+      "id": "gpt-5.4", "provider": "openai", "upstream_model": "gpt-5.4",
+      "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 91,
+      "latency_score": 58, "context_window": 1050000, "max_output_tokens": 128000,
+      "input_cost_per_million": 2.5, "cached_input_cost_per_million": 0.25, "output_cost_per_million": 15.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 60, "tags": ["openai", "compatibility"]
+    },
+    {
+      "id": "gpt-5.3-codex", "provider": "openai", "upstream_model": "gpt-5.3-codex",
+      "enabled": true, "user_selectable": true, "quality_tier": "coding", "quality_score": 96,
+      "latency_score": 48, "context_window": 400000, "max_output_tokens": 128000,
+      "input_cost_per_million": 1.75, "cached_input_cost_per_million": 0.175, "output_cost_per_million": 14.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 15, "tags": ["openai", "codex", "coding"]
+    },
+    {
+      "id": "codex-mini-latest", "provider": "openai", "upstream_model": "codex-mini-latest",
+      "enabled": true, "user_selectable": true, "quality_tier": "efficient", "quality_score": 80,
+      "latency_score": 90, "context_window": 200000, "max_output_tokens": 64000,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "tool_calling"],
+      "priority": 35, "tags": ["openai", "codex", "economy"]
+    },
+    {
+      "id": "claude-fable-5", "provider": "anthropic", "upstream_model": "claude-fable-5",
+      "enabled": true, "user_selectable": true, "quality_tier": "frontier", "quality_score": 100,
+      "latency_score": 35, "context_window": 1000000, "max_output_tokens": 128000,
+      "input_cost_per_million": 10.0, "output_cost_per_million": 50.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 12, "tags": ["anthropic", "flagship", "long_running_agents"]
+    },
+    {
+      "id": "claude-opus-5", "provider": "anthropic", "upstream_model": "claude-opus-5",
+      "enabled": true, "user_selectable": true, "quality_tier": "frontier", "quality_score": 98,
+      "latency_score": 50, "context_window": 1000000, "max_output_tokens": 128000,
+      "input_cost_per_million": 5.0, "output_cost_per_million": 25.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 14, "tags": ["anthropic", "opus", "coding"]
+    },
+    {
+      "id": "claude-sonnet-5", "provider": "anthropic", "upstream_model": "claude-sonnet-5",
+      "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 94,
+      "latency_score": 78, "context_window": 1000000, "max_output_tokens": 128000,
+      "input_cost_per_million": 3.0, "output_cost_per_million": 15.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 18, "tags": ["anthropic", "sonnet", "balanced"]
+    },
+    {
+      "id": "claude-haiku-4.5", "provider": "anthropic", "upstream_model": "claude-haiku-4-5-20251001",
+      "enabled": true, "user_selectable": true, "quality_tier": "efficient", "quality_score": 82,
+      "latency_score": 94, "context_window": 200000, "max_output_tokens": 64000,
+      "input_cost_per_million": 1.0, "output_cost_per_million": 5.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "vision", "tool_calling"],
+      "priority": 32, "tags": ["anthropic", "haiku", "fast"]
+    },
+    {
+      "id": "claude-opus-4.6", "provider": "anthropic", "upstream_model": "claude-opus-4-6",
+      "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 92,
+      "latency_score": 52, "context_window": 1000000, "max_output_tokens": 128000,
+      "input_cost_per_million": 5.0, "output_cost_per_million": 25.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 64, "tags": ["anthropic", "legacy"]
+    },
+    {
+      "id": "claude-sonnet-4.6", "provider": "anthropic", "upstream_model": "claude-sonnet-4-6",
+      "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 90,
+      "latency_score": 76, "context_window": 1000000, "max_output_tokens": 128000,
+      "input_cost_per_million": 3.0, "output_cost_per_million": 15.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 62, "tags": ["anthropic", "legacy"]
+    },
+    {
+      "id": "gemini-2.0-flash", "provider": "google", "upstream_model": "gemini-2.0-flash",
+      "enabled": true, "user_selectable": true, "quality_tier": "efficient", "quality_score": 78,
+      "latency_score": 91, "context_window": 1000000, "max_output_tokens": 8192,
+      "capabilities": ["text", "structured_output", "long_context", "vision"],
+      "priority": 45, "tags": ["google", "fast"]
+    },
+    {
+      "id": "gemini-2.0-flash-lite", "provider": "google", "upstream_model": "gemini-2.0-flash-lite",
+      "enabled": true, "user_selectable": true, "quality_tier": "economy", "quality_score": 70,
+      "latency_score": 97, "context_window": 1000000, "max_output_tokens": 8192,
+      "capabilities": ["text", "structured_output", "long_context"],
+      "priority": 50, "tags": ["google", "economy"]
+    },
+    {
+      "id": "cohere-embed-english-v3", "provider": "cohere", "upstream_model": "embed-english-v3.0",
+      "enabled": true, "user_selectable": false, "quality_tier": "embedding", "quality_score": 88,
+      "latency_score": 85, "context_window": 512, "max_output_tokens": 1,
+      "capabilities": ["embeddings"], "priority": 10, "tags": ["cohere", "embedding"]
+    },
+    {
+      "id": "openai-text-embedding-3-large", "provider": "openai", "upstream_model": "text-embedding-3-large",
+      "enabled": true, "user_selectable": false, "quality_tier": "embedding", "quality_score": 94,
+      "latency_score": 80, "context_window": 8191, "max_output_tokens": 1,
+      "capabilities": ["embeddings"], "priority": 20, "tags": ["openai", "embedding"]
+    },
+    {
+      "id": "kimi-k2.5", "provider": "moonshot", "upstream_model": "kimi-k2.5",
+      "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 89,
+      "latency_score": 68, "context_window": 262144, "max_output_tokens": 32768,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "tool_calling"],
+      "priority": 38, "tags": ["moonshot", "kimi", "openai_compatible"]
+    },
+    {
+      "id": "mistral-large-latest", "provider": "mistral", "upstream_model": "mistral-large-latest",
+      "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 86,
+      "latency_score": 72, "context_window": 128000, "max_output_tokens": 32768,
+      "capabilities": ["text", "reasoning", "structured_output", "long_context", "tool_calling"],
+      "priority": 42, "tags": ["mistral", "european", "openai_compatible"]
+    },
+    {
+      "id": "mistral-small-latest", "provider": "mistral", "upstream_model": "mistral-small-latest",
+      "enabled": true, "user_selectable": true, "quality_tier": "efficient", "quality_score": 76,
+      "latency_score": 90, "context_window": 128000, "max_output_tokens": 32768,
+      "capabilities": ["text", "structured_output", "long_context", "tool_calling"],
+      "priority": 48, "tags": ["mistral", "european", "economy"]
+    },
+    {
+      "id": "codestral-latest", "provider": "mistral", "upstream_model": "codestral-latest",
+      "enabled": true, "user_selectable": true, "quality_tier": "coding", "quality_score": 87,
+      "latency_score": 78, "context_window": 256000, "max_output_tokens": 32768,
+      "capabilities": ["text", "coding", "structured_output", "long_context"],
+      "priority": 28, "tags": ["mistral", "european", "coding"]
+    },
+    {
+      "id": "openrouter-llama-free", "provider": "openrouter", "upstream_model": "meta-llama/llama-3.3-70b-instruct:free",
+      "enabled": true, "user_selectable": true, "quality_tier": "economy", "quality_score": 68,
+      "latency_score": 60, "context_window": 128000, "max_output_tokens": 8192,
+      "input_cost_per_million": 0.0, "output_cost_per_million": 0.0,
+      "capabilities": ["text", "structured_output", "long_context"],
+      "priority": 70, "tags": ["openrouter", "free"]
+    }
+  ]
+}

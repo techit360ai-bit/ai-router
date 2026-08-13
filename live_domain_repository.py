@@ -52,6 +52,10 @@ from database_schema import (
     VentureIntake,
     VenturePipelineRun,
     Workspace,
+    IdeaEmbedding,
+    IncubationSession,
+    WorkspaceContextPack,
+    SandboxBuildArtifact,
 )
 
 
@@ -64,6 +68,10 @@ _MEMORY: Dict[str, List[Dict[str, Any]]] = {
     "ventureIntakes": [],
     "venturePipelineRuns": [],
     "workspaces": [],
+    "incubationSessions": [],
+    "workspaceContextPacks": [],
+    "sandboxBuildArtifacts": [],
+    "ideaEmbeddings": [],
     "equityGrants": [],
     "dilutionEvents": [],
     "collaboratorEarnings": [],
@@ -406,6 +414,24 @@ class LiveDomainRepository:
             db.flush()
             return str(project.id)
 
+    def persist_idea_embedding(self, user_id: str, project_id: str, fingerprint: str, idea_text: str, vector: List[float], model: str) -> Dict[str, Any]:
+        if not vector or not fingerprint: return {"stored": False}
+        normalized = [float(value) for value in vector[:1536]]
+        if len(normalized) < 1536: normalized.extend([0.0] * (1536 - len(normalized)))
+        if not self.database_backed:
+            existing = next((row for row in _MEMORY["ideaEmbeddings"] if row.get("projectId") == project_id), None)
+            if existing: return {"stored": True, "id": existing["id"], "deduplicated": True}
+            row = self._memory_insert("ideaEmbeddings", {"ownerId": user_id, "projectId": project_id, "fingerprint": fingerprint, "ideaText": idea_text, "embeddingModel": model, "embedding": normalized, "protected": True})
+            return {"stored": True, "id": row["id"], "dimensions": len(normalized)}
+        pid = _uuid(project_id)
+        if pid is None: return {"stored": False}
+        with self._session(write=True) as db:
+            existing = db.query(IdeaEmbedding).filter(IdeaEmbedding.project_id == pid).first()
+            if existing: return {"stored": True, "id": str(existing.id), "deduplicated": True}
+            row = IdeaEmbedding(id=uuid.uuid4(), project_id=pid, embedding=normalized, idea_fingerprint=fingerprint, idea_text=idea_text, embedding_model=model, is_protected=True, leak_detection_enabled=True)
+            db.add(row); db.flush()
+            return {"stored": True, "id": str(row.id), "dimensions": len(normalized)}
+
     def latest_project_analysis(self, user_id: str, project_id: str) -> Optional[Dict[str, Any]]:
         """Return the latest persisted analysis owned by the requesting user."""
         if not self.database_backed:
@@ -510,7 +536,8 @@ class LiveDomainRepository:
                 return {"workspaceId": workspace_id, "projectId": project_id, "venture": None, "blueprintAvailable": False}
             pid = project_id or workspace.get("projectId")
             analysis = next((a for a in reversed(_MEMORY["projectAnalyses"]) if a.get("projectId") == pid), None)
-            return {"workspaceId": workspace_id, "projectId": pid, "venture": analysis.get("blueprint") if analysis else None, "blueprintAvailable": bool(analysis)}
+            pack = next((p for p in reversed(_MEMORY["workspaceContextPacks"]) if p.get("ownerId") == user_id and p.get("workspaceId") == workspace_id), None)
+            return {"workspaceId": workspace_id, "projectId": pid, "venture": analysis.get("blueprint") if analysis else None, "blueprintAvailable": bool(analysis), "contextPack": deepcopy(pack.get("contextData")) if pack else {}, "contextVersion": pack.get("version", 0) if pack else 0}
 
         uid = _uuid(user_id)
         wid = _uuid(workspace_id)
@@ -527,12 +554,160 @@ class LiveDomainRepository:
                 .order_by(ProjectAnalysis.created_at.desc())
                 .first()
             )
+            pack = db.query(WorkspaceContextPack).filter(
+                WorkspaceContextPack.workspace_id == workspace.id,
+                WorkspaceContextPack.owner_id == uid,
+            ).order_by(WorkspaceContextPack.version.desc()).first()
             return {
                 "workspaceId": str(workspace.id),
                 "projectId": str(pid),
                 "venture": analysis.blueprint if analysis else None,
                 "blueprintAvailable": analysis is not None,
+                "contextPack": pack.context_data if pack else {},
+                "contextVersion": pack.version if pack else 0,
             }
+
+    # ------------------------------------------------------------------
+    # Incubation validation sessions, context packs and approval ledger
+    # ------------------------------------------------------------------
+    def create_incubation_session(self, user_id: str, venture_data: Dict[str, Any], project_id: Optional[str] = None) -> Dict[str, Any]:
+        state = {
+            "venture_data": deepcopy(venture_data),
+            "founder_answers": {},
+            "evidence": {},
+            "assumptions": [],
+            "decisions": [],
+            "roadmap": {},
+            "tasks": [],
+            "milestones": [],
+            "artifacts": [],
+            "human_approval_required": True,
+        }
+        if not self.database_backed:
+            return self._memory_insert("incubationSessions", {"ownerId": user_id, "projectId": project_id, "status": "questions_pending", "currentPhase": 2, "version": 1, "state": state})
+        uid, pid = _uuid(user_id), _uuid(project_id)
+        if uid is None:
+            return {}
+        with self._session(write=True) as db:
+            row = IncubationSession(id=uuid.uuid4(), owner_id=uid, project_id=pid, status="questions_pending", current_phase=2, state=state, version=1)
+            db.add(row); db.flush()
+            return self._incubation_session_dict(row)
+
+    def get_incubation_session(self, user_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+        if not self.database_backed:
+            row = next((r for r in reversed(_MEMORY["incubationSessions"]) if r.get("ownerId") == user_id and r.get("id") == session_id), None)
+            return deepcopy(row) if row else None
+        uid, sid = _uuid(user_id), _uuid(session_id)
+        if uid is None or sid is None:
+            return None
+        with self._session() as db:
+            row = db.query(IncubationSession).filter(IncubationSession.id == sid, IncubationSession.owner_id == uid).first()
+            return self._incubation_session_dict(row) if row else None
+
+    def update_incubation_session(self, user_id: str, session_id: str, *, state_patch: Optional[Dict[str, Any]] = None, status: Optional[str] = None, current_phase: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        if not self.database_backed:
+            row = next((r for r in reversed(_MEMORY["incubationSessions"]) if r.get("ownerId") == user_id and r.get("id") == session_id), None)
+            if row is None: return None
+            if state_patch:
+                row["state"] = {**(row.get("state") or {}), **deepcopy(state_patch)}
+            if status: row["status"] = status
+            if current_phase is not None: row["currentPhase"] = current_phase
+            row["version"] = int(row.get("version", 1)) + 1; row["updatedAt"] = _now().isoformat()
+            return deepcopy(row)
+        uid, sid = _uuid(user_id), _uuid(session_id)
+        if uid is None or sid is None: return None
+        with self._session(write=True) as db:
+            row = db.query(IncubationSession).filter(IncubationSession.id == sid, IncubationSession.owner_id == uid).first()
+            if row is None: return None
+            row.state = {**(row.state or {}), **deepcopy(state_patch or {})}
+            if status: row.status = status
+            if current_phase is not None: row.current_phase = current_phase
+            row.version = int(row.version or 1) + 1
+            db.flush()
+            return self._incubation_session_dict(row)
+
+    def record_incubation_decision(self, user_id: str, session_id: str, action: str, decision: str, rationale: str, actor_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        session = self.get_incubation_session(user_id, session_id)
+        if session is None: return None
+        event = {"id": str(uuid.uuid4()), "action": action, "decision": decision, "rationale": rationale, "actorId": actor_id or user_id, "createdAt": _now().isoformat()}
+        decisions = list((session.get("state") or {}).get("decisions") or [])
+        decisions.append(event)
+        status = "approved" if decision.lower() in {"approve", "approved", "accept", "accepted"} else "rejected" if decision.lower() in {"reject", "rejected", "abandon"} else "questions_pending"
+        return self.update_incubation_session(user_id, session_id, state_patch={"decisions": decisions}, status=status)
+
+    def persist_workspace_context_pack(self, user_id: str, workspace_id: str, project_id: str, context_data: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.database_backed:
+            previous = [p for p in _MEMORY["workspaceContextPacks"] if p.get("ownerId") == user_id and p.get("workspaceId") == workspace_id]
+            row = self._memory_insert("workspaceContextPacks", {"ownerId": user_id, "workspaceId": workspace_id, "projectId": project_id, "version": len(previous) + 1, "contextData": deepcopy(context_data)})
+            return row
+        uid, wid, pid = _uuid(user_id), _uuid(workspace_id), _uuid(project_id)
+        if uid is None or wid is None or pid is None: return {}
+        with self._session(write=True) as db:
+            current = db.query(WorkspaceContextPack).filter(WorkspaceContextPack.workspace_id == wid, WorkspaceContextPack.owner_id == uid).order_by(WorkspaceContextPack.version.desc()).first()
+            row = WorkspaceContextPack(id=uuid.uuid4(), workspace_id=wid, project_id=pid, owner_id=uid, version=(int(current.version) + 1 if current else 1), context_data=deepcopy(context_data))
+            db.add(row); db.flush()
+            return self._context_pack_dict(row)
+
+    def latest_workspace_context_pack(self, user_id: str, workspace_id: str) -> Dict[str, Any]:
+        if not self.database_backed:
+            rows = [p for p in _MEMORY["workspaceContextPacks"] if p.get("ownerId") == user_id and p.get("workspaceId") == workspace_id]
+            return deepcopy(max(rows, key=lambda p: int(p.get("version", 0)))) if rows else {}
+        uid, wid = _uuid(user_id), _uuid(workspace_id)
+        if uid is None or wid is None: return {}
+        with self._session() as db:
+            row = db.query(WorkspaceContextPack).filter(WorkspaceContextPack.workspace_id == wid, WorkspaceContextPack.owner_id == uid).order_by(WorkspaceContextPack.version.desc()).first()
+            return self._context_pack_dict(row) if row else {}
+
+    def create_sandbox_build(self, user_id: str, project_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.database_backed:
+            versions = [r for r in _MEMORY["sandboxBuildArtifacts"] if r.get("ownerId") == user_id and r.get("projectId") == project_id]
+            return self._memory_insert("sandboxBuildArtifacts", {"ownerId": user_id, "projectId": project_id, "workspaceId": body.get("workspace_id"), "status": body.get("status", "draft"), "scope": body.get("scope", "one_week_mvp"), "manifest": deepcopy(body.get("manifest") or {}), "checks": deepcopy(body.get("checks") or {}), "approvals": deepcopy(body.get("approvals") or []), "artifactPath": body.get("artifact_path"), "previewUrl": body.get("preview_url"), "rollbackOfId": body.get("rollback_of_id"), "version": len(versions) + 1})
+        uid, pid, wid = _uuid(user_id), _uuid(project_id), _uuid(body.get("workspace_id"))
+        if uid is None or pid is None: return {}
+        with self._session(write=True) as db:
+            current = db.query(SandboxBuildArtifact).filter(SandboxBuildArtifact.owner_id == uid, SandboxBuildArtifact.project_id == pid).order_by(SandboxBuildArtifact.version.desc()).first()
+            row = SandboxBuildArtifact(id=uuid.uuid4(), owner_id=uid, project_id=pid, workspace_id=wid, status=body.get("status", "draft"), scope=body.get("scope", "one_week_mvp"), manifest=body.get("manifest") or {}, checks=body.get("checks") or {}, approvals=body.get("approvals") or [], artifact_path=body.get("artifact_path"), preview_url=body.get("preview_url"), rollback_of_id=_uuid(body.get("rollback_of_id")), version=(int(current.version) + 1 if current else 1))
+            db.add(row); db.flush()
+            return self._sandbox_build_dict(row)
+
+    def get_sandbox_build(self, user_id: str, build_id: str) -> Optional[Dict[str, Any]]:
+        if not self.database_backed:
+            row = next((r for r in reversed(_MEMORY["sandboxBuildArtifacts"]) if r.get("ownerId") == user_id and r.get("id") == build_id), None)
+            return deepcopy(row) if row else None
+        uid, bid = _uuid(user_id), _uuid(build_id)
+        if uid is None or bid is None: return None
+        with self._session() as db:
+            row = db.query(SandboxBuildArtifact).filter(SandboxBuildArtifact.id == bid, SandboxBuildArtifact.owner_id == uid).first()
+            return self._sandbox_build_dict(row) if row else None
+
+    def update_sandbox_build(self, user_id: str, build_id: str, patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not self.database_backed:
+            row = next((r for r in reversed(_MEMORY["sandboxBuildArtifacts"]) if r.get("ownerId") == user_id and r.get("id") == build_id), None)
+            if row is None: return None
+            mapping = {"artifact_path": "artifactPath", "preview_url": "previewUrl", "rollback_of_id": "rollbackOfId"}
+            for key, value in patch.items(): row[mapping.get(key, key)] = deepcopy(value)
+            row["updatedAt"] = _now().isoformat(); return deepcopy(row)
+        uid, bid = _uuid(user_id), _uuid(build_id)
+        if uid is None or bid is None: return None
+        with self._session(write=True) as db:
+            row = db.query(SandboxBuildArtifact).filter(SandboxBuildArtifact.id == bid, SandboxBuildArtifact.owner_id == uid).first()
+            if row is None: return None
+            for key in ("status", "scope", "manifest", "checks", "approvals", "artifact_path", "preview_url"):
+                if key in patch: setattr(row, key, deepcopy(patch[key]))
+            if patch.get("rollback_of_id"): row.rollback_of_id = _uuid(patch["rollback_of_id"])
+            db.flush(); return self._sandbox_build_dict(row)
+
+    @staticmethod
+    def _incubation_session_dict(row: Any) -> Dict[str, Any]:
+        return {"id": str(row.id), "ownerId": str(row.owner_id), "projectId": _str_id(row.project_id), "status": row.status, "currentPhase": row.current_phase, "version": row.version, "state": row.state or {}, "createdAt": _iso(row.created_at), "updatedAt": _iso(row.updated_at)}
+
+    @staticmethod
+    def _context_pack_dict(row: Any) -> Dict[str, Any]:
+        return {"id": str(row.id), "workspaceId": str(row.workspace_id), "projectId": str(row.project_id), "version": row.version, "contextData": row.context_data or {}, "createdAt": _iso(row.created_at)}
+
+    @staticmethod
+    def _sandbox_build_dict(row: Any) -> Dict[str, Any]:
+        return {"id": str(row.id), "ownerId": str(row.owner_id), "projectId": str(row.project_id), "workspaceId": _str_id(row.workspace_id), "status": row.status, "scope": row.scope, "manifest": row.manifest or {}, "checks": row.checks or {}, "approvals": row.approvals or [], "artifactPath": row.artifact_path, "previewUrl": row.preview_url, "rollbackOfId": _str_id(row.rollback_of_id), "version": row.version, "createdAt": _iso(row.created_at), "updatedAt": _iso(row.updated_at)}
 
     # ------------------------------------------------------------------
     # Collaborator equity and earnings

@@ -1,9 +1,7 @@
-"""
-Provider adapter boundary for the central AI command path.
+"""Provider adapter boundary for the execution-only AI command path.
 
-The router core owns model selection and credits. This module owns the narrow
-provider contract: build a provider request, call the configured client, and
-normalize success/errors into a stable shape for AICommandLayer.
+This module builds provider requests and normalizes responses. It has no
+customer billing, subscription, credit, payment, or paywall responsibilities.
 """
 
 from __future__ import annotations
@@ -58,13 +56,6 @@ class ProviderResponse:
         }
 
 
-OPENAI_PROVIDERS = {"openai_gpt4", "openai_gpt4_mini"}
-ANTHROPIC_PROVIDERS = {"anthropic_claude", "anthropic_claude_haiku"}
-COHERE_PROVIDERS = {"cohere_embed"}
-GEMINI_PROVIDERS = {"gemini_flash", "gemini_flash_lite"}
-OPENROUTER_PROVIDERS = {"openrouter_free"}
-
-
 def _value(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, Mapping):
         return obj.get(key, default)
@@ -74,6 +65,21 @@ def _value(obj: Any, key: str, default: Any = None) -> Any:
 def _provider_value(model_config: Any) -> str:
     provider = _value(model_config, "provider")
     return str(_value(provider, "value", provider))
+
+
+def _adapter_value(model_config: Any) -> str:
+    return str(_value(model_config, "adapter", "") or "")
+
+
+def _base_url(model_config: Any) -> str:
+    value = os.path.expandvars(str(_value(model_config, "base_url", "") or ""))
+    if not value or "${" in value:
+        raise ProviderConfigError("openai-compatible provider is missing a valid base_url")
+    return value
+
+
+def _capabilities(model_config: Any) -> set[str]:
+    return {str(item) for item in (_value(model_config, "capabilities", []) or [])}
 
 
 def _model_name(model_config: Any) -> str:
@@ -101,7 +107,10 @@ def _requires_json(request: Any) -> bool:
     return bool(_value(request, "require_structured_output", False))
 
 
-def _timeout_seconds() -> float:
+def _timeout_seconds(request: Any = None) -> float:
+    configured = _value(request, "provider_timeout_seconds", None) if request is not None else None
+    if configured is not None:
+        return float(configured)
     raw = os.environ.get("PROVIDER_TIMEOUT", "30")
     try:
         return float(raw)
@@ -182,6 +191,17 @@ def _openai_payload(model: str, prompt: str, request: Any) -> Dict[str, Any]:
     return payload
 
 
+def _openai_responses_payload(model: str, prompt: str, request: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "model": model,
+        "input": prompt,
+        "max_output_tokens": _max_tokens(request),
+    }
+    if _requires_json(request):
+        payload["text"] = {"format": {"type": "json_object"}}
+    return payload
+
+
 def _anthropic_payload(model: str, prompt: str, request: Any) -> Dict[str, Any]:
     return {
         "model": model,
@@ -259,6 +279,49 @@ def _normalize_openai(response: Any, duration_ms: int) -> ProviderResponse:
             "prompt_tokens": _value(usage, "prompt_tokens"),
             "completion_tokens": _value(usage, "completion_tokens"),
         },
+    )
+
+
+def _normalize_openai_responses(response: Any, duration_ms: int) -> ProviderResponse:
+    text = _value(response, "output_text", "") or ""
+    if not text:
+        output_items = _value(response, "output", []) or []
+        parts = []
+        for item in output_items:
+            for content in _value(item, "content", []) or []:
+                value = _value(content, "text", "")
+                if value:
+                    parts.append(str(value))
+        text = "\n".join(parts).strip()
+    usage = _value(response, "usage", {})
+    prompt_tokens = _value(usage, "input_tokens", _value(usage, "prompt_tokens", 0)) or 0
+    completion_tokens = _value(usage, "output_tokens", _value(usage, "completion_tokens", 0)) or 0
+    total_tokens = _value(usage, "total_tokens", int(prompt_tokens) + int(completion_tokens)) or 0
+    if not text:
+        raise ProviderResponseError("openai responses output did not include message text")
+    return ProviderResponse(
+        text=str(text),
+        tokens=int(total_tokens),
+        confidence=1.0,
+        duration_ms=duration_ms,
+        raw={"prompt_tokens": int(prompt_tokens), "completion_tokens": int(completion_tokens)},
+    )
+
+
+def _normalize_openai_embedding(response: Any, duration_ms: int) -> ProviderResponse:
+    data = _value(response, "data", []) or []
+    embeddings = [_value(item, "embedding", []) for item in data]
+    embeddings = [item for item in embeddings if item]
+    usage = _value(response, "usage", {})
+    prompt_tokens = int(_value(usage, "prompt_tokens", _value(usage, "total_tokens", 0)) or 0)
+    if not embeddings:
+        raise ProviderResponseError("openai response did not include embeddings")
+    return ProviderResponse(
+        text=json.dumps({"embeddings": embeddings}),
+        tokens=prompt_tokens,
+        confidence=1.0,
+        duration_ms=duration_ms,
+        raw={"prompt_tokens": prompt_tokens, "completion_tokens": 0},
     )
 
 
@@ -361,10 +424,21 @@ async def _call_openai(model_config: Any, prompt: str, request: Any,
     client = clients.get("openai")
     created = client is None
     if created:
-        client = await _openai_client(api_key, _timeout_seconds())
+        client = await _openai_client(api_key, _timeout_seconds(request))
     try:
+        model = _model_name(model_config)
+        if "embedding" in _capabilities(model_config) and hasattr(client, "embeddings"):
+            response = await _maybe_await(client.embeddings.create(model=model, input=prompt))
+            return _normalize_openai_embedding(response, elapsed_ms())
+        if _adapter_value(model_config) == "openai_responses" and hasattr(client, "responses"):
+            response = await _maybe_await(
+                client.responses.create(**_openai_responses_payload(model, prompt, request))
+            )
+            return _normalize_openai_responses(response, elapsed_ms())
+        # Chat Completions remains a compatibility fallback for older SDKs and
+        # existing injected clients used by local tests.
         response = await _maybe_await(
-            client.chat.completions.create(**_openai_payload(_model_name(model_config), prompt, request))
+            client.chat.completions.create(**_openai_payload(model, prompt, request))
         )
         return _normalize_openai(response, elapsed_ms())
     finally:
@@ -377,7 +451,7 @@ async def _call_anthropic(model_config: Any, prompt: str, request: Any,
     client = clients.get("anthropic")
     created = client is None
     if created:
-        client = await _anthropic_client(api_key, _timeout_seconds())
+        client = await _anthropic_client(api_key, _timeout_seconds(request))
     try:
         response = await _maybe_await(
             client.messages.create(**_anthropic_payload(_model_name(model_config), prompt, request))
@@ -403,27 +477,30 @@ async def _call_cohere(model_config: Any, prompt: str, api_key: str,
         await _close_created_client(client, created)
 
 
-async def _call_openrouter(model_config: Any, prompt: str, request: Any,
-                           api_key: str, clients: Mapping[str, Any],
-                           elapsed_ms: Callable[[], int]) -> ProviderResponse:
-    client = clients.get("openrouter")
+async def _call_openai_compatible(model_config: Any, prompt: str, request: Any,
+                                  api_key: str, clients: Mapping[str, Any],
+                                  elapsed_ms: Callable[[], int]) -> ProviderResponse:
+    provider = _provider_value(model_config)
+    client = clients.get(provider)
     created = client is None
-    timeout = _timeout_seconds()
+    timeout = _timeout_seconds(request)
     if created:
         client = await _http_client(timeout)
     try:
+        base_url = _base_url(model_config).rstrip("/")
+        url = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
         data = await _post_json(
             client,
-            "https://openrouter.ai/api/v1/chat/completions",
+            url,
             {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             _openai_payload(_model_name(model_config), prompt, request),
             timeout,
-            "openrouter",
+            provider,
         )
-        return _normalize_openai_compatible(data, "openrouter", elapsed_ms())
+        return _normalize_openai_compatible(data, provider, elapsed_ms())
     finally:
         await _close_created_client(client, created)
 
@@ -431,9 +508,10 @@ async def _call_openrouter(model_config: Any, prompt: str, request: Any,
 async def _call_gemini(model_config: Any, prompt: str, request: Any,
                        api_key: str, clients: Mapping[str, Any],
                        elapsed_ms: Callable[[], int]) -> ProviderResponse:
-    client = clients.get("gemini")
+    provider = _provider_value(model_config)
+    client = clients.get(provider) or clients.get("gemini")
     created = client is None
-    timeout = _timeout_seconds()
+    timeout = _timeout_seconds(request)
     if created:
         client = await _http_client(timeout)
     try:
@@ -444,7 +522,7 @@ async def _call_gemini(model_config: Any, prompt: str, request: Any,
             {"Content-Type": "application/json"},
             _gemini_payload(prompt, request),
             timeout,
-            "gemini",
+            provider,
         )
         return _normalize_gemini(data, elapsed_ms())
     finally:
@@ -464,17 +542,20 @@ async def call_provider_model(model_config: Any, prompt: str, request: Any,
         return max(0, int((time.perf_counter() - started) * 1000))
 
     try:
-        if provider in OPENAI_PROVIDERS:
+        adapter = _adapter_value(model_config)
+        if adapter == "openai_responses":
             return await _call_openai(model_config, prompt, request, api_key, client_map, elapsed_ms)
-        if provider in ANTHROPIC_PROVIDERS:
+        if adapter == "anthropic_messages":
             return await _call_anthropic(model_config, prompt, request, api_key, client_map, elapsed_ms)
-        if provider in COHERE_PROVIDERS:
+        if adapter == "cohere_embed":
             return await _call_cohere(model_config, prompt, api_key, client_map, elapsed_ms)
-        if provider in OPENROUTER_PROVIDERS:
-            return await _call_openrouter(model_config, prompt, request, api_key, client_map, elapsed_ms)
-        if provider in GEMINI_PROVIDERS:
+        if adapter == "openai_compatible":
+            return await _call_openai_compatible(
+                model_config, prompt, request, api_key, client_map, elapsed_ms
+            )
+        if adapter == "gemini_generate":
             return await _call_gemini(model_config, prompt, request, api_key, client_map, elapsed_ms)
-        raise ProviderConfigError(f"unsupported model provider: {provider}")
+        raise ProviderConfigError(f"unsupported provider adapter: {adapter or provider}")
     except ProviderError:
         raise
     except Exception as exc:  # noqa: BLE001 - normalize SDK-specific failures

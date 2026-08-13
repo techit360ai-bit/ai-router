@@ -982,41 +982,41 @@ class IdeaSolutionHubService:
     API Endpoints served
     ─────────────────────
     GLOBAL PROBLEMS BOARD
-      POST /api/v1/solutions/problems/submit          2 credits  Free+
-      GET  /api/v1/solutions/problems/board           0 credits  Free+
-      GET  /api/v1/solutions/problems/{id}            0 credits  Free+
-      POST /api/v1/solutions/problems/{id}/analyze    2 credits  Builder+
-      GET  /api/v1/solutions/problems/discover        2 credits  Builder+
-      GET  /api/v1/solutions/problems/match/{id}      2 credits  Builder+
+      POST /api/v1/solutions/problems/submit          2 execution budget units  Free+
+      GET  /api/v1/solutions/problems/board           0 execution budget units  Free+
+      GET  /api/v1/solutions/problems/{id}            0 execution budget units  Free+
+      POST /api/v1/solutions/problems/{id}/analyze    2 execution budget units  Builder+
+      GET  /api/v1/solutions/problems/discover        2 execution budget units  Builder+
+      GET  /api/v1/solutions/problems/match/{id}      2 execution budget units  Builder+
 
     IDEA DISCUSSIONS
-      POST /api/v1/solutions/discussions/{id}/contribute   1 credit  Free+
-      GET  /api/v1/solutions/discussions/{id}/summary      1 credit  Free+
-      GET  /api/v1/solutions/discussions/{id}/clusters     1 credit  Builder+
-      POST /api/v1/solutions/discussions/{id}/convert      3 credits  Founder Pro+
+      POST /api/v1/solutions/discussions/{id}/contribute   1 execution budget unit  Free+
+      GET  /api/v1/solutions/discussions/{id}/summary      1 execution budget unit  Free+
+      GET  /api/v1/solutions/discussions/{id}/clusters     1 execution budget unit  Builder+
+      POST /api/v1/solutions/discussions/{id}/convert      3 execution budget units  Founder Pro+
 
     SOLUTION PROJECTS
-      POST /api/v1/solutions/projects/create          3 credits  Founder Pro+
-      GET  /api/v1/solutions/projects/{id}            0 credits  Free+
-      POST /api/v1/solutions/projects/{id}/synthesize 3 credits  Founder Pro+
-      POST /api/v1/solutions/projects/{id}/feasibility 2 credits  Builder+
-      GET  /api/v1/solutions/projects/{id}/impact     1 credit   Free+
+      POST /api/v1/solutions/projects/create          3 execution budget units  Founder Pro+
+      GET  /api/v1/solutions/projects/{id}            0 execution budget units  Free+
+      POST /api/v1/solutions/projects/{id}/synthesize 3 execution budget units  Founder Pro+
+      POST /api/v1/solutions/projects/{id}/feasibility 2 execution budget units  Builder+
+      GET  /api/v1/solutions/projects/{id}/impact     1 execution budget unit   Free+
 
     DEPLOYMENT
-      POST /api/v1/solutions/deployments/create       2 credits  Founder Pro+
-      GET  /api/v1/solutions/deployments/{id}         0 credits  Free+
-      POST /api/v1/solutions/deployments/{id}/advance 0 credits  Free+
-      POST /api/v1/solutions/deployments/{id}/feedback 1 credit  Free+
-      GET  /api/v1/solutions/deployments/{id}/readiness 0 credits Free+
+      POST /api/v1/solutions/deployments/create       2 execution budget units  Founder Pro+
+      GET  /api/v1/solutions/deployments/{id}         0 execution budget units  Free+
+      POST /api/v1/solutions/deployments/{id}/advance 0 execution budget units  Free+
+      POST /api/v1/solutions/deployments/{id}/feedback 1 execution budget unit  Free+
+      GET  /api/v1/solutions/deployments/{id}/readiness 0 execution budget units Free+
 
     FUNDING
-      POST /api/v1/solutions/grants/generate          3 credits  Founder Pro+
-      GET  /api/v1/solutions/grants/{solution_id}     0 credits  Free+
-      GET  /api/v1/solutions/funding/match/{id}       2 credits  Builder+
+      POST /api/v1/solutions/grants/generate          3 execution budget units  Founder Pro+
+      GET  /api/v1/solutions/grants/{solution_id}     0 execution budget units  Free+
+      GET  /api/v1/solutions/funding/match/{id}       2 execution budget units  Builder+
 
     IMPACT DASHBOARD
-      GET  /api/v1/solutions/impact/global            0 credits  Free+
-      GET  /api/v1/solutions/impact/{solution_id}     0 credits  Free+
+      GET  /api/v1/solutions/impact/global            0 execution budget units  Free+
+      GET  /api/v1/solutions/impact/{solution_id}     0 execution budget units  Free+
     """
 
     def __init__(self, brain) -> None:
@@ -1042,7 +1042,7 @@ class IdeaSolutionHubService:
         people_affected_millions: float = 1.0,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/solutions/problems/submit -- 2 credits, Free+
+        POST /api/v1/solutions/problems/submit -- 2 execution budget units, Free+
 
         Accepts a real-world problem statement and:
           1. Computes Impact Score
@@ -1134,7 +1134,7 @@ class IdeaSolutionHubService:
         self, user_context, problem_id: str, problem_data: Dict
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/solutions/problems/{id}/analyze -- 2 credits, Builder+
+        POST /api/v1/solutions/problems/{id}/analyze -- 2 execution budget units, Builder+
 
         Deep AI analysis: expands scope, adds missing context,
         generates stakeholder map, identifies root causes.
@@ -1151,7 +1151,7 @@ class IdeaSolutionHubService:
         return {
             "problem_id":          problem_id,
             "expanded_scope":      resp.output,
-            "credits_consumed":    resp.credits_consumed,
+            "tokens_used":         resp.tokens_used,
         }
 
     # ── PROBLEM DISCOVERY ──────────────────────────────────────────────────
@@ -1161,7 +1161,7 @@ class IdeaSolutionHubService:
         categories: Optional[List[str]] = None, limit: int = 20
     ) -> Dict[str, Any]:
         """
-        GET /api/v1/solutions/problems/discover -- 2 credits, Builder+
+        GET /api/v1/solutions/problems/discover -- 2 execution budget units, Builder+
 
         Runs the automated Problem Discovery Engine and returns
         AI-discovered problems for review and activation.
@@ -1192,7 +1192,7 @@ class IdeaSolutionHubService:
         problem_id: str, content: str,
         contribution_type: Optional[str] = None
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/discussions/{id}/contribute -- 1 credit, Free+"""
+        """POST /api/v1/solutions/discussions/{id}/contribute -- 1 execution budget unit, Free+"""
         ct = (ContributionType(contribution_type)
               if contribution_type in [e.value for e in ContributionType]
               else self.moderator.classify_contribution(content))
@@ -1212,7 +1212,7 @@ class IdeaSolutionHubService:
         self, user_context, thread_id: str,
         contributions: List[DiscussionContribution]
     ) -> Dict[str, Any]:
-        """GET /api/v1/solutions/discussions/{id}/summary -- 1 credit, Free+"""
+        """GET /api/v1/solutions/discussions/{id}/summary -- 1 execution budget unit, Free+"""
         from ai_router_core import AIRequest, TaskType
 
         direction = self.moderator.detect_strongest_direction(contributions)
@@ -1251,7 +1251,7 @@ class IdeaSolutionHubService:
         discussion_summary: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/solutions/discussions/{id}/convert -- 3 credits, Founder Pro+
+        POST /api/v1/solutions/discussions/{id}/convert -- 3 execution budget units, Founder Pro+
 
         Converts a matured discussion into a Solution Project.
         Runs AI solution synthesis to structure the best direction.
@@ -1301,7 +1301,7 @@ class IdeaSolutionHubService:
     async def run_feasibility_estimate(
         self, user_context, solution_id: str, solution_data: Dict
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/projects/{id}/feasibility -- 2 credits, Builder+"""
+        """POST /api/v1/solutions/projects/{id}/feasibility -- 2 execution budget units, Builder+"""
         from ai_router_core import AIRequest, TaskType
 
         resp = await self.brain.process(AIRequest(
@@ -1312,7 +1312,7 @@ class IdeaSolutionHubService:
             ip_protected=True,  # Feasibility data includes proprietary cost/technical details
         ))
         return {"solution_id": solution_id, "feasibility_report": resp.output,
-                "credits_consumed": resp.credits_consumed}
+                "tokens_used": resp.tokens_used}
 
     async def predict_impact(
         self, user_context, solution: SolutionProject,
@@ -1320,7 +1320,7 @@ class IdeaSolutionHubService:
         severity: float = 7.0, scalability: float = 6.0,
         sustainability: float = 6.0, measurability: float = 7.0
     ) -> Dict[str, Any]:
-        """GET /api/v1/solutions/projects/{id}/impact -- 1 credit, Free+"""
+        """GET /api/v1/solutions/projects/{id}/impact -- 1 execution budget unit, Free+"""
         from ai_router_core import AIRequest, TaskType
 
         impact = self.impact_engine.compute_impact_score(
@@ -1343,7 +1343,7 @@ class IdeaSolutionHubService:
         self, user_context, solution: SolutionProject,
         mode: str, region: str, beneficiaries_target: int
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/deployments/create -- 2 credits, Founder Pro+"""
+        """POST /api/v1/solutions/deployments/create -- 2 execution budget units, Founder Pro+"""
         from ai_router_core import AIRequest, TaskType
 
         dm = DeploymentMode(mode) if mode in [e.value for e in DeploymentMode] else DeploymentMode.PILOT_PROGRAM
@@ -1382,7 +1382,7 @@ class IdeaSolutionHubService:
         self, user_context, deployment_id: str, solution_id: str,
         field_report: str, impact_metrics: Dict, failure_points: List[str]
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/deployments/{id}/feedback -- 1 credit, Free+"""
+        """POST /api/v1/solutions/deployments/{id}/feedback -- 1 execution budget unit, Free+"""
         from ai_router_core import AIRequest, TaskType
 
         resp = await self.brain.process(AIRequest(
@@ -1412,7 +1412,7 @@ class IdeaSolutionHubService:
         funder_name: str, funding_type: str,
         amount_usd: float
     ) -> Dict[str, Any]:
-        """POST /api/v1/solutions/grants/generate -- 3 credits, Founder Pro+"""
+        """POST /api/v1/solutions/grants/generate -- 3 execution budget units, Founder Pro+"""
         from ai_router_core import AIRequest, TaskType
 
         resp = await self.brain.process(AIRequest(
@@ -1456,7 +1456,7 @@ class IdeaSolutionHubService:
         funds_deployed_usd: float,
     ) -> Dict[str, Any]:
         """
-        GET /api/v1/solutions/impact/global -- 0 credits, Free+
+        GET /api/v1/solutions/impact/global -- 0 execution budget units, Free+
 
         Real-time global impact metrics for the platform homepage
         and government/NGO dashboards.

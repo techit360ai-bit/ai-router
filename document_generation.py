@@ -149,7 +149,7 @@ class GeneratedDocument:
     investor_mode:      bool = False
     export_urls:        Dict[str, str] = field(default_factory=dict)  # format -> url
     shareable_link:     Optional[str] = None
-    credits_consumed:   int = 0
+    tokens_used:        int = 0
     model_used:         str = ""
     generated_at:       datetime = field(default_factory=datetime.utcnow)
 
@@ -927,28 +927,8 @@ class DocumentGenerationService:
       DOCUMENT_UNICORN_REPORT      DOCUMENT_PRODUCT_ROADMAP
       DOCUMENT_FINANCIAL_PROJECTION DOCUMENT_MARKET_RESEARCH
 
-    Credit costs per document type:
-      Executive Summary          -> 2 credits   (Builder+)
-      Full Business Plan         -> 4 credits   (Investor+)
-      Pitch Deck                 -> 3 credits   (Founder Pro+)
-      Investor Report            -> 3 credits   (Investor+)
-      Unicorn Analysis Report    -> 2 credits   (Builder+)
-      Product Roadmap            -> 2 credits   (Founder Pro+)
-      Financial Projection       -> 2 credits   (Founder Pro+)
-      Market Research Report     -> 3 credits   (Founder Pro+)
-
-    API Endpoints served
-    ─────────────────────
-      POST /api/v1/documents/generate                3–4 credits  Founder Pro+
-      GET  /api/v1/documents/{document_id}           0 credits    Free+
-      GET  /api/v1/documents/project/{project_id}    0 credits    Free+
-      POST /api/v1/documents/{document_id}/export    0 credits    Free+
-      GET  /api/v1/documents/{document_id}/preview   0 credits    Free+
-      POST /api/v1/documents/{document_id}/edit      2 credits    Builder+
-      DELETE /api/v1/documents/{document_id}         0 credits    Free+
-      GET  /api/v1/documents/templates               0 credits    Free+
-      POST /api/v1/documents/batch                   8 credits    Investor+
-      POST /api/v1/documents/{document_id}/share     0 credits    Free+
+    Commercial access policy is intentionally outside this service. The
+    backend may authorize a request using an execution grant.
     """
 
     # Map DocumentType -> TaskType string (resolved in ai_router_core.py)
@@ -963,16 +943,6 @@ class DocumentGenerationService:
         DocumentType.MARKET_RESEARCH_REPORT:  "document_market_research",
     }
 
-    CREDIT_COSTS: Dict[DocumentType, int] = {
-        DocumentType.EXECUTIVE_SUMMARY:       2,
-        DocumentType.BUSINESS_PLAN:           4,
-        DocumentType.PITCH_DECK:              3,
-        DocumentType.INVESTOR_REPORT:         3,
-        DocumentType.UNICORN_ANALYSIS_REPORT: 2,
-        DocumentType.PRODUCT_ROADMAP:         2,
-        DocumentType.FINANCIAL_PROJECTION:    2,
-        DocumentType.MARKET_RESEARCH_REPORT:  3,
-    }
 
     def __init__(self, brain) -> None:
         self.brain         = brain
@@ -1057,7 +1027,7 @@ class DocumentGenerationService:
             structured_output=structured,
             word_count=word_count, page_estimate=pages,
             investor_mode=investor_mode,
-            credits_consumed=ai_resp.credits_consumed,
+            tokens_used=ai_resp.tokens_used,
             model_used=ai_resp.model_used,
         )
 
@@ -1082,7 +1052,7 @@ class DocumentGenerationService:
             "exports":           exports,
             "shareable_link":    doc.shareable_link,
             "edit_with_ai_url":  exports.get("edit_with_ai_url", ""),
-            "credits_consumed":  ai_resp.credits_consumed,
+            "tokens_used":       ai_resp.tokens_used,
             "model_used":        ai_resp.model_used,
             "investor_mode":     investor_mode,
             "generated_at":      doc.generated_at.isoformat(),
@@ -1099,13 +1069,11 @@ class DocumentGenerationService:
         analysis_results: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/documents/batch -- 8 credits, Investor+
-
         Generate multiple documents in one call.
         Useful for investor pack preparation (exec summary + pitch deck + financials).
         """
         results = []
-        total_credits = 0
+        total_tokens = 0
         for doc_type in document_types:
             result = await self.generate_document(
                 user_context=user_context, project_id=project_id,
@@ -1113,13 +1081,13 @@ class DocumentGenerationService:
                 startup_data=startup_data, analysis_results=analysis_results,
             )
             results.append(result)
-            total_credits += result.get("credits_consumed", 0)
+            total_tokens += result.get("tokens_used", 0)
 
         return {
             "batch_id":        str(uuid.uuid4()),
             "document_count":  len(results),
             "documents":       results,
-            "total_credits":   total_credits,
+            "total_tokens":    total_tokens,
             "investor_pack_url": f"https://app.techit.io/documents/pack/{project_id}",
         }
 
@@ -1129,7 +1097,7 @@ class DocumentGenerationService:
         section: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/documents/{document_id}/edit -- 2 credits, Builder+
+        POST /api/v1/documents/{document_id}/edit -- 2 execution budget units, Builder+
 
         AI-powered in-document editing.
         User highlights a section and gives an instruction:
@@ -1160,7 +1128,7 @@ class DocumentGenerationService:
 
     def get_available_templates(self) -> List[Dict[str, Any]]:
         """
-        GET /api/v1/documents/templates -- 0 credits, Free+
+        GET /api/v1/documents/templates -- 0 execution budget units, Free+
 
         Return all available document types with metadata for the UI card grid.
         """
@@ -1170,7 +1138,6 @@ class DocumentGenerationService:
                 "display_name":  dt.value.replace("_", " ").title(),
                 "icon":          icon,
                 "description":   desc,
-                "credit_cost":   self.CREDIT_COSTS[dt],
                 "estimated_pages": {
                     "concise":  self.gen_engine.prompt_engine.estimate_pages(dt, DocumentStyle.CONCISE),
                     "standard": self.gen_engine.prompt_engine.estimate_pages(dt, DocumentStyle.STANDARD),
@@ -1199,7 +1166,7 @@ class DocumentGenerationService:
         expiry_days: Optional[int] = 30
     ) -> Dict[str, Any]:
         """
-        POST /api/v1/documents/{document_id}/share -- 0 credits, Free+
+        POST /api/v1/documents/{document_id}/share -- 0 execution budget units, Free+
         """
         link = self.export_svc.generate_shareable_link(document_id, expiry_days)
         return {
@@ -1250,7 +1217,7 @@ def example_document_generation() -> None:
         {
             "type":   dt.value,
             "pages":  prompt_e.estimate_pages(dt, DocumentStyle.STANDARD),
-            "credits": {"executive_summary":2,"business_plan":4,"pitch_deck":3,
+            "execution budget units": {"executive_summary":2,"business_plan":4,"pitch_deck":3,
                          "investor_report":3,"unicorn_analysis_report":2,
                          "product_roadmap":2,"financial_projection":2,
                          "market_research_report":3}.get(dt.value, 2),
@@ -1259,7 +1226,7 @@ def example_document_generation() -> None:
     ]
 
     for t in available:
-        print(f"   📄 {t['type']:35s}  {t['pages']:2d} pages  {t['credits']} credits")
+        print(f"   📄 {t['type']:35s}  {t['pages']:2d} pages  {t['execution budget units']} execution budget units")
 
     # Test prompt assembly
     req = DocumentRequest(

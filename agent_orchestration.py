@@ -61,7 +61,7 @@ from typing import Any, Dict, List, Optional
 from ai_router_core import (
     AICommandLayer, AIRequest, AIResponse,
     UserContext, TaskType, UserRole,
-    SubscriptionTier, ScoringEngine, CreditCost,
+    ScoringEngine,
 )
 
 
@@ -81,6 +81,12 @@ class AgentType(Enum):
     BUSINESS_PLAN_GEN     = "business_plan_generator"
     TECH_ARCHITECT        = "tech_architect"
     PIVOT_INTELLIGENCE    = "pivot_intelligence"
+    FOUNDER_INTERROGATION = "founder_interrogation"
+    EVIDENCE_RESEARCH     = "evidence_research"
+    PMF_VALIDATION        = "pmf_validation"
+    GEOGRAPHIC_INTELLIGENCE = "geographic_intelligence"
+    MVP_BUILD_PLANNER     = "mvp_build_planner"
+    COMPANY_BUILDING_VALIDATOR = "company_building_validator"
     # Platform
     TOUR_GUIDE            = "tour_guide"
     ADAPTIVE_TRAINING     = "adaptive_training"
@@ -126,7 +132,6 @@ class AgentConfig:
     schedule:            Optional[str]     = None
     timeout_seconds:     int               = 60
     priority:            int               = 3
-    min_tier:            SubscriptionTier  = SubscriptionTier.FREE
 
 
 @dataclass
@@ -145,7 +150,7 @@ class AgentResult:
     recommendations:  List[str]
     next_steps:       List[str]
     execution_time_ms: int
-    credits_consumed: int = 0
+    tokens_used:       int = 0
     metadata:         Dict = field(default_factory=dict)
 
 
@@ -165,16 +170,30 @@ class BaseAgent(ABC):
     async def _call_ai(self, task_type: TaskType, input_data: Dict,
                         user_context: UserContext, ip_protected: bool = False,
                         max_tokens: int = 3000) -> AIResponse:
+        venture = input_data.get("venture_profile") if isinstance(input_data.get("venture_profile"), dict) else {}
         return await self.ai_brain.process_request(AIRequest(
             task_type=task_type, user_context=user_context,
             input_data=input_data, ip_protected=ip_protected, max_tokens=max_tokens,
+            requested_model=input_data.get("model_id") or input_data.get("requested_model") or venture.get("model_id") or venture.get("requested_model"),
+            execution_profile=str(input_data.get("execution_profile") or venture.get("execution_profile") or "balanced"),
         ))
+
+    @staticmethod
+    def _structured(output: str, fallback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        import json
+        import re
+        try:
+            clean = re.sub(r"```(?:json)?|```", "", output or "").strip()
+            value = json.loads(clean)
+            return value if isinstance(value, dict) else (fallback or {})
+        except (TypeError, ValueError):
+            return fallback or {"analysis": output}
 
     def _log(self, result: AgentResult) -> None:
         self._history.append({
             "timestamp": datetime.now().isoformat(),
             "success":   result.success,
-            "credits":   result.credits_consumed,
+            "tokens_used": result.tokens_used,
         })
 
 
@@ -215,21 +234,22 @@ class VentureIntakeAgent(BaseAgent):
         if idea_text:
             try:
                 import hashlib as _hl
+                import json as _json
                 fingerprint = _hl.sha256(idea_text.encode()).hexdigest()
-                # Production: call embedding API then INSERT INTO idea_embeddings
-                # embed_resp = await self._call_ai(
-                #     TaskType.EMBEDDINGS,
-                #     {"text": idea_text, "model": "text-embedding-3-small"},
-                #     context.user_context, ip_protected=True,
-                # )
-                # INSERT INTO idea_embeddings (project_id, embedding, idea_fingerprint,
-                #     idea_text, embedding_model, is_protected, leak_detection_enabled)
-                # VALUES (project_id, embed_resp.output, fingerprint, idea_text,
-                #     'text-embedding-3-small', true, true)
+                embed_resp = await self._call_ai(
+                    TaskType.EMBEDDINGS,
+                    {"text": idea_text},
+                    context.user_context, ip_protected=True, max_tokens=1,
+                )
+                parsed = _json.loads(embed_resp.output)
+                vectors = parsed.get("embeddings") if isinstance(parsed, dict) else None
+                vector = vectors[0] if isinstance(vectors, list) and vectors else []
                 context.shared_memory["idea_fingerprint"] = fingerprint
-                context.shared_memory["idea_embedding_pending"] = True
+                context.shared_memory["idea_embedding"] = vector
+                context.shared_memory["idea_embedding_model"] = embed_resp.model_used
+                context.shared_memory["idea_embedding_pending"] = not bool(vector)
             except Exception:
-                pass  # Never let embedding failure block idea intake
+                context.shared_memory["idea_embedding_pending"] = True
         # ── END IP PROTECTION ────────────────────────────────────────────────
 
         ms = int((datetime.now() - t0).total_seconds() * 1000)
@@ -237,16 +257,86 @@ class VentureIntakeAgent(BaseAgent):
             AgentType.VENTURE_INTAKE, True,
             {"venture_profile": profile,
              "idea_fingerprint": context.shared_memory.get("idea_fingerprint", ""),
+             "idea_embedding": context.shared_memory.get("idea_embedding", []),
+             "idea_embedding_model": context.shared_memory.get("idea_embedding_model"),
              "ip_protected": True},
             ["Parsed raw founder input", "Built Structured Venture Profile",
              "Fingerprinted idea for IP leak detection"],
             ["Proceed to Unicorn Evaluation"],
             ["Run UnicornEvaluatorAgent"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
 class UnicornEvaluatorAgent(BaseAgent):
+    @staticmethod
+    def _numeric_market_score(value: Any) -> Optional[float]:
+        import re
+        text = str(value or "").lower().replace(",", "")
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(trillion|billion|million|bn|mm|m|k)?", text)
+        if not match: return None
+        amount = float(match.group(1)); unit = match.group(2) or ""
+        multiplier = {"trillion": 1e12, "billion": 1e9, "bn": 1e9, "million": 1e6, "mm": 1e6, "m": 1e6, "k": 1e3}.get(unit, 1.0)
+        dollars = amount * multiplier
+        if dollars >= 1e11: return 10.0
+        if dollars >= 1e10: return 9.0
+        if dollars >= 1e9: return 8.0
+        if dollars >= 1e8: return 6.5
+        if dollars >= 1e7: return 5.0
+        if dollars >= 1e6: return 3.5
+        return 2.0
+
+    @classmethod
+    def _derive_drivers(cls, profile: Dict[str, Any]) -> tuple[Dict[str, float], Dict[str, Dict[str, Any]]]:
+        """Derive scores only from supplied evidence, with confidence metadata.
+
+        Missing evidence lowers both the score and confidence. Founders may
+        supply explicit 0-10 driver evidence, but every value remains labelled
+        provisional until a human accepts the underlying assumptions.
+        """
+        text = " ".join(str(v) for v in profile.values() if isinstance(v, (str, int, float))).lower()
+        explicit = profile.get("unicorn_drivers") if isinstance(profile.get("unicorn_drivers"), dict) else {}
+        details: Dict[str, Dict[str, Any]] = {}
+
+        def score(name: str, derived: float, evidence: List[str], confidence: float) -> float:
+            raw = explicit.get(name)
+            source = "derived_from_founder_input"
+            if isinstance(raw, dict):
+                raw = raw.get("score")
+            try:
+                if raw is not None:
+                    derived = float(raw); source = "founder_supplied_score"
+            except (TypeError, ValueError):
+                pass
+            value = round(max(0.0, min(10.0, derived)), 2)
+            details[name] = {"raw_score": value, "confidence": round(max(0.05, min(1.0, confidence)), 2), "evidence": evidence or ["No direct evidence supplied"], "source": source, "human_review_required": True}
+            return value
+
+        market_raw = profile.get("market_size") or profile.get("tam")
+        market_numeric = cls._numeric_market_score(market_raw)
+        team = profile.get("team") if isinstance(profile.get("team"), list) else []
+        traction = str(profile.get("traction") or "")
+        problem = str(profile.get("problem") or "")
+        solution = str(profile.get("solution") or "")
+        customers = str(profile.get("target_customers") or "")
+        revenue = str(profile.get("revenue_model") or "")
+        competitors = profile.get("competitors") or profile.get("competition")
+        evidence_count = sum(bool(profile.get(k)) for k in ("customer_interviews", "users", "revenue", "pilots", "letters_of_intent", "retention"))
+
+        drivers = {
+            "market_size": score("market_size", market_numeric if market_numeric is not None else (3.0 + min(2.0, len(str(market_raw)) / 80)), [f"Founder market claim: {market_raw}" if market_raw else "No quantified TAM supplied"], 0.75 if market_numeric is not None else 0.25),
+            "problem_severity": score("problem_severity", 2.5 + min(3.0, len(problem) / 90) + (1.5 if any(w in text for w in ("urgent", "critical", "costly", "daily", "compliance", "life-threatening")) else 0) + min(2.0, evidence_count * 0.5), [problem or "No problem statement", f"Demand evidence fields present: {evidence_count}"], 0.3 + min(0.6, evidence_count * 0.12)),
+            "founder_advantage": score("founder_advantage", 2.5 + min(2.5, len(team) * 0.8) + (2.0 if any(w in text for w in ("years experience", "domain expert", "previous founder", "patent", "researcher")) else 0), [f"Team members supplied: {len(team)}", str(profile.get("founder_advantage") or "No explicit unfair advantage")], 0.25 + min(0.55, len(team) * 0.12)),
+            "technological_moat": score("technological_moat", 2.5 + (3.0 if any(w in solution.lower() for w in ("proprietary", "patent", "unique data", "algorithm", "deep tech")) else 0) + (1.5 if profile.get("ip") or profile.get("data_advantage") else 0), [solution or "No solution detail", str(profile.get("ip") or profile.get("data_advantage") or "No defensibility evidence")], 0.25 + (0.4 if profile.get("ip") or profile.get("data_advantage") else 0)),
+            "scalability": score("scalability", 3.0 + (3.5 if any(w in solution.lower() for w in ("software", "saas", "api", "platform", "marketplace", "ai")) else 1.0) - (1.0 if any(w in solution.lower() for w in ("hardware", "factory", "clinic", "inventory")) else 0), [solution or "No delivery model supplied"], 0.45),
+            "network_effects": score("network_effects", 2.0 + (4.5 if any(w in text for w in ("marketplace", "community", "network", "user-generated", "collaboration")) else 0) + (1.0 if profile.get("network_effect") else 0), [str(profile.get("network_effect") or "No explicit network-effect loop"), customers or "No customer sides identified"], 0.3 + (0.35 if profile.get("network_effect") else 0)),
+            "revenue_model_strength": score("revenue_model_strength", 2.0 + min(3.0, len(revenue) / 45) + (1.5 if any(w in revenue.lower() for w in ("subscription", "transaction", "license", "usage", "commission")) else 0) + (1.0 if profile.get("willingness_to_pay") else 0), [revenue or "No revenue model", str(profile.get("willingness_to_pay") or "No willingness-to-pay evidence")], 0.3 + (0.35 if profile.get("willingness_to_pay") else 0)),
+            "market_timing": score("market_timing", 3.0 + (2.0 if any(w in text for w in ("regulation", "mandate", "growing", "adoption", "shortage", "new standard")) else 0) + min(1.5, evidence_count * 0.3), [str(profile.get("market_timing") or "No timing catalyst supplied"), traction or "No traction"], 0.3 + min(0.4, evidence_count * 0.08)),
+            "competition_landscape": score("competition_landscape", 3.0 + (2.0 if competitors else 0) + (2.0 if profile.get("differentiation") else 0), [str(competitors or "Competitors not supplied"), str(profile.get("differentiation") or "Differentiation not supplied")], 0.25 + (0.25 if competitors else 0) + (0.25 if profile.get("differentiation") else 0)),
+            "capital_efficiency": score("capital_efficiency", 3.5 + (2.5 if any(w in solution.lower() for w in ("software", "saas", "api", "no-code")) else 0) + (1.0 if profile.get("existing_codebase") or profile.get("repo_url") else 0) - (1.5 if any(w in solution.lower() for w in ("factory", "hardware", "clinical trial")) else 0), [str(profile.get("budget") or "Budget not supplied"), "Existing codebase" if profile.get("repo_url") else "No existing codebase supplied"], 0.4),
+        }
+        return drivers, details
+
     async def execute(self, context: AgentContext) -> AgentResult:
         t0      = datetime.now()
         profile = context.shared_memory.get("venture_profile", context.trigger_event or {})
@@ -255,13 +345,14 @@ class UnicornEvaluatorAgent(BaseAgent):
             {"venture_profile": profile},
             context.user_context, ip_protected=True, max_tokens=4000,
         )
-        drivers = {
-            "market_size": 7.5, "problem_severity": 8.0, "founder_advantage": 6.5,
-            "technological_moat": 7.0, "scalability": 8.5, "network_effects": 7.0,
-            "revenue_model_strength": 6.5, "market_timing": 7.5,
-            "competition_landscape": 6.0, "capital_efficiency": 7.0,
-        }  # Production: parse from structured AI response
+        drivers, evidence = self._derive_drivers(profile)
         ups = ScoringEngine.compute_unicorn_potential_score(drivers)
+        ups["driver_breakdown"] = {
+            name: {**ups["driver_breakdown"][name], **evidence[name]}
+            for name in ups["driver_breakdown"]
+        }
+        ups["score_confidence"] = round(sum(item["confidence"] for item in evidence.values()) / len(evidence), 2)
+        ups["score_status"] = "provisional_human_review_required"
         context.shared_memory["unicorn_evaluation"] = ups
         ms = int((datetime.now() - t0).total_seconds() * 1000)
         recs = (
@@ -273,7 +364,7 @@ class UnicornEvaluatorAgent(BaseAgent):
             {**ups, "ai_analysis": ai.output},
             [f"Computed UPS: {ups['unicorn_potential_score']}% ({ups['classification']})"],
             recs, ["Run MarketIntelligenceAgent", "Run ProductFeasibilityAgent"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -293,7 +384,7 @@ class MarketIntelligenceAgent(BaseAgent):
             ["Analysed TAM/SAM/SOM", "Benchmarked competition"],
             ["Validate TAM with primary research"],
             ["Integrate into Business Plan"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -312,7 +403,7 @@ class ProductFeasibilityAgent(BaseAgent):
             ["Assessed build complexity", "Mapped dev phases"],
             ["Start with lowest-risk MVP feature set"],
             ["Feed into Execution Roadmap"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -333,7 +424,7 @@ class StartupStrategyAgent(BaseAgent):
             ["Defined GTM strategy", "Designed pricing model"],
             ["Dominate one niche before expanding"],
             ["Generate Execution Roadmap", "Run Finance Strategy Agent"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -354,7 +445,7 @@ class FinanceStrategyAgent(BaseAgent):
             ["Assessed capital efficiency", "Modelled unit economics"],
             ["Delay VC until PMF is proven"],
             ["Incorporate into Business Plan financials"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -403,7 +494,7 @@ class InvestorIntelligenceAgent(BaseAgent):
              f"EVI-I: {evi_i['adjusted_evi_i']} ({evi_i['signal']})"],
             ["Address top 2 investor concerns before outreach"],
             ["Add to Investor Marketplace", "Generate Investor Readiness Report"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -424,7 +515,7 @@ class BusinessPlanGeneratorAgent(BaseAgent):
             ["Generated VC-standard Executive Summary", "Generated 10-section Business Plan"],
             ["Have 3 advisors review before investor outreach"],
             ["Export to PDF", "Upload to investor data room"],
-            ms, exec_r.credits_consumed + plan_r.credits_consumed,
+            ms, exec_r.tokens_used + plan_r.tokens_used,
         )
 
 
@@ -444,7 +535,7 @@ class TechArchitectAgent(BaseAgent):
             ["Designed full-stack architecture"],
             ["Start with monolith, extract microservices at scale"],
             ["Create technical spec", "Hire based on stack"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -476,8 +567,152 @@ class PivotIntelligenceAgent(BaseAgent):
             [f"Weak UPS: {score}%", "Pivot analysis complete"],
             ["Consider market or customer segment pivot first"],
             ["Discuss with co-founders", "Re-run intake with new direction"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
+
+
+class FounderInterrogationAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        venture = context.shared_memory.get("venture_profile", context.trigger_event or {})
+        answers = (context.trigger_event or {}).get("founder_answers", {})
+        response = await self._call_ai(
+            TaskType.FOUNDER_INTERROGATION,
+            {"venture_profile": venture, "founder_answers": answers},
+            context.user_context,
+            ip_protected=True,
+            max_tokens=5000,
+        )
+        fallback_questions = [
+            {"id": "customer", "priority": "critical", "category": "customer", "question": "Who is the narrow first customer, in which geography?", "why_it_matters": "A broad customer definition makes demand evidence non-falsifiable.", "answer_type": "text"},
+            {"id": "pain", "priority": "critical", "category": "problem", "question": "How often does this customer experience the problem, and what do they do today?", "why_it_matters": "Frequency and an existing workaround reveal urgency.", "answer_type": "text"},
+            {"id": "evidence", "priority": "critical", "category": "validation", "question": "What direct evidence exists from interviews, usage, commitments, or revenue?", "why_it_matters": "Founder conviction is not customer evidence.", "answer_type": "text"},
+        ]
+        data = self._structured(response.output, {
+            "questions": fallback_questions,
+            "blocking_unknowns": [q["id"] for q in fallback_questions if q["id"] not in answers],
+            "contradictions": [],
+            "provisional_assumptions": [],
+            "validation_blocked": True,
+        })
+        unanswered = [q for q in data.get("questions", []) if not answers.get(str(q.get("id", "")))]
+        data["validation_blocked"] = bool(unanswered or data.get("blocking_unknowns"))
+        data["human_approval_required"] = True
+        context.shared_memory["founder_interrogation"] = data
+        return AgentResult(
+            AgentType.FOUNDER_INTERROGATION, True, data,
+            ["Identified blocking unknowns", "Generated prioritized founder questions"],
+            ["Answer critical questions before accepting a validation verdict"],
+            ["Submit founder answers", "Run evidence research"],
+            int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used,
+        )
+
+
+class EvidenceResearchAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        response = await self._call_ai(
+            TaskType.EVIDENCE_RESEARCH,
+            {"venture_profile": context.shared_memory.get("venture_profile", context.trigger_event or {}),
+             "geography": (context.trigger_event or {}).get("geography"),
+             "research_capability": (context.trigger_event or {}).get("research_capability", "model_knowledge")},
+            context.user_context, max_tokens=7000,
+        )
+        data = self._structured(response.output, {"sources": [], "competitors": [], "failed_attempts": [], "contradictory_evidence": [], "evidence_gaps": ["Live sources unavailable"], "research_mode": "model_knowledge"})
+        data["sources"] = [source for source in data.get("sources", []) if isinstance(source, dict) and source.get("url")]
+        data["human_review_required"] = True
+        context.shared_memory["evidence_research"] = data
+        return AgentResult(AgentType.EVIDENCE_RESEARCH, True, data,
+            ["Separated sources from model knowledge", "Reviewed competitors, substitutes and failed attempts"],
+            ["Verify high-impact sources and contradictory claims"], ["Run PMF validation"],
+            int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
+
+
+class PMFValidationAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        interrogation = context.shared_memory.get("founder_interrogation", {})
+        response = await self._call_ai(TaskType.PMF_VALIDATION, {
+            "venture_profile": context.shared_memory.get("venture_profile", context.trigger_event or {}),
+            "founder_interrogation": interrogation,
+            "evidence": context.shared_memory.get("evidence_research", {}),
+            "geography": context.shared_memory.get("geographic_intelligence", {}),
+        }, context.user_context, ip_protected=True, max_tokens=6000)
+        data = self._structured(response.output, {"provisional_score": 0, "confidence": 0, "status": "blocked", "riskiest_assumptions": [], "falsification_tests": [], "founder_questions": [], "kill_criteria": [], "human_approval_required": True})
+        data["provisional_score"] = max(0.0, min(100.0, float(data.get("provisional_score") or 0)))
+        data["confidence"] = max(0.0, min(1.0, float(data.get("confidence") or 0)))
+        if interrogation.get("validation_blocked"):
+            data["status"] = "blocked"
+        data["human_approval_required"] = True
+        data["ai_may_finalize"] = False
+        context.shared_memory["pmf_validation"] = data
+        return AgentResult(AgentType.PMF_VALIDATION, True, data,
+            ["Produced a provisional, confidence-aware PMF assessment", "Defined falsification tests and kill criteria"],
+            ["A founder or authorized reviewer must accept or reject the provisional verdict"],
+            ["Record human validation decision"], int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
+
+
+class GeographicIntelligenceAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        response = await self._call_ai(TaskType.GEOGRAPHIC_INTELLIGENCE, {
+            "venture_profile": context.shared_memory.get("venture_profile", context.trigger_event or {}),
+            "founder_selected_geography": (context.trigger_event or {}).get("geography") or (context.trigger_event or {}).get("target_geography"),
+        }, context.user_context, max_tokens=5000)
+        data = self._structured(response.output, {"primary_geography": {}, "local_constraints": [], "local_advantages": [], "regulatory_checks": [], "distribution_channels": [], "competitors": [], "localization": [], "confidence": 0, "evidence_gaps": ["Founder must select a geography"], "founder_questions": []})
+        data["human_selection_required"] = True
+        context.shared_memory["geographic_intelligence"] = data
+        return AgentResult(AgentType.GEOGRAPHIC_INTELLIGENCE, True, data,
+            ["Applied local market, regulation and distribution context"],
+            ["Founder must confirm the target geography"], ["Confirm target geography"],
+            int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
+
+
+class MVPBuildPlannerAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        response = await self._call_ai(TaskType.MVP_BUILD_PLANNING, {
+            "venture_profile": context.shared_memory.get("venture_profile", context.trigger_event or {}),
+            "pmf_validation": context.shared_memory.get("pmf_validation", {}),
+            "tech_architecture": context.shared_memory.get("tech_architecture", {}),
+            "founder_constraints": (context.trigger_event or {}).get("founder_constraints", {}),
+        }, context.user_context, ip_protected=True, max_tokens=10000)
+        data = self._structured(response.output, {})
+        data["human_approval_required"] = True
+        data["approval_action"] = "finalize_mvp_scope"
+        context.shared_memory["mvp_build_plan"] = data
+        return AgentResult(AgentType.MVP_BUILD_PLANNER, True, data,
+            ["Created one-day, three-day, one-week and production MVP scopes", "Included code and test plans"],
+            ["Choose the smallest scope that can falsify the riskiest assumption"],
+            ["Approve MVP scope before sandbox generation"], int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
+
+
+class CompanyBuildingValidationAgent(BaseAgent):
+    async def execute(self, context: AgentContext) -> AgentResult:
+        t0 = datetime.now()
+        response = await self._call_ai(TaskType.COMPANY_BUILDING_VALIDATION, {
+            "venture_profile": context.shared_memory.get("venture_profile", context.trigger_event or {}),
+            "founder_interrogation": context.shared_memory.get("founder_interrogation", {}),
+            "evidence": context.shared_memory.get("evidence_research", {}),
+            "pmf_validation": context.shared_memory.get("pmf_validation", {}),
+            "founder_constraints": (context.trigger_event or {}).get("founder_constraints", {}),
+        }, context.user_context, ip_protected=True, max_tokens=6500)
+        data = self._structured(response.output, {
+            "company_thesis": "A company thesis is not established yet; validate the recurring customer workflow and distribution loop.",
+            "wedge": {"status": "unknown"}, "ideal_customer_and_buyer": {}, "repeatability": {"status": "unknown"},
+            "distribution": {"status": "unknown"}, "business_model": {}, "operating_model": {},
+            "defensibility": {"status": "unknown"}, "market_expansion": {}, "company_risks": ["No company-level evidence supplied"],
+            "product_risks": [], "leading_indicators": [], "30_day_company_experiments": [], "founder_questions": [],
+            "human_approval_required": True,
+        })
+        data["human_approval_required"] = True
+        data["company_status"] = "provisional_human_review_required"
+        context.shared_memory["company_building_validation"] = data
+        return AgentResult(AgentType.COMPANY_BUILDING_VALIDATOR, True, data,
+            ["Separated product wedge from company thesis", "Tested repeatability, distribution, operating model and compounding advantage"],
+            ["Run company-level experiments alongside product validation"],
+            ["Founder selects company thesis and first repeatable distribution loop"],
+            int((datetime.now() - t0).total_seconds() * 1000), response.tokens_used)
 
 
 # ============================================================================
@@ -530,7 +765,7 @@ class TourGuideAgent(BaseAgent):
              "daily_plan": actions, "ai_insights": ai.output},
             [f"Momentum: {momentum}/100", f"Decay: {decay:.4f}"],
             recs, ["Complete daily check-in", "Update milestone progress"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -596,7 +831,7 @@ class AdaptiveTrainingAgent(BaseAgent):
             actions,
             ["Begin with Module 1", "Allocate time daily based on pace"],
             ["Track completion", "Schedule mentor check-in"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -640,7 +875,7 @@ class MatchingAgent(BaseAgent):
             [f"Found {len(filtered)} compatible matches"],
             ["Review compatibility before outreach"],
             ["Connect with top match within 48 hours"],
-            ms, ai.credits_consumed if ai else 0,
+            ms, ai.tokens_used if ai else 0,
         )
 
 
@@ -663,7 +898,7 @@ class RiskEvaluatorAgent(BaseAgent):
             ["Evaluated market risks", "Generated SWOT analysis"],
             ["Address top 3 risks in 30-day sprint"],
             ["Validate assumptions before building"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -679,6 +914,7 @@ class WorkspaceAssistantAgent(BaseAgent):
         ai  = await self._call_ai(
             TaskType.WORKSPACE_ASSISTANT,
             {"workspace": trigger.get("workspace_data", {}),
+             "workspace_context_pack": trigger.get("workspace_context_pack", {}),
              "available_tools": trigger.get("available_tools", []),
              "user": context.user_context.to_prompt_context()},
             context.user_context,
@@ -758,10 +994,6 @@ class DashboardIntelligenceAgent(BaseAgent):
         if gsis_result["alert_triggered"]:
             alerts.append({"type": "gsis_alert", "severity": "warning",
                            "message": f"Alert score: {gsis_result['alert_score']} -- AI intervention recommended"})
-        if uc.credits_remaining <= 2:
-            alerts.append({"type": "credits_low", "severity": "info",
-                           "message": "Credits running low. Purchase a credit pack."})
-
         ms = int((datetime.now() - t0).total_seconds() * 1000)
         return AgentResult(
             AgentType.DASHBOARD_INTELLIGENCE, True,
@@ -772,7 +1004,6 @@ class DashboardIntelligenceAgent(BaseAgent):
                     "rgs": rgs, "frs": frs, "cis": cis, "iis": iis, "cs": cs,
                     "decay_factor": round(decay, 4),
                     "momentum_health": round(decay * 100, 1),
-                    "credits_remaining": uc.credits_remaining,
                 },
                 "alerts":   alerts,
                 "insights": ai.output,
@@ -780,7 +1011,7 @@ class DashboardIntelligenceAgent(BaseAgent):
             ["Computed GSIS and all component scores", f"GSIS: {gsis_result['gsis']}"],
             ["Act on top alert", "Complete pending training module"],
             ["Check dashboard daily"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -816,7 +1047,7 @@ class GSISComputeAgent(BaseAgent):
             [f"GSIS: {gsis['gsis']} -- {gsis['classification']}"],
             [],
             ["Share GSIS with investors if > 70"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -836,7 +1067,7 @@ class AIProfileAgent(BaseAgent):
             ["Scored profile completeness", "Identified credibility gaps"],
             ["Add portfolio projects", "Connect GitHub"],
             ["Update profile based on recommendations"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -856,7 +1087,7 @@ class OrgSphereAgent(BaseAgent):
             ["Mapped org structure", "Identified knowledge gaps"],
             ["Define clear roles before hiring"],
             ["Create RACI matrix"],
-            ms, ai.credits_consumed,
+            ms, ai.tokens_used,
         )
 
 
@@ -943,6 +1174,10 @@ class VenturePipeline:
         )
         results["business_plan"]  = tasks[0]
         results["tech_architect"] = tasks[1]
+        # The scaffold agent consumes the architecture through shared memory.
+        # Keep the inner value instead of the AgentResult wrapper so both
+        # on-demand and pipeline execution receive an identical contract.
+        shared["tech_architecture"] = tasks[1].output
 
         r = await self.orch.trigger_agent(AgentType.INVESTOR_INTELLIGENCE, ctx())
         results["investor"] = r
@@ -950,6 +1185,7 @@ class VenturePipeline:
         # Prompt -> Live App: scaffold runs after architecture is designed
         r = await self.orch.trigger_agent(AgentType.APP_SCAFFOLD, ctx())
         results["app_scaffold"] = r
+        shared["app_scaffold"] = r.output
 
         return results
 
@@ -1143,7 +1379,7 @@ class DocumentGenerationAgent(BaseAgent):
                 "document_type": doc_type,
                 "content":       resp.output,
                 "model_used":    resp.model_used,
-                "credits":       resp.credits_consumed,
+                "tokens_used":   resp.tokens_used,
             },
             actions_taken=[f"Generated {doc_type.replace('_', ' ').title()}"],
             recommendations=["Export to PDF", "Share with stakeholders"],
@@ -1317,7 +1553,7 @@ class AppScaffoldAgent(BaseAgent):
                 f"Live preview: {full_scaffold['live_preview_url']}",
             ],
             execution_time_ms=ms,
-            credits_consumed=scaffold_resp.credits_consumed + deploy_resp.credits_consumed,
+            tokens_used=scaffold_resp.tokens_used + deploy_resp.tokens_used,
         )
 
     def _select_stack(self, profile: dict, arch: dict) -> str:
@@ -1393,47 +1629,50 @@ class AgentOrchestrator:
 
     def _init_agents(self) -> None:
         registry = [
-            # (AgentType, Class, name, triggers, min_tier, schedule)
-            (AgentType.VENTURE_INTAKE,        VentureIntakeAgent,        "Venture Intake",              [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], SubscriptionTier.FREE,        None),
-            (AgentType.UNICORN_EVALUATOR,     UnicornEvaluatorAgent,     "Unicorn Probability Engine",  [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], SubscriptionTier.BUILDER,     None),
-            (AgentType.MARKET_INTELLIGENCE,   MarketIntelligenceAgent,   "Market Intelligence Engine",  [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], SubscriptionTier.BUILDER,     None),
-            (AgentType.PRODUCT_FEASIBILITY,   ProductFeasibilityAgent,   "Product Feasibility Agent",   [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.STARTUP_STRATEGY,      StartupStrategyAgent,      "Startup Strategy Generator",  [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.FINANCE_STRATEGY,      FinanceStrategyAgent,      "Finance Strategy Agent",      [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.INVESTOR_INTELLIGENCE, InvestorIntelligenceAgent, "Investor Intelligence Engine",[AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN],  SubscriptionTier.INVESTOR,    "0 0 * * *"),
-            (AgentType.BUSINESS_PLAN_GEN,     BusinessPlanGeneratorAgent,"Business Plan Generator",     [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.INVESTOR,    None),
-            (AgentType.TECH_ARCHITECT,        TechArchitectAgent,        "Tech Architecture Agent",     [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.PIVOT_INTELLIGENCE,    PivotIntelligenceAgent,    "Pivot Intelligence Agent",    [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.BUILDER,     None),
-            (AgentType.TOUR_GUIDE,            TourGuideAgent,            "AI Tour Guide",               [AgentTrigger.SCHEDULED, AgentTrigger.ON_DEMAND],     SubscriptionTier.FREE,        "0 6 * * *"),
-            (AgentType.ADAPTIVE_TRAINING,     AdaptiveTrainingAgent,     "Adaptive Training Agent",     [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN],  SubscriptionTier.FREE,        "0 2 * * 1"),
-            (AgentType.MATCHING,              MatchingAgent,             "Team Matching Engine",        [AgentTrigger.ON_DEMAND, AgentTrigger.EVENT_DRIVEN],  SubscriptionTier.BUILDER,     None),
-            (AgentType.RISK_EVALUATOR,        RiskEvaluatorAgent,        "Risk Evaluator Agent",        [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.BUILDER,     None),
-            (AgentType.WORKSPACE_ASSISTANT,   WorkspaceAssistantAgent,   "Workspace Assistant",         [AgentTrigger.ON_DEMAND, AgentTrigger.EVENT_DRIVEN],  SubscriptionTier.FREE,        None),
-            (AgentType.FEED_INTELLIGENCE,     FeedIntelligenceAgent,     "Feed Intelligence Engine",    [AgentTrigger.SCHEDULED],                             SubscriptionTier.FREE,        "*/30 * * * *"),
-            (AgentType.DASHBOARD_INTELLIGENCE,DashboardIntelligenceAgent,"Dashboard Intelligence",      [AgentTrigger.ON_DEMAND, AgentTrigger.SCHEDULED],     SubscriptionTier.FREE,        "*/30 * * * *"),
-            (AgentType.AI_PROFILE,            AIProfileAgent,            "AI Profile Agent",            [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FREE,        None),
-            (AgentType.ORG_SPHERE,            OrgSphereAgent,            "Org Sphere Agent",            [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.ADMIN_MONITOR,         AdminMonitorAgent,         "Admin Monitor Agent",         [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN],  SubscriptionTier.ENTERPRISE,  "*/15 * * * *"),
-            (AgentType.GSIS_COMPUTE,          GSISComputeAgent,          "GSIS Compute Agent",          [AgentTrigger.ON_DEMAND, AgentTrigger.SCHEDULED],     SubscriptionTier.FREE,        "*/30 * * * *"),
-            # Idea & Solution Hub agents
-            (AgentType.PROBLEM_ANALYZER,      ProblemAnalyzerAgent,      "Problem Analyzer",            [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FREE,        None),
-            (AgentType.SOLUTION_SYNTHESIZER,  SolutionSynthesizerAgent,  "Solution Synthesizer",        [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.IMPACT_PREDICTOR,      ImpactPredictorAgent,      "Impact Predictor",            [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FREE,        None),
-            (AgentType.FEASIBILITY_ESTIMATOR, FeasibilityEstimatorAgent, "Feasibility Estimator",       [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.BUILDER,     None),
-            (AgentType.PROBLEM_DISCOVERY,     ProblemDiscoveryAgent,     "Problem Discovery Engine",    [AgentTrigger.SCHEDULED, AgentTrigger.ON_DEMAND],     SubscriptionTier.BUILDER,     "0 6 * * *"),
-            (AgentType.SOLUTION_MATCHER,      SolutionMatcherAgent,      "Solution Matching Engine",    [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.BUILDER,     None),
-            (AgentType.DEPLOYMENT_PLANNER,    DeploymentPlannerAgent,    "Deployment Planner",          [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.GRANT_MATCHER,         GrantMatcherAgent,         "Grant Matching Engine",       [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FOUNDER_PRO, None),
-            (AgentType.DISCUSSION_MODERATOR,  DiscussionModeratorAgent,  "Discussion Moderator",        [AgentTrigger.EVENT_DRIVEN, AgentTrigger.SCHEDULED],  SubscriptionTier.FREE,        "*/60 * * * *"),
-            (AgentType.FIELD_FEEDBACK_AGENT,  FieldFeedbackAgent,        "Field Feedback Analyst",      [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FREE,        None),
-            # Document Generation agents
-            (AgentType.DOCUMENT_GENERATION,   DocumentGenerationAgent,   "Document Generation Engine",  [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.BUILDER,     None),
-            (AgentType.DOCUMENT_EXPORT,       DocumentExportAgent,       "Document Export Agent",       [AgentTrigger.EVENT_DRIVEN],                          SubscriptionTier.FREE,        None),
-            # Prompt -> Live App
-            (AgentType.APP_SCAFFOLD,          AppScaffoldAgent,          "App Scaffold Engine",         [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND],  SubscriptionTier.FOUNDER_PRO, None),
+            # (AgentType, Class, name, triggers, schedule)
+            (AgentType.VENTURE_INTAKE, VentureIntakeAgent, "Venture Intake", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.UNICORN_EVALUATOR, UnicornEvaluatorAgent, "Unicorn Probability Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.MARKET_INTELLIGENCE, MarketIntelligenceAgent, "Market Intelligence Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.PRODUCT_FEASIBILITY, ProductFeasibilityAgent, "Product Feasibility Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.STARTUP_STRATEGY, StartupStrategyAgent, "Startup Strategy Generator", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.FINANCE_STRATEGY, FinanceStrategyAgent, "Finance Strategy Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.INVESTOR_INTELLIGENCE, InvestorIntelligenceAgent, "Investor Intelligence Engine", [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN], "0 0 * * *"),
+            (AgentType.BUSINESS_PLAN_GEN, BusinessPlanGeneratorAgent, "Business Plan Generator", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.TECH_ARCHITECT, TechArchitectAgent, "Tech Architecture Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.PIVOT_INTELLIGENCE, PivotIntelligenceAgent, "Pivot Intelligence Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.FOUNDER_INTERROGATION, FounderInterrogationAgent, "Founder Interrogation Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.EVIDENCE_RESEARCH, EvidenceResearchAgent, "Evidence Research Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.PMF_VALIDATION, PMFValidationAgent, "PMF Validation Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.GEOGRAPHIC_INTELLIGENCE, GeographicIntelligenceAgent, "Geographic Intelligence Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.MVP_BUILD_PLANNER, MVPBuildPlannerAgent, "MVP Build Planner Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.COMPANY_BUILDING_VALIDATOR, CompanyBuildingValidationAgent, "Company Building Validator", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.TOUR_GUIDE, TourGuideAgent, "AI Tour Guide", [AgentTrigger.SCHEDULED, AgentTrigger.ON_DEMAND], "0 6 * * *"),
+            (AgentType.ADAPTIVE_TRAINING, AdaptiveTrainingAgent, "Adaptive Training Agent", [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN], "0 2 * * 1"),
+            (AgentType.MATCHING, MatchingAgent, "Team Matching Engine", [AgentTrigger.ON_DEMAND, AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.RISK_EVALUATOR, RiskEvaluatorAgent, "Risk Evaluator Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.WORKSPACE_ASSISTANT, WorkspaceAssistantAgent, "Workspace Assistant", [AgentTrigger.ON_DEMAND, AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.FEED_INTELLIGENCE, FeedIntelligenceAgent, "Feed Intelligence Engine", [AgentTrigger.SCHEDULED], "*/30 * * * *"),
+            (AgentType.DASHBOARD_INTELLIGENCE, DashboardIntelligenceAgent, "Dashboard Intelligence", [AgentTrigger.ON_DEMAND, AgentTrigger.SCHEDULED], "*/30 * * * *"),
+            (AgentType.AI_PROFILE, AIProfileAgent, "AI Profile Agent", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.ORG_SPHERE, OrgSphereAgent, "Org Sphere Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.ADMIN_MONITOR, AdminMonitorAgent, "Admin Monitor Agent", [AgentTrigger.SCHEDULED, AgentTrigger.EVENT_DRIVEN], "*/15 * * * *"),
+            (AgentType.GSIS_COMPUTE, GSISComputeAgent, "GSIS Compute Agent", [AgentTrigger.ON_DEMAND, AgentTrigger.SCHEDULED], "*/30 * * * *"),
+            (AgentType.PROBLEM_ANALYZER, ProblemAnalyzerAgent, "Problem Analyzer", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.SOLUTION_SYNTHESIZER, SolutionSynthesizerAgent, "Solution Synthesizer", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.IMPACT_PREDICTOR, ImpactPredictorAgent, "Impact Predictor", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.FEASIBILITY_ESTIMATOR, FeasibilityEstimatorAgent, "Feasibility Estimator", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.PROBLEM_DISCOVERY, ProblemDiscoveryAgent, "Problem Discovery Engine", [AgentTrigger.SCHEDULED, AgentTrigger.ON_DEMAND], "0 6 * * *"),
+            (AgentType.SOLUTION_MATCHER, SolutionMatcherAgent, "Solution Matching Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.DEPLOYMENT_PLANNER, DeploymentPlannerAgent, "Deployment Planner", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.GRANT_MATCHER, GrantMatcherAgent, "Grant Matching Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.DISCUSSION_MODERATOR, DiscussionModeratorAgent, "Discussion Moderator", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.SCHEDULED], "*/60 * * * *"),
+            (AgentType.FIELD_FEEDBACK_AGENT, FieldFeedbackAgent, "Field Feedback Analyst", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.DOCUMENT_GENERATION, DocumentGenerationAgent, "Document Generation Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
+            (AgentType.DOCUMENT_EXPORT, DocumentExportAgent, "Document Export Agent", [AgentTrigger.EVENT_DRIVEN], None),
+            (AgentType.APP_SCAFFOLD, AppScaffoldAgent, "App Scaffold Engine", [AgentTrigger.EVENT_DRIVEN, AgentTrigger.ON_DEMAND], None),
         ]
-        for atype, cls, name, triggers, min_tier, schedule in registry:
-            config = AgentConfig(atype, name, f"TechIT {name}", triggers, schedule, 60, 3, min_tier)
+        for atype, cls, name, triggers, schedule in registry:
+            config = AgentConfig(atype, name, f"TechIT {name}", triggers, schedule, 60, 3)
             self.agents[atype] = cls(config, self.ai_brain)
 
     async def trigger_agent(self, agent_type: AgentType, context: AgentContext) -> AgentResult:
@@ -1452,11 +1691,8 @@ class AgentOrchestrator:
         Training agent adapts on lifecycle events (mvp_shipped, pivot_detected, etc.).
 
         System context elevation:
-          InvestorIntelligenceAgent requires Investor+ tier.
-          When fired from a lifecycle event (revenue_went_live, investor_expressed_interest)
-          triggered by a founder, we elevate the context to a system-level investor context
-          so the agent can run without a PermissionError.  The output is then written to the
-          project's investor_evi_snapshots row, not returned to the founder directly.
+          Lifecycle-triggered investor intelligence runs with a system actor so
+          audit trails distinguish it from a direct user request.
         """
         etype = event.get("type")
         uc    = event.get("user_context")
@@ -1472,8 +1708,6 @@ class AgentOrchestrator:
             system_uc = UserContext(
                 user_id=f"system_investor_{uc.user_id if uc else 'anon'}",
                 role=UserRole.INVESTOR,
-                subscription_tier=SubscriptionTier.INVESTOR,
-                credits_remaining=9999,
                 project_id=uc.project_id if uc else None,
                 project_stage=uc.project_stage if uc else "idea",
                 industry=uc.industry if uc else "general",
@@ -1569,7 +1803,6 @@ async def _demo() -> None:
 
     uc = UserContext(
         user_id="founder_demo", role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FOUNDER_PRO, credits_remaining=150,
         project_id=None, project_stage="idea", industry="edtech",
         tech_stack=[], past_feedback=[],
         training_progress={"completion_percentage": 0},

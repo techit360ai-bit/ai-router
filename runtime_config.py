@@ -97,8 +97,6 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
         for name, env_key in (
             ("provider.openai", "OPENAI_API_KEY"),
             ("provider.anthropic", "ANTHROPIC_API_KEY"),
-            ("billing.stripe_secret", "STRIPE_SECRET_KEY"),
-            ("billing.stripe_webhook", "STRIPE_WEBHOOK_SECRET"),
         ):
             value = values.get(env_key, "")
             checks.append(RuntimeCheck(
@@ -106,6 +104,27 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
                 bool(value) and not _is_placeholder(value),
                 f"{env_key} is required and must not be a placeholder",
             ))
+
+        if bool_env(values.get("REQUIRE_AI_EXECUTION_GRANT"), default=False):
+            grant_secret = values.get("AI_EXECUTION_GRANT_SECRET") or secret
+            checks.append(RuntimeCheck(
+                "execution_grant.secret",
+                bool(grant_secret) and len(grant_secret) >= 32 and not _is_placeholder(grant_secret),
+                "AI_EXECUTION_GRANT_SECRET or JWT_SECRET must securely verify execution grants",
+            ))
+
+        checks.append(_check_url(
+            "settlement.backend_url",
+            values.get("BACKEND_USAGE_SETTLEMENT_URL"),
+            {"https"},
+            env_name,
+        ))
+        settlement_secret = values.get("AI_ROUTER_SETTLEMENT_SECRET", "")
+        checks.append(RuntimeCheck(
+            "settlement.hmac_secret",
+            len(settlement_secret) >= 32 and not _is_placeholder(settlement_secret),
+            "AI_ROUTER_SETTLEMENT_SECRET must be set, strong, and non-placeholder",
+        ))
 
     return checks
 

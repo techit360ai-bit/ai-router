@@ -37,14 +37,19 @@ jobs:
           ENVIRONMENT:        test
         run: |
           python3 -c "
-          from ai_router_core import ScoringEngine, SubscriptionTier, SubscriptionAccessControl, TaskType
-          from billing_system import ALL_PLANS, CREDIT_OPERATIONS
+          from ai_router_core import ScoringEngine, ModelRouter, TaskType
+          from model_registry import ModelRegistry
           from training_module import ModuleLibrary
           from database_schema import Base
 
           gsis = ScoringEngine.compute_gsis(70,65,60,55,40,72,50,35,80)
           assert 0 < gsis['gsis'] < 100, 'GSIS out of range'
-          assert len(ALL_PLANS) == 11, f'Expected 11 plans, got {len(ALL_PLANS)}'
+          registry = ModelRegistry()
+          router = ModelRouter(registry)
+          assert len(registry.task_policies) == len(TaskType), 'Task policy coverage mismatch'
+          assert len(registry.models) >= 20, 'Model registry coverage mismatch'
+          assert not {'credit_ledger', 'credit_purchases', 'paywall_hits'} & set(Base.metadata.tables), 'Commercial tables returned'
+          assert not hasattr(__import__('ai_router_core'), 'SubscriptionTier'), 'Commercial tier returned'
           assert len(ModuleLibrary.all_modules()) == 35, 'Module count mismatch'
           assert len(Base.metadata.tables) >= 30, 'Table count mismatch'
           print('✅ All smoke tests passed')

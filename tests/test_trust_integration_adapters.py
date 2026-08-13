@@ -17,7 +17,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("ENVIRONMENT", "development")
 os.environ.setdefault("ALLOW_DEMO_AUTH", "true")
 
-from ai_router_core import SubscriptionTier, UserContext, UserRole  # noqa: E402
+from ai_router_core import UserContext, UserRole  # noqa: E402
 from integration_guide import TechITAIBrain, TrustVerificationService  # noqa: E402
 from main import app  # noqa: E402
 from trust_engine_lite import VerificationSource, VerificationStatus  # noqa: E402
@@ -32,8 +32,6 @@ def _user() -> UserContext:
     return UserContext(
         user_id="u_trust_adapter",
         role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FREE,
-        credits_remaining=10,
         project_id="p_trust_adapter",
         project_stage="mvp",
         industry="saas",

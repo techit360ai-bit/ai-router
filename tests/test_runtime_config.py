@@ -31,8 +31,8 @@ BASE_PROD_ENV = {
     "MCP_BASE_URL": "https://api.techit.example/api/mcp",
     "OPENAI_API_KEY": "sk-live-openai",
     "ANTHROPIC_API_KEY": "sk-ant-live",
-    "STRIPE_SECRET_KEY": "sk_live_real",
-    "STRIPE_WEBHOOK_SECRET": "whsec_real",
+    "BACKEND_USAGE_SETTLEMENT_URL": "https://api.techit.example/internal/usage-settlement",
+    "AI_ROUTER_SETTLEMENT_SECRET": "0123456789abcdef0123456789abcdef",
 }
 
 
@@ -58,17 +58,15 @@ def test_production_demo_auth_fails_closed() -> None:
         raise AssertionError("assert_runtime_ready should fail when production demo auth is enabled")
 
 
-def test_production_requires_provider_and_billing_keys() -> None:
+def test_production_requires_provider_keys() -> None:
     env = {
         **BASE_PROD_ENV,
         "OPENAI_API_KEY": "sk-replace-me",
         "ANTHROPIC_API_KEY": "",
-        "STRIPE_WEBHOOK_SECRET": "whsec_replace_me",
     }
     failed = _failed_names(env)
     assert "provider.openai" in failed
     assert "provider.anthropic" in failed
-    assert "billing.stripe_webhook" in failed
 
 
 def test_production_rejects_local_dependency_urls() -> None:
@@ -116,7 +114,7 @@ def main() -> int:
     tests = [
         test_valid_production_runtime_passes,
         test_production_demo_auth_fails_closed,
-        test_production_requires_provider_and_billing_keys,
+        test_production_requires_provider_keys,
         test_production_rejects_local_dependency_urls,
         test_development_allows_demo_auth_and_missing_provider_keys,
         test_database_engine_options_bound_readiness_timeouts,

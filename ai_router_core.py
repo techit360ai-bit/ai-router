@@ -7,11 +7,11 @@ This module is the single source of truth for:
   - All enumerations and shared types used across the platform
   - The complete Scoring Engine (all 15 mathematical models)
   - Model routing with vendor fallback chains
-  - Credit economy and subscription access control
+  - Execution-only authorization, provider routing, and fallback controls
   - Prompt engine with versioned templates
   - Safety engine: permissions, injection, IP protection
   - AI Command Layer: the gateway every AI call passes through
-  - Cost monitor and rate limiting
+  - Provider FinOps telemetry and infrastructure rate limiting
 
 Scoring Models Implemented
 ──────────────────────────
@@ -59,12 +59,21 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from uuid import uuid4
 
 import agent_prompts as AP
-from credit_ledger import CreditLedger, default_credit_ledger
 from provider_adapters import (
     ProviderConfigError as AdapterProviderConfigError,
     ProviderError as AdapterProviderError,
     call_provider_model,
 )
+from execution_controls import (
+    ExecutionGrant,
+    ExecutionGrantVerifier,
+    ExecutionRateLimiter,
+    ProviderCircuitBreaker,
+    ResponseCache,
+)
+from model_registry import ModelDefinition, ModelRegistry, RegistryError, TaskPolicy
+from output_validation import OutputValidationError, validate_output
+from routing_engine import ComplexityTier, ModelConfig, ModelRouter
 
 
 # ============================================================================
@@ -77,14 +86,6 @@ class UserRole(Enum):
     INVESTOR        = "investor"
     ADMIN           = "admin"
     ACCELERATOR_MGR = "accelerator_manager"
-
-
-class SubscriptionTier(Enum):
-    FREE         = "free"
-    BUILDER      = "builder"
-    FOUNDER_PRO  = "founder_pro"
-    INVESTOR     = "investor"
-    ENTERPRISE   = "enterprise"
 
 
 class TaskType(Enum):
@@ -103,6 +104,13 @@ class TaskType(Enum):
     PIVOT_INTELLIGENCE       = "pivot_intelligence"
     EXECUTION_ROADMAP        = "execution_roadmap"
     RECOMMENDATION_ENGINE    = "recommendation_engine"
+    FOUNDER_INTERROGATION    = "founder_interrogation"
+    EVIDENCE_RESEARCH        = "evidence_research"
+    PMF_VALIDATION           = "pmf_validation"
+    GEOGRAPHIC_INTELLIGENCE  = "geographic_intelligence"
+    MVP_BUILD_PLANNING       = "mvp_build_planning"
+    MONETIZATION_STRATEGY    = "monetization_strategy"
+    COMPANY_BUILDING_VALIDATION = "company_building_validation"
     # Platform operations
     TRAINING_GENERATION      = "training_generation"
     CHAT                     = "chat"
@@ -115,6 +123,7 @@ class TaskType(Enum):
     RISK_ANALYSIS            = "risk_analysis"
     ADMIN_MONITOR            = "admin_monitor"
     WORKSPACE_ASSISTANT      = "workspace_assistant"
+    WORKSPACE_CONVERSATION   = "workspace_conversation"
     FEED_INTELLIGENCE        = "feed_intelligence"
     PROFILE_ANALYSIS         = "profile_analysis"
     DASHBOARD_INTELLIGENCE   = "dashboard_intelligence"
@@ -148,221 +157,6 @@ class TaskType(Enum):
     TRUST_VERIFY_FOUNDER           = "trust_verify_founder"
     TRUST_VERIFY_ORG               = "trust_verify_org"
     TRUST_MILESTONE_REVIEW         = "trust_milestone_review"
-
-
-class ModelProvider(Enum):
-    OPENAI_GPT4       = "openai_gpt4"
-    OPENAI_GPT4_MINI  = "openai_gpt4_mini"
-    ANTHROPIC_CLAUDE  = "anthropic_claude"
-    ANTHROPIC_HAIKU   = "anthropic_claude_haiku"
-    LOCAL_LLAMA       = "local_llama"
-    COHERE_EMBED      = "cohere_embed"
-    GEMINI_FLASH      = "gemini_flash"
-    GEMINI_FLASH_LITE = "gemini_flash_lite"
-    OPENROUTER_FREE   = "openrouter_free"
-
-
-# ============================================================================
-# CREDIT ECONOMY
-# ============================================================================
-
-class CreditCost:
-    """
-    Credit cost per AI operation.
-    Both subscription and PAYG tracks consume from this table.
-
-    Key operations:
-      Idea Diagnostic              ->  1 credit
-      Unicorn Analysis             ->  2 credits
-      Market Intelligence          ->  2 credits
-      Startup Strategy             ->  3 credits
-      Investor Readiness           ->  2 credits
-      Executive Summary            ->  2 credits
-      Full Business Plan           ->  4 credits
-      Market Survey Simulation     ->  3 credits
-      Tech Stack Architecture      ->  2 credits
-      Execution Roadmap            ->  2 credits
-      Full Venture Pipeline        -> 12 credits  (bundled)
-      Investor EVI Report          ->  2 credits
-      GSIS Compute                 ->  1 credit
-
-    Monthly allocations by tier:
-      Free           ->    5 / month
-      Builder        ->   50 / month
-      Founder Pro    ->  150 / month
-      Investor       ->  500 / month
-      Enterprise     ->  unlimited
-    """
-
-    COSTS: Dict[TaskType, int] = {
-        TaskType.IDEA_EVALUATION:           1,
-        TaskType.UNICORN_ANALYSIS:          2,
-        TaskType.MARKET_INTELLIGENCE:       2,
-        TaskType.PRODUCT_FEASIBILITY:       2,
-        TaskType.STARTUP_STRATEGY:          3,
-        TaskType.FINANCE_STRATEGY:          2,
-        TaskType.INVESTOR_READINESS:        2,
-        TaskType.EXECUTIVE_SUMMARY:         2,
-        TaskType.BUSINESS_PLAN:             4,
-        TaskType.MARKET_SURVEY_SIMULATION:  3,
-        TaskType.TECH_STACK_DESIGN:         2,
-        TaskType.EXECUTION_ROADMAP:         2,
-        TaskType.RECOMMENDATION_ENGINE:     1,
-        TaskType.PIVOT_INTELLIGENCE:        2,
-        TaskType.INVESTOR_EVI:              2,
-        TaskType.GSIS_COMPUTE:              1,
-        # Operational
-        TaskType.TRAINING_GENERATION:       1,
-        TaskType.CHAT:                      0,
-        TaskType.CODE_REVIEW:              1,
-        TaskType.SUMMARY:                  1,
-        TaskType.EMBEDDINGS:               0,
-        TaskType.TOUR_GUIDE:               0,
-        TaskType.MATCHING:                 1,
-        TaskType.INVESTOR_SIGNAL:          2,
-        TaskType.RISK_ANALYSIS:            2,
-        TaskType.WORKSPACE_ASSISTANT:      0,
-        TaskType.FEED_INTELLIGENCE:        0,
-        TaskType.PROFILE_ANALYSIS:         1,
-        TaskType.DASHBOARD_INTELLIGENCE:   0,
-        TaskType.ORG_SPHERE:               1,
-        TaskType.ADMIN_MONITOR:            0,
-        # Idea & Solution Hub
-        TaskType.PROBLEM_ANALYSIS:         2,
-        TaskType.SOLUTION_SYNTHESIS:       3,
-        TaskType.IMPACT_PREDICTION:        1,
-        TaskType.FEASIBILITY_ESTIMATE:     2,
-        TaskType.PROBLEM_DISCOVERY:        2,
-        TaskType.SOLUTION_MATCHING:        2,
-        TaskType.DEPLOYMENT_PLANNING:      2,
-        TaskType.GRANT_MATCHING:           3,
-        TaskType.DISCUSSION_MODERATION:    1,
-        TaskType.FIELD_FEEDBACK_ANALYSIS:  1,
-        # Document Generation Engine
-        TaskType.DOCUMENT_EXECUTIVE_SUMMARY:    2,
-        TaskType.DOCUMENT_BUSINESS_PLAN:        4,
-        TaskType.DOCUMENT_PITCH_DECK:           3,
-        TaskType.DOCUMENT_INVESTOR_REPORT:      3,
-        TaskType.DOCUMENT_UNICORN_REPORT:       2,
-        TaskType.DOCUMENT_PRODUCT_ROADMAP:      2,
-        TaskType.DOCUMENT_FINANCIAL_PROJECTION: 2,
-        TaskType.DOCUMENT_MARKET_RESEARCH:      3,
-        # Prompt -> Live App engine
-        TaskType.APP_SCAFFOLD_GENERATION:      5,
-        TaskType.APP_DEPLOY_CONFIG:            3,
-        # Trust Engine Lite
-        TaskType.TRUST_VERIFY_FOUNDER:         1,
-        TaskType.TRUST_VERIFY_ORG:             1,
-        TaskType.TRUST_MILESTONE_REVIEW:       1,
-    }
-
-    MONTHLY_CREDITS: Dict[SubscriptionTier, int] = {
-        SubscriptionTier.FREE:          5,
-        SubscriptionTier.BUILDER:      50,
-        SubscriptionTier.FOUNDER_PRO: 150,
-        SubscriptionTier.INVESTOR:    500,
-        SubscriptionTier.ENTERPRISE:  999_999,
-    }
-
-    # PAYG credit packs: credits -> USD price
-    CREDIT_PACKS: Dict[int, float] = {
-        50:    20.00,
-        150:   50.00,
-        500:  150.00,
-        1500: 400.00,
-    }
-
-    @classmethod
-    def cost_for(cls, task: TaskType) -> int:
-        return cls.COSTS.get(task, 1)
-
-    @classmethod
-    def monthly_allocation(cls, tier: SubscriptionTier) -> int:
-        return cls.MONTHLY_CREDITS.get(tier, 5)
-
-
-# ============================================================================
-# SUBSCRIPTION ACCESS CONTROL
-# ============================================================================
-
-class SubscriptionAccessControl:
-    """
-    Gates each TaskType behind a minimum subscription tier.
-
-    Free        -> basic validation, tour guide, dashboard, chat
-    Builder     -> unicorn, market intel, matching, training
-    Founder Pro -> strategy, roadmap, tech stack, risk, org sphere
-    Investor    -> business plan, investor reports, market survey, EVI-I
-    Enterprise  -> all operations including admin monitor
-    """
-
-    _FREE = {
-        TaskType.CHAT, TaskType.TOUR_GUIDE, TaskType.IDEA_EVALUATION,
-        TaskType.DASHBOARD_INTELLIGENCE, TaskType.WORKSPACE_ASSISTANT,
-        TaskType.FEED_INTELLIGENCE, TaskType.GSIS_COMPUTE,
-        TaskType.TRUST_VERIFY_FOUNDER, TaskType.TRUST_VERIFY_ORG,
-        TaskType.TRUST_MILESTONE_REVIEW,
-        TaskType.TRAINING_GENERATION,   # adaptive curriculum for all users
-        # Idea & Solution Hub -- problem submission and basic impact free
-        TaskType.PROBLEM_ANALYSIS, TaskType.IMPACT_PREDICTION,
-        TaskType.FIELD_FEEDBACK_ANALYSIS, TaskType.DISCUSSION_MODERATION,
-    }
-    _BUILDER = _FREE | {
-        TaskType.UNICORN_ANALYSIS, TaskType.MARKET_INTELLIGENCE,
-        TaskType.RECOMMENDATION_ENGINE, TaskType.MATCHING,
-        TaskType.TRAINING_GENERATION, TaskType.PROFILE_ANALYSIS,
-        TaskType.SUMMARY, TaskType.EMBEDDINGS,
-        # Idea & Solution Hub -- discovery and matching available to Builders
-        TaskType.PROBLEM_DISCOVERY, TaskType.SOLUTION_MATCHING,
-        TaskType.FEASIBILITY_ESTIMATE,
-        # Document Generation -- quick docs available to Builders
-        TaskType.DOCUMENT_EXECUTIVE_SUMMARY, TaskType.DOCUMENT_UNICORN_REPORT,
-    }
-    _FOUNDER_PRO = _BUILDER | {
-        TaskType.STARTUP_STRATEGY, TaskType.FINANCE_STRATEGY,
-        TaskType.PRODUCT_FEASIBILITY, TaskType.TECH_STACK_DESIGN,
-        TaskType.EXECUTION_ROADMAP, TaskType.PIVOT_INTELLIGENCE,
-        TaskType.CODE_REVIEW, TaskType.EXECUTIVE_SUMMARY,
-        TaskType.ORG_SPHERE, TaskType.RISK_ANALYSIS,
-        # Idea & Solution Hub -- full conversion, deployment, grants
-        TaskType.SOLUTION_SYNTHESIS, TaskType.DEPLOYMENT_PLANNING,
-        TaskType.GRANT_MATCHING,
-        # Document Generation -- full suite except investor-only types
-        TaskType.DOCUMENT_BUSINESS_PLAN, TaskType.DOCUMENT_PITCH_DECK,
-        TaskType.DOCUMENT_PRODUCT_ROADMAP, TaskType.DOCUMENT_FINANCIAL_PROJECTION,
-        TaskType.DOCUMENT_MARKET_RESEARCH,
-        # Prompt -> Live App -- scaffold available from Founder Pro upward
-        TaskType.APP_SCAFFOLD_GENERATION, TaskType.APP_DEPLOY_CONFIG,
-    }
-    _INVESTOR = _FOUNDER_PRO | {
-        TaskType.INVESTOR_READINESS, TaskType.INVESTOR_SIGNAL,
-        TaskType.BUSINESS_PLAN, TaskType.MARKET_SURVEY_SIMULATION,
-        TaskType.INVESTOR_EVI, TaskType.ADMIN_MONITOR,
-        # Document Generation -- investor-grade reports
-        TaskType.DOCUMENT_INVESTOR_REPORT,
-    }
-    _ENTERPRISE = set(TaskType)
-
-    TIER_MAP: Dict[SubscriptionTier, set] = {
-        SubscriptionTier.FREE:        _FREE,
-        SubscriptionTier.BUILDER:     _BUILDER,
-        SubscriptionTier.FOUNDER_PRO: _FOUNDER_PRO,
-        SubscriptionTier.INVESTOR:    _INVESTOR,
-        SubscriptionTier.ENTERPRISE:  _ENTERPRISE,
-    }
-
-    @classmethod
-    def is_allowed(cls, tier: SubscriptionTier, task: TaskType) -> bool:
-        return task in cls.TIER_MAP.get(tier, cls._FREE)
-
-    @classmethod
-    def required_tier(cls, task: TaskType) -> SubscriptionTier:
-        for tier in [SubscriptionTier.FREE, SubscriptionTier.BUILDER,
-                     SubscriptionTier.FOUNDER_PRO, SubscriptionTier.INVESTOR,
-                     SubscriptionTier.ENTERPRISE]:
-            if task in cls.TIER_MAP[tier]:
-                return tier
-        return SubscriptionTier.ENTERPRISE
 
 
 # ============================================================================
@@ -862,11 +656,9 @@ class ScoringEngine:
 
 @dataclass
 class UserContext:
-    """Complete user context -- shared across every AI call and scoring computation."""
+    """Execution context shared across every AI call and scoring computation."""
     user_id:              str
     role:                 UserRole
-    subscription_tier:    SubscriptionTier
-    credits_remaining:    int
     project_id:           Optional[str]
     project_stage:        Optional[str]
     industry:             Optional[str]
@@ -881,14 +673,14 @@ class UserContext:
     beta_users_count:     int  = 0
     compliance_items:     Dict[str, bool] = field(default_factory=dict)
     transparency_items:   Dict[str, bool] = field(default_factory=dict)
+    workspace_id:         Optional[str] = None
+    execution_grant:      Optional[ExecutionGrant] = None
 
     def to_prompt_context(self) -> str:
         decay = ScoringEngine.compute_decay_factor(self.days_since_update)
         return (
             f"USER CONTEXT:\n"
             f"  Role:              {self.role.value}\n"
-            f"  Subscription:      {self.subscription_tier.value}\n"
-            f"  Credits Remaining: {self.credits_remaining}\n"
             f"  Project Stage:     {self.project_stage or 'Not started'}\n"
             f"  Industry:          {self.industry or 'General'}\n"
             f"  Tech Stack:        {', '.join(self.tech_stack) or 'None'}\n"
@@ -1002,19 +794,10 @@ class AIRequest:
     require_structured_output: bool = False
     ip_protected:             bool = False
     use_cache:                bool = True
+    requested_model:          Optional[str] = None
+    execution_profile:        str = "balanced"
+    output_schema:            Optional[Dict[str, Any]] = None
     incubation:               Optional["IncubationContext"] = None
-
-
-@dataclass
-class ModelConfig:
-    provider:           ModelProvider
-    model_name:         str
-    cost_per_1k_tokens: float
-    max_context_length: int
-    strengths:          List[str]
-    use_cases:          List[TaskType]
-    api_key_env:        str  = ""      # env var required for this provider to be "available"; "" = always available
-    is_free:            bool = False   # reporting only
 
 
 @dataclass
@@ -1022,11 +805,13 @@ class AIResponse:
     task_type:         TaskType
     output:            str
     model_used:        str
+    provider:          str
+    prompt_tokens:     int
+    completion_tokens: int
     tokens_used:       int
-    cost:              float
     confidence_score:  float
     execution_time_ms: int
-    credits_consumed:  int  = 0
+    provider_cost_usd: Optional[float] = None
     cached:            bool = False
     metadata:          Dict = field(default_factory=dict)
 
@@ -1039,193 +824,9 @@ class ProviderCallError(RuntimeError):
     """Raised when a provider request fails and the fallback chain should continue."""
 
 
-class AccountingTransactionError(RuntimeError):
-    """Raised when durable AI accounting cannot be completed."""
-
-
 # ============================================================================
 # MODEL ROUTER
 # ============================================================================
-
-class ComplexityTier(Enum):
-    HEAVY    = "heavy"      # deep reasoning, coding, scoring
-    STANDARD = "standard"   # long-form generation
-    LIGHT    = "light"      # chat, summaries, dashboard glue
-    TRIVIAL  = "trivial"    # classification, moderation, notifications
-
-
-class ModelRouter:
-    """Routes each task to the optimal LLM. No feature is locked to one vendor."""
-
-    TASK_COMPLEXITY: Dict[TaskType, ComplexityTier] = {
-        # HEAVY — deep reasoning / coding / scoring
-        TaskType.IDEA_EVALUATION:     ComplexityTier.HEAVY,
-        TaskType.UNICORN_ANALYSIS:    ComplexityTier.HEAVY,
-        TaskType.CODE_REVIEW:         ComplexityTier.HEAVY,
-        TaskType.RISK_ANALYSIS:       ComplexityTier.HEAVY,
-        TaskType.STARTUP_STRATEGY:    ComplexityTier.HEAVY,
-        TaskType.PIVOT_INTELLIGENCE:  ComplexityTier.HEAVY,
-        TaskType.PRODUCT_FEASIBILITY: ComplexityTier.HEAVY,
-        TaskType.TECH_STACK_DESIGN:   ComplexityTier.HEAVY,
-        TaskType.INVESTOR_EVI:        ComplexityTier.HEAVY,
-        TaskType.PROBLEM_ANALYSIS:    ComplexityTier.HEAVY,
-        TaskType.FEASIBILITY_ESTIMATE: ComplexityTier.HEAVY,
-        TaskType.APP_SCAFFOLD_GENERATION: ComplexityTier.HEAVY,
-        # STANDARD — long-form generation
-        TaskType.BUSINESS_PLAN:            ComplexityTier.STANDARD,
-        TaskType.EXECUTIVE_SUMMARY:        ComplexityTier.STANDARD,
-        TaskType.MARKET_INTELLIGENCE:      ComplexityTier.STANDARD,
-        TaskType.FINANCE_STRATEGY:         ComplexityTier.STANDARD,
-        TaskType.INVESTOR_READINESS:       ComplexityTier.STANDARD,
-        TaskType.INVESTOR_SIGNAL:          ComplexityTier.STANDARD,
-        TaskType.TRAINING_GENERATION:      ComplexityTier.STANDARD,
-        TaskType.SUMMARY:                  ComplexityTier.STANDARD,
-        TaskType.MARKET_SURVEY_SIMULATION: ComplexityTier.STANDARD,
-        TaskType.EXECUTION_ROADMAP:        ComplexityTier.STANDARD,
-        TaskType.ORG_SPHERE:               ComplexityTier.STANDARD,
-        TaskType.SOLUTION_SYNTHESIS:       ComplexityTier.STANDARD,
-        TaskType.DEPLOYMENT_PLANNING:      ComplexityTier.STANDARD,
-        TaskType.GRANT_MATCHING:           ComplexityTier.STANDARD,
-        TaskType.DOCUMENT_EXECUTIVE_SUMMARY:    ComplexityTier.STANDARD,
-        TaskType.DOCUMENT_BUSINESS_PLAN:        ComplexityTier.STANDARD,
-        TaskType.DOCUMENT_PITCH_DECK:           ComplexityTier.STANDARD,
-        TaskType.DOCUMENT_INVESTOR_REPORT:      ComplexityTier.STANDARD,
-        TaskType.DOCUMENT_UNICORN_REPORT:       ComplexityTier.STANDARD,
-        TaskType.DOCUMENT_PRODUCT_ROADMAP:      ComplexityTier.STANDARD,
-        TaskType.DOCUMENT_FINANCIAL_PROJECTION: ComplexityTier.STANDARD,
-        TaskType.DOCUMENT_MARKET_RESEARCH:      ComplexityTier.STANDARD,
-        # LIGHT — chat / glue / light reasoning
-        TaskType.CHAT:                   ComplexityTier.LIGHT,
-        TaskType.TOUR_GUIDE:             ComplexityTier.LIGHT,
-        TaskType.WORKSPACE_ASSISTANT:    ComplexityTier.LIGHT,
-        TaskType.DASHBOARD_INTELLIGENCE: ComplexityTier.LIGHT,
-        TaskType.FEED_INTELLIGENCE:      ComplexityTier.LIGHT,
-        TaskType.RECOMMENDATION_ENGINE:  ComplexityTier.LIGHT,
-        TaskType.GSIS_COMPUTE:           ComplexityTier.LIGHT,
-        TaskType.IMPACT_PREDICTION:      ComplexityTier.LIGHT,
-        TaskType.PROBLEM_DISCOVERY:      ComplexityTier.LIGHT,
-        TaskType.APP_DEPLOY_CONFIG:      ComplexityTier.LIGHT,
-        TaskType.TRUST_MILESTONE_REVIEW: ComplexityTier.LIGHT,
-        # TRIVIAL — classification / moderation
-        TaskType.MATCHING:                ComplexityTier.TRIVIAL,
-        TaskType.PROFILE_ANALYSIS:        ComplexityTier.TRIVIAL,
-        TaskType.ADMIN_MONITOR:           ComplexityTier.TRIVIAL,
-        TaskType.SOLUTION_MATCHING:       ComplexityTier.TRIVIAL,
-        TaskType.DISCUSSION_MODERATION:   ComplexityTier.TRIVIAL,
-        TaskType.FIELD_FEEDBACK_ANALYSIS: ComplexityTier.TRIVIAL,
-        TaskType.TRUST_VERIFY_FOUNDER:    ComplexityTier.TRIVIAL,
-        TaskType.TRUST_VERIFY_ORG:        ComplexityTier.TRIVIAL,
-        # EMBEDDINGS intentionally omitted — special-cased to Cohere in select_chain.
-    }
-
-    TIER_MODELS: Dict[ComplexityTier, List[ModelProvider]] = {
-        ComplexityTier.HEAVY:    [ModelProvider.OPENAI_GPT4, ModelProvider.ANTHROPIC_CLAUDE,
-                                  ModelProvider.OPENAI_GPT4_MINI],
-        ComplexityTier.STANDARD: [ModelProvider.ANTHROPIC_CLAUDE, ModelProvider.OPENAI_GPT4,
-                                  ModelProvider.ANTHROPIC_HAIKU],
-        ComplexityTier.LIGHT:    [ModelProvider.GEMINI_FLASH, ModelProvider.OPENAI_GPT4_MINI,
-                                  ModelProvider.ANTHROPIC_HAIKU],
-        ComplexityTier.TRIVIAL:  [ModelProvider.OPENROUTER_FREE, ModelProvider.GEMINI_FLASH_LITE,
-                                  ModelProvider.ANTHROPIC_HAIKU, ModelProvider.OPENAI_GPT4_MINI],
-    }
-
-    def __init__(self) -> None:
-        self.model_configs = self._init_models()
-        self._validate_coverage()
-
-    def _validate_coverage(self) -> None:
-        for task in TaskType:
-            if task is TaskType.EMBEDDINGS:
-                continue
-            if task not in self.TASK_COMPLEXITY:
-                raise ValueError(f"TASK_COMPLEXITY missing tier for {task}")
-        for tier, providers in self.TIER_MODELS.items():
-            for prov in providers:
-                if prov not in self.model_configs:
-                    raise ValueError(f"TIER_MODELS[{tier}] references unknown provider {prov}")
-
-    @staticmethod
-    def _is_available(cfg: ModelConfig) -> bool:
-        return not cfg.api_key_env or bool(os.environ.get(cfg.api_key_env))
-
-    def _ordered_configs(self, providers: List[ModelProvider]) -> List[ModelConfig]:
-        """Map providers -> configs, eligible (key present) first, none dropped."""
-        configs = [self.model_configs[p] for p in providers if p in self.model_configs]
-        eligible   = [c for c in configs if self._is_available(c)]
-        ineligible = [c for c in configs if not self._is_available(c)]
-        ordered, seen = [], set()
-        for c in eligible + ineligible:
-            if c.provider not in seen:
-                ordered.append(c)
-                seen.add(c.provider)
-        return ordered
-
-    def select_chain(self, request: AIRequest) -> List[ModelConfig]:
-        """Ordered fallback chain of models for a request (never empty)."""
-        if request.task_type is TaskType.EMBEDDINGS:
-            return [self.model_configs[ModelProvider.COHERE_EMBED]]
-        if request.user_context.subscription_tier == SubscriptionTier.FREE:
-            return self._ordered_configs(self.TIER_MODELS[ComplexityTier.TRIVIAL])
-        tier = self.TASK_COMPLEXITY.get(request.task_type, ComplexityTier.LIGHT)
-        return self._ordered_configs(self.TIER_MODELS[tier])
-
-    def _init_models(self) -> Dict[ModelProvider, ModelConfig]:
-        return {
-            ModelProvider.OPENAI_GPT4: ModelConfig(
-                ModelProvider.OPENAI_GPT4, "gpt-4-turbo", 0.01, 128_000,
-                ["deep reasoning", "unicorn scoring", "code"],
-                [TaskType.IDEA_EVALUATION, TaskType.UNICORN_ANALYSIS],
-                api_key_env="OPENAI_API_KEY",
-            ),
-            ModelProvider.OPENAI_GPT4_MINI: ModelConfig(
-                ModelProvider.OPENAI_GPT4_MINI, "gpt-4o-mini", 0.0002, 128_000,
-                ["speed", "low cost", "chat"],
-                [TaskType.CHAT, TaskType.TOUR_GUIDE],
-                api_key_env="OPENAI_API_KEY",
-            ),
-            ModelProvider.ANTHROPIC_CLAUDE: ModelConfig(
-                ModelProvider.ANTHROPIC_CLAUDE, "claude-sonnet-4-6", 0.003, 200_000,
-                ["long context", "business plans", "strategy"],
-                [TaskType.BUSINESS_PLAN, TaskType.SUMMARY],
-                api_key_env="ANTHROPIC_API_KEY",
-            ),
-            ModelProvider.ANTHROPIC_HAIKU: ModelConfig(
-                ModelProvider.ANTHROPIC_HAIKU, "claude-haiku-4-5-20251001", 0.00025, 200_000,
-                ["speed", "classification", "matching"],
-                [TaskType.MATCHING, TaskType.PROFILE_ANALYSIS],
-                api_key_env="ANTHROPIC_API_KEY",
-            ),
-            ModelProvider.COHERE_EMBED: ModelConfig(
-                ModelProvider.COHERE_EMBED, "embed-english-v3.0", 0.0001, 512,
-                ["embeddings", "semantic search"],
-                [TaskType.EMBEDDINGS],
-                api_key_env="COHERE_API_KEY",
-            ),
-            ModelProvider.GEMINI_FLASH: ModelConfig(
-                ModelProvider.GEMINI_FLASH, "gemini-2.0-flash", 0.0001, 1_000_000,
-                ["speed", "low cost", "light reasoning"],
-                [TaskType.CHAT, TaskType.FEED_INTELLIGENCE],
-                api_key_env="GEMINI_API_KEY",
-            ),
-            ModelProvider.GEMINI_FLASH_LITE: ModelConfig(
-                ModelProvider.GEMINI_FLASH_LITE, "gemini-2.0-flash-lite", 0.00004, 1_000_000,
-                ["cheapest", "classification", "notifications"],
-                [TaskType.MATCHING, TaskType.DISCUSSION_MODERATION],
-                api_key_env="GEMINI_API_KEY",
-            ),
-            ModelProvider.OPENROUTER_FREE: ModelConfig(
-                ModelProvider.OPENROUTER_FREE, "meta-llama/llama-3.3-70b-instruct:free",
-                0.0, 128_000,
-                ["free", "light reasoning", "high volume"],
-                [TaskType.MATCHING, TaskType.FIELD_FEEDBACK_ANALYSIS],
-                api_key_env="OPENROUTER_API_KEY", is_free=True,
-            ),
-        }
-
-    def select_model(self, request: AIRequest) -> ModelConfig:
-        """Convenience: the first (preferred) model in the request's fallback chain."""
-        return self.select_chain(request)[0]
-
 
 # ============================================================================
 # PROMPT ENGINE
@@ -1280,6 +881,7 @@ class PromptEngine:
         TaskType.RISK_ANALYSIS:           AP.RISK_EVALUATOR,
         # 15. WorkspaceAssistantAgent
         TaskType.WORKSPACE_ASSISTANT:     AP.WORKSPACE_ASSISTANT,
+        TaskType.WORKSPACE_CONVERSATION:  AP.WORKSPACE_CONVERSATION,
         # 16. FeedIntelligenceAgent
         TaskType.FEED_INTELLIGENCE:       AP.FEED_INTELLIGENCE,
         # 17. DashboardIntelligenceAgent
@@ -1357,6 +959,13 @@ class PromptEngine:
         TaskType.EXECUTION_ROADMAP:       AP.EXECUTION_ROADMAP,
         TaskType.RECOMMENDATION_ENGINE:   AP.RECOMMENDATION_ENGINE,
         TaskType.MARKET_SURVEY_SIMULATION: AP.MARKET_SURVEY_SIMULATION,
+        TaskType.FOUNDER_INTERROGATION: AP.FOUNDER_INTERROGATION,
+        TaskType.EVIDENCE_RESEARCH: AP.EVIDENCE_RESEARCH,
+        TaskType.PMF_VALIDATION: AP.PMF_VALIDATION,
+        TaskType.GEOGRAPHIC_INTELLIGENCE: AP.GEOGRAPHIC_INTELLIGENCE,
+        TaskType.MVP_BUILD_PLANNING: AP.MVP_BUILD_PLANNING,
+        TaskType.MONETIZATION_STRATEGY: AP.MONETIZATION_STRATEGY,
+        TaskType.COMPANY_BUILDING_VALIDATION: AP.COMPANY_BUILDING_VALIDATION,
 
         # ── Prompt -> Live App Engine ───────────────────────────────────────
         TaskType.APP_SCAFFOLD_GENERATION: (
@@ -1427,21 +1036,6 @@ class SafetyEngine:
     ]
 
     async def validate_request(self, request: AIRequest) -> SafetyCheckResult:
-        if not SubscriptionAccessControl.is_allowed(
-            request.user_context.subscription_tier, request.task_type
-        ):
-            needed = SubscriptionAccessControl.required_tier(request.task_type)
-            return SafetyCheckResult(False, f"Requires {needed.value} plan.", 2)
-
-        cost = CreditCost.cost_for(request.task_type)
-        if request.user_context.credits_remaining < cost:
-            return SafetyCheckResult(
-                False,
-                f"Insufficient credits. This task costs {cost} credit(s). "
-                f"You have {request.user_context.credits_remaining}.",
-                1,
-            )
-
         if self._detect_injection(request.input_data):
             return SafetyCheckResult(False, "Prompt injection detected. Request blocked.", 5)
 
@@ -1536,528 +1130,7 @@ class SafetyEngine:
 # AI COMMAND LAYER
 # ============================================================================
 
-class AICommandLayer:
-    """
-    THE CORE BRAIN OF TECHIT.
-    Every AI interaction passes through this single layer.
-    Nothing calls an LLM directly.
-    """
-
-    def __init__(self, model_router: ModelRouter, prompt_engine: PromptEngine,
-                 safety_engine: SafetyEngine,
-                 provider_clients: Optional[Dict[str, Any]] = None,
-                 credit_ledger: Optional[CreditLedger] = None) -> None:
-        self.model_router  = model_router
-        self.prompt_engine = prompt_engine
-        self.safety_engine = safety_engine
-        self.provider_clients = provider_clients or {}
-        self.credit_ledger = credit_ledger or default_credit_ledger()
-        self.execution_log: List[Dict] = []
-        self.environment = os.getenv("ENVIRONMENT", "development").strip().lower()
-        self.allow_placeholder = (
-            os.getenv("ALLOW_AI_PLACEHOLDER_RESPONSES", "false").lower()
-            in ("1", "true", "yes")
-        )
-        self.provider_timeout_seconds = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "30"))
-
-    async def process_request(self, request: AIRequest) -> AIResponse:
-        start = datetime.now()
-
-        safety = await self.safety_engine.validate_request(request)
-        if not safety.approved:
-            raise PermissionError(f"Request blocked: {safety.reason}")
-
-        UsageLedgerRecorder.validate_config()
-
-        context = {
-            "user":      request.user_context.to_prompt_context(),
-            "input":     request.input_data,
-            "timestamp": datetime.now().isoformat(),
-        }
-        if request.incubation is not None:
-            context["incubation"] = request.incubation.to_prompt_context()
-        if request.ip_protected:
-            context["ip_protection_notice"] = (
-                "\nIP PROTECTION ACTIVE: This content is confidential. "
-                "Do not retain or use for training.\n"
-            )
-
-        prompt       = await self.prompt_engine.build_prompt(
-            request.task_type, context, request.user_context.role
-        )
-        chain    = self.model_router.select_chain(request)
-        request_id = str(uuid4())
-        credit_cost = CreditCost.cost_for(request.task_type)
-        reservation = self.credit_ledger.reserve(
-            user_context=request.user_context,
-            task_type=request.task_type.value,
-            cost=credit_cost,
-            operation_id=request_id,
-            metadata={"provider_chain": [config.provider.value for config in chain]},
-        )
-        try:
-            response = await self._execute_with_retry(chain, prompt, request)
-        except Exception as exc:
-            self.credit_ledger.refund(reservation, reason=f"Provider failed: {exc}")
-            raise
-
-        response.credits_consumed = credit_cost
-        response.metadata.setdefault("request_id", request_id)
-        response.metadata.setdefault("credit_ledger_id", reservation.ledger_id)
-        response.metadata.setdefault("credits_after", reservation.credits_after)
-        elapsed = (datetime.now() - start).total_seconds() * 1000
-        await self._log(request, response, elapsed)
-        await self._record_usage(request, response, elapsed)
-        return response
-
-    async def _execute_with_retry(self, chain: List[ModelConfig],
-                                  prompt: str, request: AIRequest) -> AIResponse:
-        last_exc: Optional[Exception] = None
-        for attempt, model_config in enumerate(chain):
-            try:
-                output = await self._call_llm(model_config, prompt, request)
-                return AIResponse(
-                    task_type=request.task_type,
-                    output=output["text"],
-                    model_used=model_config.model_name,
-                    tokens_used=output["tokens"],
-                    cost=round((output["tokens"] / 1000) * model_config.cost_per_1k_tokens, 6),
-                    confidence_score=output.get("confidence", 1.0),
-                    execution_time_ms=output["duration_ms"],
-                    metadata={"attempt": attempt + 1,
-                              "provider": model_config.provider.value,
-                              "prompt_tokens": output.get("prompt_tokens"),
-                              "completion_tokens": output.get("completion_tokens")},
-                )
-            except Exception as exc:  # noqa: BLE001 — try next model in chain
-                last_exc = exc
-                continue
-        raise last_exc if last_exc else RuntimeError("empty model chain")
-
-    async def _call_llm(self, model_config: ModelConfig, prompt: str,
-                         request: AIRequest) -> Dict:
-        """
-        Routes to the configured provider and normalizes response shape:
-        {"text": str, "tokens": int, "confidence": float, "duration_ms": int}.
-        """
-        if model_config.api_key_env and not os.environ.get(model_config.api_key_env):
-            if self.allow_placeholder and self.environment not in {"production", "staging"}:
-                return self._placeholder_response(model_config)
-            raise ProviderConfigurationError(
-                f"{model_config.provider.value} requires {model_config.api_key_env}"
-            )
-
-        try:
-            response = await call_provider_model(
-                model_config,
-                prompt,
-                request,
-                clients=self.provider_clients,
-            )
-            output = response.as_ai_output()
-            output["prompt_tokens"] = response.raw.get("prompt_tokens")
-            output["completion_tokens"] = response.raw.get("completion_tokens")
-            return output
-        except (ProviderConfigurationError, ProviderCallError):
-            raise
-        except AdapterProviderConfigError as exc:
-            raise ProviderConfigurationError(str(exc)) from exc
-        except AdapterProviderError as exc:
-            raise ProviderCallError(str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise ProviderCallError(f"{model_config.provider.value} failed: {exc}") from exc
-
-    @staticmethod
-    def _openai_payload(model_config: ModelConfig, prompt: str, request: AIRequest) -> Dict:
-        return {
-            "model": model_config.model_name,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": request.max_tokens,
-            "temperature": 0.2,
-        }
-
-    @staticmethod
-    def _anthropic_payload(model_config: ModelConfig, prompt: str, request: AIRequest) -> Dict:
-        return {
-            "model": model_config.model_name,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": request.max_tokens,
-            "temperature": 0.2,
-        }
-
-    @staticmethod
-    def _gemini_payload(prompt: str, request: AIRequest) -> Dict:
-        return {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "maxOutputTokens": request.max_tokens,
-                "temperature": 0.2,
-            },
-        }
-
-    async def _provider_request(
-        self,
-        url: str,
-        api_key: Optional[str],
-        payload: Dict,
-        *,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Dict:
-        headers = {
-            "Content-Type": "application/json",
-            **(extra_headers or {}),
-        }
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-
-        def _post() -> Dict:
-            body = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            try:
-                with urllib.request.urlopen(req, timeout=self.provider_timeout_seconds) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-            except urllib.error.HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="replace")
-                raise ProviderCallError(f"provider HTTP {exc.code}: {detail}") from exc
-            except urllib.error.URLError as exc:
-                raise ProviderCallError(f"provider network error: {exc.reason}") from exc
-
-        return await asyncio.to_thread(_post)
-
-    @staticmethod
-    def _normalize_openai(raw: Dict, started: float) -> Dict:
-        choice = (raw.get("choices") or [{}])[0]
-        text = ((choice.get("message") or {}).get("content") or choice.get("text") or "").strip()
-        usage = raw.get("usage") or {}
-        tokens = usage.get("total_tokens") or usage.get("completion_tokens") or 0
-        return {
-            "text": text,
-            "tokens": int(tokens or 0),
-            "prompt_tokens": usage.get("prompt_tokens"),
-            "completion_tokens": usage.get("completion_tokens"),
-            "confidence": 1.0,
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-        }
-
-    @staticmethod
-    def _normalize_anthropic(raw: Dict, started: float) -> Dict:
-        parts = raw.get("content") or []
-        text = "\n".join(
-            part.get("text", "") for part in parts
-            if isinstance(part, dict) and part.get("type") == "text"
-        ).strip()
-        usage = raw.get("usage") or {}
-        tokens = int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
-        return {
-            "text": text,
-            "tokens": tokens,
-            "prompt_tokens": usage.get("input_tokens"),
-            "completion_tokens": usage.get("output_tokens"),
-            "confidence": 1.0,
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-        }
-
-    @staticmethod
-    def _normalize_cohere(raw: Dict, started: float) -> Dict:
-        embeddings = raw.get("embeddings") or []
-        text = json.dumps({"embeddings": embeddings})
-        billed = ((raw.get("meta") or {}).get("billed_units") or {})
-        tokens = int(billed.get("input_tokens") or len(text.split()))
-        return {
-            "text": text,
-            "tokens": tokens,
-            "prompt_tokens": tokens,
-            "completion_tokens": 0,
-            "confidence": 1.0,
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-        }
-
-    @staticmethod
-    def _normalize_gemini(raw: Dict, started: float) -> Dict:
-        candidates = raw.get("candidates") or []
-        parts = (((candidates[0] if candidates else {}).get("content") or {}).get("parts") or [])
-        text = "\n".join(
-            part.get("text", "") for part in parts
-            if isinstance(part, dict) and part.get("text")
-        ).strip()
-        usage = raw.get("usageMetadata") or {}
-        tokens = usage.get("totalTokenCount") or usage.get("candidatesTokenCount") or 0
-        return {
-            "text": text,
-            "tokens": int(tokens or 0),
-            "prompt_tokens": usage.get("promptTokenCount"),
-            "completion_tokens": usage.get("candidatesTokenCount"),
-            "confidence": 1.0,
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-        }
-
-    @staticmethod
-    def _placeholder_response(model_config: ModelConfig) -> Dict:
-        return {
-            "text": f"AI placeholder response via {model_config.model_name}",
-            "tokens": 0,
-            "confidence": 0.0,
-            "duration_ms": 0,
-        }
-
-    async def _log(self, request: AIRequest, response: AIResponse, elapsed_ms: float) -> None:
-        self.execution_log.append({
-            "user_id":           request.user_context.user_id,
-            "task_type":         request.task_type.value,
-            "model_used":        response.model_used,
-            "tokens":            response.tokens_used,
-            "cost":              response.cost,
-            "credits_consumed":  response.credits_consumed,
-            "execution_time_ms": elapsed_ms,
-            "subscription_tier": request.user_context.subscription_tier.value,
-            "ip_protected":      request.ip_protected,
-            "timestamp":         datetime.now().isoformat(),
-        })
-
-    async def _record_usage(self, request: AIRequest, response: AIResponse, elapsed_ms: float) -> None:
-        """Record usage and credit debit.
-
-        In production/staging, accounting failures fail closed. In local/dev
-        contexts, failures are logged so test/demo provider execution can still
-        run without a database.
-        """
-        try:
-            recorder = UsageLedgerRecorder.from_env()
-            if recorder is None:
-                return
-            await recorder.record(request, response, elapsed_ms)
-        except ProviderConfigurationError:
-            raise
-        except AccountingTransactionError:
-            if self.environment in {"production", "staging"}:
-                raise
-            self.execution_log.append({
-                "event": "usage_accounting_failed",
-                "user_id": request.user_context.user_id,
-                "task_type": request.task_type.value,
-                "timestamp": datetime.now().isoformat(),
-            })
-        except Exception as exc:  # noqa: BLE001
-            if self.environment in {"production", "staging"}:
-                raise
-            self.execution_log.append({
-                "event": "usage_ledger_record_failed",
-                "user_id": request.user_context.user_id,
-                "task_type": request.task_type.value,
-                "error": str(exc),
-                "timestamp": datetime.now().isoformat(),
-            })
-
-
-class UsageLedgerRecorder:
-    """Small SQLAlchemy-backed usage ledger writer.
-
-    Lazy imports keep ai_router_core importable in syntax-only/test contexts where
-    SQLAlchemy is not installed.
-    """
-
-    def __init__(self, database_url: str) -> None:
-        self.database_url = database_url
-
-    @classmethod
-    def validate_config(cls) -> None:
-        disabled = os.getenv("AI_USAGE_LEDGER_ENABLED", "true").lower() in {"0", "false", "no"}
-        database_url = os.getenv("DATABASE_URL")
-        environment = os.getenv("ENVIRONMENT", "development").strip().lower()
-
-        if environment in {"production", "staging"}:
-            if disabled:
-                raise ProviderConfigurationError(
-                    "AI_USAGE_LEDGER_ENABLED cannot be disabled in production"
-                )
-            if not database_url:
-                raise ProviderConfigurationError(
-                    "DATABASE_URL is required when AI usage ledger is enabled"
-                )
-
-    @classmethod
-    def from_env(cls) -> Optional["UsageLedgerRecorder"]:
-        cls.validate_config()
-
-        disabled = os.getenv("AI_USAGE_LEDGER_ENABLED", "true").lower() in {"0", "false", "no"}
-        if disabled:
-            return None
-
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            return None
-        return cls(database_url)
-
-    async def record(self, request: AIRequest, response: AIResponse, elapsed_ms: float) -> None:
-        await asyncio.to_thread(self._record_sync, request, response, elapsed_ms)
-
-    def _record_sync(self, request: AIRequest, response: AIResponse, elapsed_ms: float) -> None:
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.orm import sessionmaker
-
-        engine = create_engine(self.database_url, pool_pre_ping=True)
-        Session = sessionmaker(bind=engine)
-        session = Session()
-        try:
-            credit_split = self._debit_credits(session, request, response)
-            session.execute(
-                text(
-                    """
-                    INSERT INTO ai_usage_ledger (
-                        id, request_id, user_id, workspace_id, provider, model,
-                        task_type, tokens_used, prompt_tokens, completion_tokens,
-                        cost_usd, credits_consumed, latency_ms, status, metadata,
-                        created_at
-                    )
-                    VALUES (
-                        CAST(:id AS UUID), :request_id, CAST(:user_id AS UUID),
-                        :workspace_id, :provider, :model,
-                        :task_type, :tokens_used, :prompt_tokens, :completion_tokens,
-                        :cost_usd, :credits_consumed, :latency_ms, :status,
-                        CAST(:metadata AS JSONB), NOW()
-                    )
-                    """
-                ),
-                {
-                    "id": str(uuid4()),
-                    "request_id": response.metadata.get("request_id"),
-                    "user_id": request.user_context.user_id,
-                    "workspace_id": request.input_data.get("workspace_id") or request.input_data.get("workspaceId"),
-                    "provider": response.metadata.get("provider"),
-                    "model": response.model_used,
-                    "task_type": request.task_type.value,
-                    "tokens_used": response.tokens_used,
-                    "prompt_tokens": response.metadata.get("prompt_tokens"),
-                    "completion_tokens": response.metadata.get("completion_tokens"),
-                    "cost_usd": response.cost,
-                    "credits_consumed": response.credits_consumed,
-                    "latency_ms": int(elapsed_ms),
-                    "status": "success",
-                    "metadata": json.dumps({
-                        **response.metadata,
-                        "credit_accounting": credit_split,
-                    }, default=str),
-                },
-            )
-            session.commit()
-        except AccountingTransactionError:
-            session.rollback()
-            raise
-        except Exception as exc:
-            session.rollback()
-            raise AccountingTransactionError(str(exc)) from exc
-        finally:
-            session.close()
-
-    @staticmethod
-    def _debit_credits(session: Any, request: AIRequest, response: AIResponse) -> Dict[str, int]:
-        from sqlalchemy import text
-
-        cost = int(response.credits_consumed or 0)
-        if cost <= 0:
-            return {"from_subscription": 0, "from_payg": 0, "credits_after": request.user_context.credits_remaining}
-
-        user_row = session.execute(
-            text(
-                """
-                SELECT subscription_credits_remaining, payg_credits_balance,
-                       total_credits_used, plan_id
-                FROM users
-                WHERE id = CAST(:user_id AS UUID)
-                FOR UPDATE
-                """
-            ),
-            {"user_id": request.user_context.user_id},
-        ).fetchone()
-
-        if user_row is None:
-            raise AccountingTransactionError(
-                f"user {request.user_context.user_id} not found for credit debit"
-            )
-
-        subscription_credits = int(user_row.subscription_credits_remaining or 0)
-        payg_credits = int(user_row.payg_credits_balance or 0)
-        total_credits = subscription_credits + payg_credits
-        if total_credits < cost:
-            raise AccountingTransactionError(
-                f"insufficient durable credits: required {cost}, available {total_credits}"
-            )
-
-        from_subscription = min(subscription_credits, cost)
-        from_payg = cost - from_subscription
-        remaining_subscription = subscription_credits - from_subscription
-        remaining_payg = payg_credits - from_payg
-        credits_after = remaining_subscription + remaining_payg
-
-        session.execute(
-            text(
-                """
-                UPDATE users
-                SET subscription_credits_remaining = :subscription_credits,
-                    payg_credits_balance = :payg_credits,
-                    total_credits_used = COALESCE(total_credits_used, 0) + :credits_used
-                WHERE id = CAST(:user_id AS UUID)
-                """
-            ),
-            {
-                "subscription_credits": remaining_subscription,
-                "payg_credits": remaining_payg,
-                "credits_used": cost,
-                "user_id": request.user_context.user_id,
-            },
-        )
-        session.execute(
-            text(
-                """
-                INSERT INTO credit_ledger (
-                    id, user_id, event_type, credits_delta, credits_after,
-                    from_subscription, from_payg, usd_charged_payg, task_type,
-                    operation_id, plan_id, description, created_at
-                )
-                VALUES (
-                    CAST(:id AS UUID), CAST(:user_id AS UUID), 'CREDITS_DEDUCTED',
-                    :credits_delta, :credits_after, :from_subscription, :from_payg,
-                    :usd_charged_payg, :task_type, :operation_id, :plan_id,
-                    :description, NOW()
-                )
-                """
-            ),
-            {
-                "id": str(uuid4()),
-                "user_id": request.user_context.user_id,
-                "credits_delta": -cost,
-                "credits_after": credits_after,
-                "from_subscription": from_subscription,
-                "from_payg": from_payg,
-                "usd_charged_payg": 0,
-                "task_type": request.task_type.value,
-                "operation_id": response.metadata.get("request_id"),
-                "plan_id": getattr(user_row, "plan_id", None),
-                "description": (
-                    "AI provider execution debit "
-                    f"({response.metadata.get('provider')} / {response.model_used})"
-                ),
-            },
-        )
-        return {
-            "from_subscription": from_subscription,
-            "from_payg": from_payg,
-            "credits_after": credits_after,
-        }
-
-
-# ============================================================================
-# COST MONITOR
-# ============================================================================
-
-class CostMonitor:
-    THRESHOLDS = {"monthly_user_alert": 10.00, "single_request_flag": 0.50}
-
-    @staticmethod
-    async def check_cost_alert(user_id: str, monthly_cost: float) -> Optional[Dict]:
-        if monthly_cost > CostMonitor.THRESHOLDS["monthly_user_alert"]:
-            return {"alert": "high_cost_user", "user_id": user_id, "monthly_cost": monthly_cost}
-        return None
+from ai_command_layer_impl import ExecutionCommandLayer as AICommandLayer
 
 
 # ============================================================================
@@ -2068,7 +1141,6 @@ async def _demo() -> None:
     brain = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
     ctx = UserContext(
         user_id="demo", role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FOUNDER_PRO, credits_remaining=150,
         project_id="proj_1", project_stage="idea", industry="healthtech",
         tech_stack=["React", "Node.js"], past_feedback=[],
         training_progress={"completion_percentage": 20}, time_logged_today=90,
@@ -2078,7 +1150,10 @@ async def _demo() -> None:
                     {"startup_name": "MediConnect", "problem": "Rural healthcare access"},
                     ip_protected=True)
     resp = await brain.process_request(req)
-    print(f"Model: {resp.model_used} | Cost: ${resp.cost:.4f} | Credits: {resp.credits_consumed}")
+    print(
+        f"Model: {resp.model_used} | Provider: {resp.provider} | "
+        f"Tokens: {resp.tokens_used} | Latency: {resp.execution_time_ms}ms"
+    )
 
     # GSIS demo
     gsis = ScoringEngine.compute_gsis(

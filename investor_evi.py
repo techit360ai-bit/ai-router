@@ -113,7 +113,7 @@ class TeamResponseData:
 @dataclass
 class RevenueTractionData:
     """
-    Sourced from: financial data, Stripe integrations.
+    Sourced from: verified financial and accounting integrations.
     """
     mrr_current:          float
     mrr_30d_ago:          float

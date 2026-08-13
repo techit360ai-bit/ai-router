@@ -1,0 +1,14 @@
+{
+  "version": "2026-08-11.1",
+  "disabled_models": [],
+  "canaries": {},
+  "rollback": {
+    "automatic_failure_rate_threshold": 0.2,
+    "minimum_samples": 20,
+    "action": "disable_canary_and_restore_previous_preference"
+  },
+  "feedback": {
+    "ewma_alpha": 0.15,
+    "maximum_rank_adjustment": 8.0
+  }
+}

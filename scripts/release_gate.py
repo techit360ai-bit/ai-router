@@ -22,10 +22,11 @@ ENV_CONTRACT = {
     "ALLOWED_ORIGINS": "https://app.techit.example",
     "MCP_BASE_URL": "https://api.techit.example/api/mcp",
     "MCP_TIMEOUT": "10",
-    "OPENAI_API_KEY": "sk-ci-contract-value",
-    "ANTHROPIC_API_KEY": "sk-ant-ci-contract-value",
-    "STRIPE_SECRET_KEY": "sk_live_ci_contract_value",
-    "STRIPE_WEBHOOK_SECRET": "whsec_ci_contract_value",
+    # Deliberately non-secret contract placeholders. Secret scanners should
+    # never mistake release-gate fixtures for credentials.
+    "OPENAI_API_KEY": "ci-openai-placeholder",
+    "ANTHROPIC_API_KEY": "ci-anthropic-placeholder",
+    "REQUIRE_AI_EXECUTION_GRANT": "false",
 }
 
 TEST_ENV = {

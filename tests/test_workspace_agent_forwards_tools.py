@@ -31,18 +31,16 @@ from agent_orchestration import (  # noqa: E402
     WorkspaceAssistantAgent,
 )
 from ai_router_core import (  # noqa: E402
-    SubscriptionTier,
     UserContext,
     UserRole,
 )
+from integration_guide import WorkspaceAIService  # noqa: E402
 
 
 def _user() -> UserContext:
     return UserContext(
         user_id="u_test",
         role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FOUNDER_PRO,
-        credits_remaining=100,
         project_id="p_test",
         project_stage="mvp",
         industry="saas",
@@ -68,7 +66,7 @@ def _agent_with_spy() -> tuple[WorkspaceAssistantAgent, Dict[str, Any]]:
         captured["task_type"] = task_type
         captured["input_data"] = input_data
         captured["user_context"] = user_context
-        return SimpleNamespace(output={"task_suggestions": ["x"]}, credits_consumed=0)
+        return SimpleNamespace(output={"task_suggestions": ["x"]}, tokens_used=0)
 
     # Construct with bare-minimum config + brain — neither is touched once
     # _call_ai is replaced.
@@ -120,6 +118,14 @@ def test_available_tools_default_empty_when_missing() -> None:
     )
 
 
+def test_workspace_context_pack_reaches_every_workspace_agent_prompt() -> None:
+    agent, captured = _agent_with_spy()
+    context_pack = {"schema_version": "1.0", "founder_answers": {"customer": "SMBs"}, "decisions": [{"action": "validate_idea"}]}
+    ctx = AgentContext(user_context=_user(), trigger_event={"workspace_data": {"project": "demo"}, "workspace_context_pack": context_pack})
+    asyncio.run(agent.execute(ctx))
+    assert captured["input_data"]["workspace_context_pack"] == context_pack
+
+
 def test_trigger_event_none_doesnt_crash() -> None:
     """If trigger_event itself is None the agent must still produce a valid
     AgentResult — no AttributeError on .get()."""
@@ -131,11 +137,25 @@ def test_trigger_event_none_doesnt_crash() -> None:
     assert captured["input_data"]["workspace"] == {}
 
 
+def test_workspace_conversation_requires_workspace_identity() -> None:
+    service = WorkspaceAIService.__new__(WorkspaceAIService)
+    service.brain = None
+    service.repo = None
+    try:
+        asyncio.run(service.converse(_user(), {"message": "What should we build?"}))
+    except ValueError as exc:
+        assert str(exc) == "workspace_id_required"
+    else:
+        raise AssertionError("workspace conversation must require workspace identity")
+
+
 def main() -> int:
     tests = [
         test_available_tools_reach_input_data_when_present,
         test_available_tools_default_empty_when_missing,
+        test_workspace_context_pack_reaches_every_workspace_agent_prompt,
         test_trigger_event_none_doesnt_crash,
+        test_workspace_conversation_requires_workspace_identity,
     ]
     for t in tests:
         try:

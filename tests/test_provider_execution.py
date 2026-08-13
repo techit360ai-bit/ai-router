@@ -1,360 +1,174 @@
-"""
-Wave 6 provider execution tests.
+"""Execution-only retry, fallback, validation, telemetry, cache, and grants."""
 
-Standalone:
-    python3 tests/test_provider_execution.py
-Pytest:
-    python3 -m pytest tests/test_provider_execution.py
-"""
 from __future__ import annotations
 
-import asyncio
-from contextlib import contextmanager
 import os
-import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
 
-from ai_router_core import (  # noqa: E402
-    AICommandLayer,
-    AIRequest,
-    AccountingTransactionError,
-    ModelRouter,
-    ProviderCallError,
-    ProviderConfigurationError,
-    PromptEngine,
-    SafetyEngine,
-    SubscriptionTier,
-    TaskType,
-    UsageLedgerRecorder,
-    UserContext,
-    UserRole,
-)
+from ai_router_core import AICommandLayer, AIRequest, ModelRouter, PromptEngine, SafetyEngine, TaskType, UserContext, UserRole
+from execution_controls import ExecutionAuthorizationError, ExecutionGrant, ResponseCache
+from provider_adapters import ProviderRateLimitError
 
 
-def _ctx() -> UserContext:
-    return UserContext(
-        user_id="01890000-0000-7000-8000-0000000000aa",
-        role=UserRole.FOUNDER,
-        subscription_tier=SubscriptionTier.FOUNDER_PRO,
-        credits_remaining=100,
-        project_id="p_test",
-        project_stage="mvp",
-        industry="saas",
-        tech_stack=[],
-        past_feedback=[],
-        training_progress={},
-        time_logged_today=0,
-        tasks_completed_week=0,
+def _ctx(**kwargs) -> UserContext:
+    values = dict(
+        user_id="u_test", role=UserRole.FOUNDER, project_id="p_test",
+        project_stage="mvp", industry="saas", tech_stack=[], past_feedback=[],
+        training_progress={}, time_logged_today=0, tasks_completed_week=0,
+    )
+    values.update(kwargs)
+    return UserContext(**values)
+
+
+def _request(task=TaskType.CHAT, ctx=None, **kwargs) -> AIRequest:
+    return AIRequest(task_type=task, user_context=ctx or _ctx(), input_data={"message": "hello"}, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_429_gets_one_retry_and_every_attempt_is_recorded(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    calls = 0
+
+    async def fake_call(_config, _prompt, _request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ProviderRateLimitError("429")
+        return {"text": "ok", "tokens": 3, "prompt_tokens": 2, "completion_tokens": 1,
+                "confidence": 1.0, "duration_ms": 1}
+
+    monkeypatch.setattr(layer, "_call_llm", fake_call)
+    response = await layer.process_request(_request(requested_model="gpt-5.6-luna", use_cache=False))
+    attempts = [event for event in layer.execution_log if event["event"] == "provider_attempt"]
+    assert calls == 2
+    assert [event["status"] for event in attempts] == ["failed", "success"]
+    assert response.tokens_used == 3
+
+
+@pytest.mark.asyncio
+async def test_invalid_structured_output_falls_back(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    calls = 0
+
+    async def fake_call(_config, _prompt, _request):
+        nonlocal calls
+        calls += 1
+        text = "not-json" if calls == 1 else '{"ok": true}'
+        return {"text": text, "tokens": 2, "prompt_tokens": 1, "completion_tokens": 1,
+                "confidence": 1.0, "duration_ms": 1}
+
+    monkeypatch.setattr(layer, "_call_llm", fake_call)
+    response = await layer.process_request(_request(
+        task=TaskType.CHAT, require_structured_output=True,
+        output_schema={"type": "object", "required": ["ok"]}, use_cache=False,
+    ))
+    assert response.output == '{"ok": true}'
+    assert calls >= 2
+
+
+def test_cache_keys_are_tenant_isolated() -> None:
+    payload = {"prompt": "same"}
+    assert ResponseCache.key(user_id="a", workspace_id=None, task_type="chat", payload=payload) != ResponseCache.key(
+        user_id="b", workspace_id=None, task_type="chat", payload=payload
+    )
+    assert ResponseCache.key(user_id="a", workspace_id="w1", task_type="chat", payload=payload) != ResponseCache.key(
+        user_id="a", workspace_id="w2", task_type="chat", payload=payload
     )
 
 
-def _layer() -> AICommandLayer:
-    return AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
-
-
-PROVIDER_ENV_KEYS = (
-    "AI_USAGE_LEDGER_ENABLED",
-    "ALLOW_AI_PLACEHOLDER_RESPONSES",
-    "ANTHROPIC_API_KEY",
-    "DATABASE_URL",
-    "ENVIRONMENT",
-    "OPENAI_API_KEY",
-)
-
-
-@contextmanager
-def _isolated_provider_env():
-    previous = {key: os.environ.get(key) for key in PROVIDER_ENV_KEYS}
-    try:
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-
-class FakeOpenAICompletions:
-    def __init__(self, *, response: object | None = None, error: Exception | None = None) -> None:
-        self.response = response
-        self.error = error
-
-    async def create(self, **_kwargs):
-        if self.error:
-            raise self.error
-        return self.response
-
-
-class FakeOpenAIClient:
-    def __init__(self, *, response: object | None = None, error: Exception | None = None) -> None:
-        completions = FakeOpenAICompletions(response=response, error=error)
-        self.chat = SimpleNamespace(completions=completions)
-
-
-class FakeAnthropicMessages:
-    def __init__(self, *, response: object | None = None, error: Exception | None = None) -> None:
-        self.response = response
-        self.error = error
-
-    async def create(self, **_kwargs):
-        if self.error:
-            raise self.error
-        return self.response
-
-
-class FakeAnthropicClient:
-    def __init__(self, *, response: object | None = None, error: Exception | None = None) -> None:
-        self.messages = FakeAnthropicMessages(response=response, error=error)
-
-
-class FakeCreditLedger:
-    def reserve(self, *, user_context, task_type, cost, operation_id, metadata=None):
-        return SimpleNamespace(
-            cost=cost,
-            from_subscription=cost,
-            from_payg=0,
-            credits_after=user_context.credits_remaining - cost,
-            ledger_id="ledger-test",
-        )
-
-    def refund(self, _reservation, *, reason: str = "") -> None:
-        return None
-
-
-def _req(task: TaskType = TaskType.UNICORN_ANALYSIS) -> AIRequest:
-    return AIRequest(task_type=task, user_context=_ctx(), input_data={"idea": "x"})
-
-
-async def _test_openai_provider_response_is_normalized() -> None:
-    with _isolated_provider_env():
-        os.environ["ENVIRONMENT"] = "development"
-        os.environ["OPENAI_API_KEY"] = "test-openai"
-        os.environ["AI_USAGE_LEDGER_ENABLED"] = "false"
-        layer = AICommandLayer(
-            ModelRouter(),
-            PromptEngine(),
-            SafetyEngine(),
-            provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content="real response"))],
-                usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7, total_tokens=18),
-            ))},
-        )
-
-        response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
-
-        assert response.output == "real response"
-        assert response.tokens_used == 18
-        assert response.metadata["provider"] == "openai_gpt4"
-        assert response.metadata["prompt_tokens"] == 11
-        assert response.metadata["completion_tokens"] == 7
-        assert response.credits_consumed > 0
-
-
-async def _test_fallback_uses_next_provider_after_failure() -> None:
-    with _isolated_provider_env():
-        os.environ["ENVIRONMENT"] = "development"
-        os.environ["OPENAI_API_KEY"] = "test-openai"
-        os.environ["ANTHROPIC_API_KEY"] = "test-anthropic"
-        os.environ["AI_USAGE_LEDGER_ENABLED"] = "false"
-        layer = AICommandLayer(
-            ModelRouter(),
-            PromptEngine(),
-            SafetyEngine(),
-            provider_clients={
-                "openai": FakeOpenAIClient(error=ProviderCallError("openai down")),
-                "anthropic": FakeAnthropicClient(response=SimpleNamespace(
-                    content=[SimpleNamespace(text="anthropic response")],
-                    usage=SimpleNamespace(input_tokens=10, output_tokens=5),
-                )),
-            },
-        )
-
-        response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
-
-        assert response.output == "anthropic response"
-        assert response.model_used == "claude-sonnet-4-6"
-        assert response.tokens_used == 15
-        assert response.metadata["attempt"] == 2
-        assert response.metadata["provider"] == "anthropic_claude"
-
-
-async def _test_missing_keys_fail_closed_without_placeholder() -> None:
-    with _isolated_provider_env():
-        for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ALLOW_AI_PLACEHOLDER_RESPONSES"):
-            os.environ.pop(key, None)
-        os.environ["ENVIRONMENT"] = "production"
-        os.environ["DATABASE_URL"] = "postgresql://example"
-        os.environ.pop("AI_USAGE_LEDGER_ENABLED", None)
-        layer = AICommandLayer(
-            ModelRouter(),
-            PromptEngine(),
-            SafetyEngine(),
-            credit_ledger=FakeCreditLedger(),
-        )
-        try:
-            await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
-        except ProviderConfigurationError as exc:
-            assert "OPENAI_API_KEY" in str(exc) or "ANTHROPIC_API_KEY" in str(exc)
-        else:
-            raise AssertionError("missing provider keys must fail closed")
-
-
-async def _test_usage_ledger_recorder_invoked() -> None:
-    with _isolated_provider_env():
-        os.environ["ENVIRONMENT"] = "development"
-        os.environ["OPENAI_API_KEY"] = "test-openai"
-        os.environ["DATABASE_URL"] = "postgresql://example"
-        layer = AICommandLayer(
-            ModelRouter(),
-            PromptEngine(),
-            SafetyEngine(),
-            provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content="ledger response"))],
-                usage=SimpleNamespace(total_tokens=9),
-            ))},
-        )
-
-        fake_recorder = AsyncMock()
-        with patch("ai_router_core.UsageLedgerRecorder.from_env", return_value=fake_recorder):
-            response = await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
-
-        fake_recorder.record.assert_awaited_once()
-        assert response.metadata.get("request_id")
-
-
-async def _test_missing_database_url_fails_closed_in_production() -> None:
-    with _isolated_provider_env():
-        os.environ["OPENAI_API_KEY"] = "test-openai"
-        os.environ["ENVIRONMENT"] = "production"
-        os.environ.pop("DATABASE_URL", None)
-        os.environ.pop("AI_USAGE_LEDGER_ENABLED", None)
-        layer = AICommandLayer(
-            ModelRouter(),
-            PromptEngine(),
-            SafetyEngine(),
-            provider_clients={"openai": FakeOpenAIClient(response=SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content="should not finish"))],
-                usage=SimpleNamespace(total_tokens=4),
-            ))},
-        )
-
-        try:
-            await layer.process_request(_req(TaskType.UNICORN_ANALYSIS))
-        except ProviderConfigurationError as exc:
-            assert "DATABASE_URL" in str(exc)
-        else:
-            raise AssertionError("production ledger requires DATABASE_URL")
-
-
-def _test_credit_debit_uses_subscription_then_payg() -> None:
-    class FakeSession:
-        def __init__(self) -> None:
-            self.calls = []
-            self.user_row = SimpleNamespace(
-                subscription_credits_remaining=2,
-                payg_credits_balance=5,
-                total_credits_used=0,
-                plan_id="founder_pro",
-            )
-
-        def execute(self, statement, params=None):
-            sql = str(statement)
-            self.calls.append((sql, params or {}))
-            if "SELECT subscription_credits_remaining" in sql:
-                return SimpleNamespace(fetchone=lambda: self.user_row)
-            return SimpleNamespace(fetchone=lambda: None)
-
-    session = FakeSession()
-    request = _req(TaskType.STARTUP_STRATEGY)
-    response = SimpleNamespace(
-        credits_consumed=3,
-        metadata={"request_id": "req_test", "provider": "openai_gpt4"},
-        model_used="gpt-4-turbo",
+@pytest.mark.asyncio
+async def test_execution_grant_task_mismatch_and_replay(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    grant = ExecutionGrant(
+        subject="u_test", workspace_id="w", request_id="r1", task_type="chat",
+        grant_id="g1", claims={"exp": 9999999999},
     )
+    layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    with pytest.raises(ExecutionAuthorizationError):
+        await layer.process_request(_request(TaskType.SUMMARY, _ctx(execution_grant=grant)))
 
-    result = UsageLedgerRecorder._debit_credits(session, request, response)
+    async def fake_call(_config, _prompt, _request):
+        return {"text": "ok", "tokens": 1, "prompt_tokens": 1, "completion_tokens": 0,
+                "confidence": 1.0, "duration_ms": 1}
 
-    assert result == {"from_subscription": 2, "from_payg": 1, "credits_after": 4}
-    update_params = session.calls[1][1]
-    assert update_params["subscription_credits"] == 0
-    assert update_params["payg_credits"] == 4
-    ledger_params = session.calls[2][1]
-    assert ledger_params["credits_delta"] == -3
-    assert ledger_params["from_subscription"] == 2
-    assert ledger_params["from_payg"] == 1
-
-
-def _test_credit_debit_rejects_insufficient_durable_balance() -> None:
-    class FakeSession:
-        def execute(self, statement, params=None):
-            return SimpleNamespace(fetchone=lambda: SimpleNamespace(
-                subscription_credits_remaining=0,
-                payg_credits_balance=1,
-                total_credits_used=0,
-                plan_id="founder_pro",
-            ))
-
-    response = SimpleNamespace(
-        credits_consumed=3,
-        metadata={"request_id": "req_test", "provider": "openai_gpt4"},
-        model_used="gpt-4-turbo",
-    )
-    try:
-        UsageLedgerRecorder._debit_credits(FakeSession(), _req(TaskType.STARTUP_STRATEGY), response)
-    except AccountingTransactionError as exc:
-        assert "insufficient durable credits" in str(exc)
-    else:
-        raise AssertionError("durable credit debit must reject insufficient DB balance")
+    monkeypatch.setattr(layer, "_call_llm", fake_call)
+    await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=grant), use_cache=False))
+    with pytest.raises(ExecutionAuthorizationError):
+        await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=grant), use_cache=False))
 
 
-def test_openai_provider_response_is_normalized() -> None:
-    asyncio.run(_test_openai_provider_response_is_normalized())
+@pytest.mark.asyncio
+async def test_successful_execution_submits_backend_settlement(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    grant = ExecutionGrant(subject="u_test", workspace_id="w1", request_id="backend-r1", task_type="chat", grant_id="g1", reservation_id="res1", claims={"exp": 9999999999})
+    layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    settlements = []
+
+    async def fake_call(_config, _prompt, _request):
+        return {"text": "ok", "tokens": 3, "prompt_tokens": 2, "completion_tokens": 1, "confidence": 1.0, "duration_ms": 2}
+
+    async def fake_settle(**kwargs):
+        settlements.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(layer, "_call_llm", fake_call)
+    monkeypatch.setattr(layer.settlement, "settle", fake_settle)
+    response = await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=grant, workspace_id="w1"), use_cache=False))
+    assert response.metadata["request_id"] == "backend-r1"
+    assert settlements[0]["request_id"] == "backend-r1"
+    assert settlements[0]["status"] == "completed"
+    assert settlements[0]["reservation_id"] == "res1"
+    assert settlements[0]["prompt_tokens"] == 2
 
 
-def test_fallback_uses_next_provider_after_failure() -> None:
-    asyncio.run(_test_fallback_uses_next_provider_after_failure())
+@pytest.mark.asyncio
+async def test_terminal_execution_failure_releases_reservation(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    grant = ExecutionGrant(subject="u_test", workspace_id="w1", request_id="backend-r2", task_type="chat", grant_id="g2", reservation_id="res2", claims={"exp": 9999999999})
+    layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    settlements = []
+
+    async def fail_call(_config, _prompt, _request):
+        raise RuntimeError("provider unavailable")
+
+    async def fake_settle(**kwargs):
+        settlements.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(layer, "_call_llm", fail_call)
+    monkeypatch.setattr(layer.settlement, "settle", fake_settle)
+    with pytest.raises(RuntimeError):
+        await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=grant, workspace_id="w1"), use_cache=False))
+    assert settlements[0]["status"] == "failed"
+    assert settlements[0]["reservation_id"] == "res2"
 
 
-def test_missing_keys_fail_closed_without_placeholder() -> None:
-    asyncio.run(_test_missing_keys_fail_closed_without_placeholder())
+@pytest.mark.asyncio
+async def test_cache_hit_reports_zero_incremental_provider_usage(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    settlements = []
 
+    async def fake_call(_config, _prompt, _request):
+        return {"text": "cached", "tokens": 8, "prompt_tokens": 5, "completion_tokens": 3,
+                "confidence": 1.0, "duration_ms": 2}
 
-def test_usage_ledger_recorder_invoked() -> None:
-    asyncio.run(_test_usage_ledger_recorder_invoked())
+    async def fake_settle(**kwargs):
+        settlements.append(kwargs)
+        return {"ok": True}
 
-
-def test_missing_database_url_fails_closed_in_production() -> None:
-    asyncio.run(_test_missing_database_url_fails_closed_in_production())
-
-
-def test_credit_debit_uses_subscription_then_payg() -> None:
-    _test_credit_debit_uses_subscription_then_payg()
-
-
-def test_credit_debit_rejects_insufficient_durable_balance() -> None:
-    _test_credit_debit_rejects_insufficient_durable_balance()
-
-
-def main() -> int:
-    tests = [
-        test_openai_provider_response_is_normalized,
-        test_fallback_uses_next_provider_after_failure,
-        test_missing_keys_fail_closed_without_placeholder,
-        test_usage_ledger_recorder_invoked,
-        test_missing_database_url_fails_closed_in_production,
-        test_credit_debit_uses_subscription_then_payg,
-        test_credit_debit_rejects_insufficient_durable_balance,
-    ]
-    for test in tests:
-        test()
-        print(f"PASS {test.__name__}")
-    print(f"\nAll {len(tests)} provider execution tests passed.")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    monkeypatch.setattr(layer, "_call_llm", fake_call)
+    monkeypatch.setattr(layer.settlement, "settle", fake_settle)
+    request = _request(TaskType.SUMMARY, use_cache=True)
+    await layer.process_request(request)
+    await layer.process_request(_request(TaskType.SUMMARY, use_cache=True))
+    assert settlements[-1]["cache_hit"] is True
+    assert settlements[-1]["prompt_tokens"] == 0
+    assert settlements[-1]["completion_tokens"] == 0
+    assert settlements[-1]["total_tokens"] == 0
+    assert settlements[-1]["provider_cost_usd"] == 0
