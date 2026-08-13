@@ -25,6 +25,9 @@ BASE_PROD_ENV = {
     "ALLOW_DEMO_AUTH": "false",
     "JWT_ALGORITHM": "HS256",
     "JWT_SECRET": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "JWT_ISSUER": "techit-backend",
+    "JWT_AUDIENCE": "techit-platform",
+    "ALLOWED_ORIGINS": "https://app.techit.example",
     "DATABASE_URL": "postgresql://techit:secret@postgres.example:5432/techit_db",
     "REDIS_URL": "rediss://redis.example:6379",
     "CELERY_BROKER": "rediss://redis.example:6379",
@@ -33,6 +36,11 @@ BASE_PROD_ENV = {
     "ANTHROPIC_API_KEY": "sk-ant-live",
     "BACKEND_USAGE_SETTLEMENT_URL": "https://api.techit.example/internal/usage-settlement",
     "AI_ROUTER_SETTLEMENT_SECRET": "0123456789abcdef0123456789abcdef",
+    "REQUIRE_AI_EXECUTION_GRANT": "true",
+    "AWS_ACCESS_KEY_ID": "AKIAEXAMPLESECURE",
+    "AWS_SECRET_ACCESS_KEY": "secure-object-storage-secret-value",
+    "AWS_S3_BUCKET": "techit-private-production-uploads",
+    "AWS_S3_ENDPOINT": "https://s3.eu-central-1.amazonaws.com",
 }
 
 
@@ -69,6 +77,18 @@ def test_production_requires_provider_keys() -> None:
     assert "provider.anthropic" in failed
 
 
+def test_production_requires_execution_grants_and_private_storage() -> None:
+    env = {
+        **BASE_PROD_ENV,
+        "REQUIRE_AI_EXECUTION_GRANT": "false",
+        "AWS_ACCESS_KEY_ID": "test-access-key",
+        "AWS_SECRET_ACCESS_KEY": "test-secret-key",
+    }
+    failed = _failed_names(env)
+    assert "execution_grant.required" in failed
+    assert "storage.private_config" in failed
+
+
 def test_production_rejects_local_dependency_urls() -> None:
     env = {
         **BASE_PROD_ENV,
@@ -80,6 +100,11 @@ def test_production_rejects_local_dependency_urls() -> None:
     assert "database.url" in failed
     assert "redis.url" in failed
     assert "celery.broker" in failed
+
+
+def test_production_rejects_wildcard_or_insecure_cors() -> None:
+    assert "http.cors_origins" in _failed_names({**BASE_PROD_ENV, "ALLOWED_ORIGINS": "*"})
+    assert "http.cors_origins" in _failed_names({**BASE_PROD_ENV, "ALLOWED_ORIGINS": "http://app.techit.example"})
 
 
 def test_development_allows_demo_auth_and_missing_provider_keys() -> None:
@@ -115,7 +140,9 @@ def main() -> int:
         test_valid_production_runtime_passes,
         test_production_demo_auth_fails_closed,
         test_production_requires_provider_keys,
+        test_production_requires_execution_grants_and_private_storage,
         test_production_rejects_local_dependency_urls,
+        test_production_rejects_wildcard_or_insecure_cors,
         test_development_allows_demo_auth_and_missing_provider_keys,
         test_database_engine_options_bound_readiness_timeouts,
     ]

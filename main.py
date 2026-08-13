@@ -144,6 +144,19 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-site"
+    if ENVIRONMENT == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
 # ============================================================================
 # AUTHENTICATION DEPENDENCY
 # ============================================================================
@@ -236,7 +249,11 @@ def _context_from_claim(user_id: str, payload: Dict[str, Any]) -> UserContext:
     )
 
 
-def _hydrate_from_db(ctx: UserContext, db) -> UserContext:
+class IdentityHydrationError(RuntimeError):
+    """Persisted identity could not be proven for an authenticated request."""
+
+
+def _hydrate_from_db(ctx: UserContext, db, *, require_user: bool = False) -> UserContext:
     """Hydrate only identity/role metadata; execution authorization is separate."""
     from dataclasses import replace as dc_replace
 
@@ -248,9 +265,13 @@ def _hydrate_from_db(ctx: UserContext, db) -> UserContext:
         ).scalar_one_or_none()
     except Exception as exc:  # noqa: BLE001
         logger.warning("user_db_hydrate_failed", user_id=ctx.user_id, error=str(exc))
+        if require_user:
+            raise IdentityHydrationError("Persisted identity lookup failed") from exc
         return ctx
 
     if row is None:
+        if require_user:
+            raise IdentityHydrationError("Authenticated user does not exist in the identity store")
         return ctx
 
     return dc_replace(
@@ -291,7 +312,14 @@ async def get_user_context(request: Request) -> UserContext:
 
     try:
         from jose import JWTError, jwt
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        decode_options: Dict[str, Any] = {}
+        issuer = os.getenv("JWT_ISSUER", "").strip()
+        audience = os.getenv("JWT_AUDIENCE", "").strip()
+        if issuer:
+            decode_options["issuer"] = issuer
+        if audience:
+            decode_options["audience"] = audience
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM], **decode_options)
     except JWTError as exc:
         logger.warning("auth_jwt_invalid", reason="decode_failed", error=str(exc))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -323,11 +351,13 @@ async def get_user_context(request: Request) -> UserContext:
         Session = _db_session_factory()
         session = Session()
         try:
-            ctx = _hydrate_from_db(ctx, session)
+            ctx = _hydrate_from_db(ctx, session, require_user=ENVIRONMENT in PROD_ENVS)
         finally:
             session.close()
     except Exception as exc:  # noqa: BLE001
         logger.warning("user_db_session_unavailable", user_id=str(user_id), error=str(exc))
+        if ENVIRONMENT in PROD_ENVS:
+            raise HTTPException(status_code=503, detail="Identity verification is temporarily unavailable") from exc
 
     return ctx
 
@@ -1760,6 +1790,8 @@ async def admin_monitor_scan(
     user: UserContext = Depends(get_user_context),
 ):
     """Anomaly scan over signals. 0 execution budget units, Admin only. Body: { signals: [...] }"""
+    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
+        raise HTTPException(status_code=403, detail="Admin access required")
     return await AdminMonitorService(brain).run_anomaly_scan(user, body.get("signals", []))
 
 
@@ -1769,6 +1801,8 @@ async def admin_stagnation_roster(
     user: UserContext = Depends(get_user_context),
 ):
     """Stagnating-project roster (decay-based). 0 execution budget units. Body: { projects: [...] }"""
+    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
+        raise HTTPException(status_code=403, detail="Admin access required")
     return await AdminMonitorService(brain).check_stagnation_roster(user, body.get("projects", []))
 
 
@@ -2223,7 +2257,14 @@ async def general_error_handler(request: Request, exc: Exception):
 # FILE UPLOAD ENDPOINTS
 # ============================================================================
 
-from file_storage import file_storage
+from file_storage import FileValidationError, MAX_UPLOAD_BYTES, file_storage
+
+
+async def _read_bounded_upload(file: UploadFile) -> bytes:
+    contents = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File exceeds the {MAX_UPLOAD_BYTES} byte upload limit")
+    return contents
 
 
 @app.post("/api/v1/files/upload", tags=["File Storage"])
@@ -2232,7 +2273,11 @@ async def upload_file(
     ctx=Depends(get_user_context),
 ):
     """Upload a file to storage. Returns URL, key, size, content_type."""
-    contents = await file.read()
+    contents = await _read_bounded_upload(file)
+    try:
+        file_storage.validate_upload(contents, file.filename or "untitled", file.content_type or "application/octet-stream")
+    except FileValidationError as exc:
+        raise HTTPException(status_code=413 if "exceeds" in str(exc) else 415, detail=str(exc)) from exc
     result = file_storage.upload_file(
         contents,
         file.filename or "untitled",
@@ -2247,7 +2292,11 @@ async def incubation_document_upload(
     ctx=Depends(get_user_context),
 ):
     """Upload a document, extract text, and run idea diagnosis."""
-    contents = await file.read()
+    contents = await _read_bounded_upload(file)
+    try:
+        file_storage.validate_upload(contents, file.filename or "document", file.content_type or "application/octet-stream", document_only=True)
+    except FileValidationError as exc:
+        raise HTTPException(status_code=413 if "exceeds" in str(exc) else 415, detail=str(exc)) from exc
     text = file_storage.extract_text(contents, file.filename or "document")
     if not text.strip():
         raise HTTPException(400, "Could not extract text from the uploaded document")
