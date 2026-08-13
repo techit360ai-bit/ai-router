@@ -88,6 +88,30 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
         "JWT_ALGORITHM must be HS256",
     ))
 
+    allowed_origins = [item.strip() for item in values.get("ALLOWED_ORIGINS", "").split(",") if item.strip()]
+    if env_name in PROD_ENVS:
+        secure_origins = bool(allowed_origins) and all(
+            origin != "*" and urlparse(origin).scheme == "https" and urlparse(origin).hostname not in LOCAL_HOSTS
+            for origin in allowed_origins
+        )
+        checks.append(RuntimeCheck(
+            "http.cors_origins",
+            secure_origins,
+            "ALLOWED_ORIGINS must list only non-local https origins in production/staging",
+        ))
+
+    if env_name in PROD_ENVS:
+        checks.append(RuntimeCheck(
+            "auth.jwt_issuer",
+            bool(values.get("JWT_ISSUER")),
+            "JWT_ISSUER is required in production/staging",
+        ))
+        checks.append(RuntimeCheck(
+            "auth.jwt_audience",
+            bool(values.get("JWT_AUDIENCE")),
+            "JWT_AUDIENCE is required in production/staging",
+        ))
+
     checks.append(_check_url("database.url", values.get("DATABASE_URL"), {"postgres", "postgresql"}, env_name))
     checks.append(_check_url("redis.url", values.get("REDIS_URL"), {"redis", "rediss"}, env_name))
     checks.append(_check_url("celery.broker", values.get("CELERY_BROKER") or values.get("REDIS_URL"), {"redis", "rediss"}, env_name))
@@ -125,6 +149,28 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
             len(settlement_secret) >= 32 and not _is_placeholder(settlement_secret),
             "AI_ROUTER_SETTLEMENT_SECRET must be set, strong, and non-placeholder",
         ))
+        checks.append(RuntimeCheck(
+            "execution_grant.required",
+            bool_env(values.get("REQUIRE_AI_EXECUTION_GRANT"), default=False),
+            "REQUIRE_AI_EXECUTION_GRANT must be true in production/staging",
+        ))
+        storage_key = values.get("AWS_ACCESS_KEY_ID", "")
+        storage_secret = values.get("AWS_SECRET_ACCESS_KEY", "")
+        checks.append(RuntimeCheck(
+            "storage.private_config",
+            bool(storage_key and storage_secret)
+            and storage_key != "test-access-key"
+            and storage_secret != "test-secret-key",
+            "Production file storage credentials must be configured and non-placeholder",
+        ))
+        checks.append(RuntimeCheck(
+            "storage.bucket",
+            bool(values.get("AWS_S3_BUCKET")) and not _is_placeholder(values.get("AWS_S3_BUCKET", "")),
+            "AWS_S3_BUCKET is required and must be non-placeholder",
+        ))
+        storage_endpoint = values.get("AWS_S3_ENDPOINT", "").strip()
+        if storage_endpoint:
+            checks.append(_check_url("storage.endpoint", storage_endpoint, {"https"}, env_name))
 
     return checks
 

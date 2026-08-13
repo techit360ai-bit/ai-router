@@ -20,7 +20,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     environment:
@@ -40,13 +40,21 @@ services:
       - AI_EXECUTION_GRANT_SECRET=${AI_EXECUTION_GRANT_SECRET}
       - AI_EXECUTION_GRANT_ISSUER=${AI_EXECUTION_GRANT_ISSUER:-techit-backend}
       - AI_EXECUTION_GRANT_AUDIENCE=${AI_EXECUTION_GRANT_AUDIENCE:-techit-ai-router}
+      - BACKEND_USAGE_SETTLEMENT_URL=${BACKEND_USAGE_SETTLEMENT_URL}
+      - AI_ROUTER_SETTLEMENT_SECRET=${AI_ROUTER_SETTLEMENT_SECRET}
+      - AI_ROUTER_SERVICE_ID=${AI_ROUTER_SERVICE_ID:-ai-router}
       - MODEL_REGISTRY_PATH=/app/config/model_registry.json
       - TASK_POLICY_PATH=/app/config/task_policies.json
       - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_S3_ENDPOINT=${AWS_S3_ENDPOINT}
+      - AWS_S3_SERVER_SIDE_ENCRYPTION=${AWS_S3_SERVER_SIDE_ENCRYPTION:-AES256}
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - JWT_SECRET=${JWT_SECRET:-${SECRET_KEY}}
       - SECRET_KEY=${SECRET_KEY}
-      - ALLOW_DEMO_AUTH=${ALLOW_DEMO_AUTH:-true}
+      - ALLOW_DEMO_AUTH=${ALLOW_DEMO_AUTH:-false}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
       - MCP_BASE_URL=${MCP_BASE_URL:-http://host.docker.internal:3000/api/mcp}
       - MCP_TIMEOUT=${MCP_TIMEOUT:-10}
@@ -58,8 +66,6 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
-    volumes:
-      - ./:/app
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -97,8 +103,6 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
-    volumes:
-      - ./:/app
 
   # ── Celery Beat — 14 scheduled jobs ───────────────────────────────
   scheduler:
@@ -117,8 +121,6 @@ services:
       worker:
         condition: service_started
     restart: unless-stopped
-    volumes:
-      - ./:/app
 
   # ── Flower — Celery monitor ────────────────────────────────────────
   flower:
@@ -126,8 +128,6 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     command: celery -A workers.workers flower --port=5555
-    ports:
-      - "5555:5555"
     environment:
       - CELERY_BROKER=redis://redis:6379
       - PYTHONPATH=/app
@@ -143,8 +143,6 @@ services:
       - POSTGRES_USER=techit
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=techit_db
-    ports:
-      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -158,8 +156,6 @@ services:
   # ── Redis 7 ───────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    ports:
-      - "6380:6379"
     volumes:
       - redis_data:/data
     command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru

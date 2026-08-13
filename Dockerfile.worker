@@ -8,6 +8,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+RUN useradd --create-home --uid 10001 techit && chown -R techit:techit /app
+USER techit
 
 # Worker default — overridden in docker-compose.yml per service (worker/scheduler/flower)
 CMD ["celery", "-A", "workers.workers", "worker", "--loglevel=info", "-Q", "default,ai_heavy,ai_light,scheduled", "--concurrency=4"]
