@@ -41,6 +41,7 @@ from database_schema import (
     InvestorReputation,
     InvestorReview,
     InvestorWatchlist,
+    Match,
     Organization,
     OrgMember,
     Payout,
@@ -49,6 +50,8 @@ from database_schema import (
     ProjectAnalysis,
     ProjectStageEnum,
     TermSheet,
+    User,
+    UserSkillEmbedding,
     VentureIntake,
     VenturePipelineRun,
     Workspace,
@@ -243,6 +246,143 @@ class LiveDomainRepository:
         next_row["updatedAt"] = now
         _MEMORY[name].append(next_row)
         return deepcopy(next_row)
+
+    # ------------------------------------------------------------------
+    # Collaborator matching
+    # ------------------------------------------------------------------
+    def collaborator_matches(
+        self,
+        user_id: str,
+        criteria: Optional[Dict[str, Any]] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Return persisted match records joined to real candidate profiles.
+
+        Empty local state deliberately returns no candidates. Matching must not
+        synthesize people or component scores when the shared datastore has no
+        evidence for a recommendation.
+        """
+        if not self.database_backed:
+            return []
+
+        uid = _uuid(user_id)
+        if uid is None:
+            return []
+
+        criteria = criteria or {}
+        match_type = str(criteria.get("match_type") or "founder_builder")
+        requested_limit = max(1, min(50, _int(limit, 10)))
+        with self._session() as db:
+            rows = (
+                db.query(Match)
+                .filter(
+                    Match.seeker_id == uid,
+                    Match.match_type == match_type,
+                    Match.status.in_(("pending", "accepted")),
+                )
+                .order_by(Match.match_score.desc(), Match.created_at.desc())
+                .limit(requested_limit * 3)
+                .all()
+            )
+            candidate_ids = {row.candidate_id for row in rows if row.candidate_id}
+            if not candidate_ids:
+                return []
+
+            users = {
+                row.id: row
+                for row in db.query(User).filter(User.id.in_(candidate_ids)).all()
+            }
+            skill_rows = (
+                db.query(UserSkillEmbedding)
+                .filter(UserSkillEmbedding.user_id.in_(candidate_ids))
+                .order_by(UserSkillEmbedding.updated_at.desc().nullslast())
+                .all()
+            )
+            skill_evidence: Dict[Any, Dict[str, Any]] = {}
+            for row in skill_rows:
+                if row.user_id in skill_evidence:
+                    continue
+                skill_evidence[row.user_id] = self._skill_evidence(row.skill_text)
+
+            required_skills = {
+                str(value).strip().casefold()
+                for value in criteria.get("required_skills", [])
+                if str(value).strip()
+            }
+            minimum_score = criteria.get("minimum_match_score")
+            minimum_availability = criteria.get("minimum_availability_overlap")
+            candidates: List[Dict[str, Any]] = []
+            for row in rows:
+                user = users.get(row.candidate_id)
+                if user is None:
+                    continue
+                skills = skill_evidence.get(row.candidate_id, {"skills": [], "summary": None})
+                normalized_skills = {skill.casefold() for skill in skills["skills"]}
+                if required_skills and not required_skills.issubset(normalized_skills):
+                    continue
+                if minimum_score is not None and _num(row.match_score) < _num(minimum_score):
+                    continue
+                if minimum_availability is not None and (
+                    row.availability_overlap is None
+                    or _num(row.availability_overlap) < _num(minimum_availability)
+                ):
+                    continue
+                if criteria.get("availability_required") and (
+                    row.availability_overlap is None or _num(row.availability_overlap) <= 0
+                ):
+                    continue
+
+                role = user.role.value if hasattr(user.role, "value") else str(user.role)
+                candidates.append({
+                    "match_id": str(row.id),
+                    "user_id": str(user.id),
+                    "name": user.full_name,
+                    "role": role,
+                    "profile_signals": {
+                        "profile_completeness_pct": user.profile_completeness_pct,
+                        "github_connected": bool(user.github_connected),
+                        "linkedin_connected": bool(user.linkedin_connected),
+                    },
+                    "skills": skills["skills"],
+                    "skill_summary": skills["summary"],
+                    "skill_similarity": row.skill_similarity,
+                    "goal_similarity": row.goal_similarity,
+                    "execution_style_similarity": row.execution_style_similarity,
+                    "availability_overlap": row.availability_overlap,
+                    "trust_score": row.trust_score,
+                    "domain_experience": row.domain_experience,
+                    "match_score": row.match_score,
+                    "match_type": row.match_type,
+                    "risk_flags": row.risk_flags or [],
+                    "evidence": {
+                        "source": "persisted_match_record",
+                        "match_id": str(row.id),
+                        "computed_at": _iso(row.created_at),
+                        "skill_source": "user_skill_embeddings" if skills["summary"] else None,
+                    },
+                })
+                if len(candidates) >= requested_limit:
+                    break
+            return candidates
+
+    @staticmethod
+    def _skill_evidence(value: Any) -> Dict[str, Any]:
+        """Accept only explicitly structured skills; preserve other text as a summary."""
+        import json
+
+        summary = str(value).strip() if value is not None else None
+        if not summary:
+            return {"skills": [], "summary": None}
+        try:
+            structured = json.loads(summary)
+        except (TypeError, ValueError):
+            return {"skills": [], "summary": summary}
+        if isinstance(structured, dict):
+            structured = structured.get("skills")
+        if not isinstance(structured, list):
+            return {"skills": [], "summary": summary}
+        skills = [str(item).strip() for item in structured if str(item).strip()]
+        return {"skills": skills, "summary": summary}
 
     # ------------------------------------------------------------------
     # Founder projects, dashboard scores, incubation persistence

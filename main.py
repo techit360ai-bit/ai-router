@@ -69,6 +69,7 @@ from runtime_config import (
 )
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
+from live_domain_repository import LiveDomainRepository
 
 logger = structlog.get_logger()
 
@@ -1220,9 +1221,13 @@ async def update_progress(
 async def find_collaborators(
     criteria: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
-    """Find compatible collaborators via vector + rules + LLM. 1 execution budget unit, Builder+"""
-    return await MatchingEngineService(brain).find_collaborators(user, criteria)
+    """Find collaborators from persisted match evidence. 1 execution budget unit, Builder+"""
+    return await MatchingEngineService(
+        brain,
+        LiveDomainRepository(db),
+    ).find_collaborators(user, criteria)
 
 
 # ============================================================================

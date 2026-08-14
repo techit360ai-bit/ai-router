@@ -838,43 +838,48 @@ class AdaptiveTrainingAgent(BaseAgent):
 class MatchingAgent(BaseAgent):
     async def execute(self, context: AgentContext) -> AgentResult:
         t0       = datetime.now()
-        criteria = (context.trigger_event or {}).get("criteria", {})
-        candidates = [
-            {"user_id": "builder_001", "name": "Aisha Osei",
-             "skills": ["React", "Node.js", "Python"], "similarity_score": 0.91,
-             "availability": "available", "trust_score": 0.85},
-            {"user_id": "builder_002", "name": "David Mensah",
-             "skills": ["Python", "ML", "FastAPI"], "similarity_score": 0.85,
-             "availability": "part-time", "trust_score": 0.78},
-        ]
-        required = set(criteria.get("required_skills", []))
-        filtered = [
-            {**c, "match_score": ScoringEngine.compute_match_score(
-                c["similarity_score"], 0.75, 0.70,
-                1.0 if c["availability"] == "available" else 0.5,
-                c.get("trust_score", 0.75), 0.65,
-            )}
-            for c in candidates
-            if c["similarity_score"] >= 0.70
-            and (not required or required.issubset(set(c["skills"])))
-            and (not criteria.get("availability_required") or c["availability"] == "available")
-        ]
-        filtered.sort(key=lambda x: x["match_score"], reverse=True)
+        trigger = context.trigger_event or {}
+        candidates = trigger.get("persisted_candidates")
+        if not isinstance(candidates, list):
+            candidates = []
+        verified = []
+        for candidate in candidates:
+            if (
+                not isinstance(candidate, dict)
+                or not candidate.get("user_id")
+                or candidate.get("match_score") is None
+                or not isinstance(candidate.get("evidence"), dict)
+                or candidate["evidence"].get("source") != "persisted_match_record"
+            ):
+                continue
+            try:
+                float(candidate["match_score"])
+            except (TypeError, ValueError):
+                continue
+            verified.append(candidate)
+        verified.sort(key=lambda item: float(item["match_score"]), reverse=True)
 
         ai = await self._call_ai(
             TaskType.MATCHING,
             {"seeker_profile": context.user_context.to_prompt_context(),
-             "top_matches": filtered[:3]},
+             "top_matches": verified[:3]},
             context.user_context,
-        ) if filtered else None
+        ) if verified else None
 
         ms = int((datetime.now() - t0).total_seconds() * 1000)
+        evidence_status = "sufficient" if verified else "insufficient_evidence"
         return AgentResult(
             AgentType.MATCHING, True,
-            {"matches": filtered, "explanations": ai.output if ai else "No matches found"},
-            [f"Found {len(filtered)} compatible matches"],
-            ["Review compatibility before outreach"],
-            ["Connect with top match within 48 hours"],
+            {
+                "matches": verified,
+                "explanations": ai.output if ai else None,
+                "evidence_status": evidence_status,
+                "missing_evidence": [] if verified else ["persisted_match_candidates"],
+            },
+            [f"Found {len(verified)} persisted compatible matches"],
+            ["Review evidence and compatibility before outreach"] if verified else
+            ["Collect profile and collaboration evidence before matching"],
+            ["Invite a reviewed match"] if verified else ["Complete matching profiles"],
             ms, ai.tokens_used if ai else 0,
         )
 

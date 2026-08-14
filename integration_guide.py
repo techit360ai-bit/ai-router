@@ -874,17 +874,29 @@ class AdaptiveTrainingService:
 # ============================================================================
 
 class MatchingEngineService:
-    def __init__(self, brain: TechITAIBrain) -> None:
+    def __init__(self, brain: TechITAIBrain, repository: Optional[LiveDomainRepository] = None) -> None:
         self.brain = brain
+        self.repo = repository or LiveDomainRepository()
 
     async def find_collaborators(self, user_context: UserContext, criteria: Dict) -> Dict:
         """POST /api/v1/matching/find-collaborators -- 1 execution budget unit, Builder+"""
+        candidates = self.repo.collaborator_matches(
+            user_context.user_id,
+            criteria,
+            limit=criteria.get("limit", 10),
+        )
         ctx = AgentContext(user_context=user_context,
-                           trigger_event={"criteria": criteria, "match_type": "founder_builder"})
+                           trigger_event={
+                               "criteria": criteria,
+                               "match_type": "founder_builder",
+                               "persisted_candidates": candidates,
+                           })
         r   = await self.brain.trigger_agent(AgentType.MATCHING, ctx)
         return {"matches": r.output.get("matches", []),
                 "explanations": r.output.get("explanations"),
-                "total_found": len(r.output.get("matches", []))}
+                "total_found": len(r.output.get("matches", [])),
+                "evidence_status": r.output.get("evidence_status", "insufficient_evidence"),
+                "missing_evidence": r.output.get("missing_evidence", [])}
 
     async def find_investors(self, user_context: UserContext, startup_profile: Dict) -> Dict:
         """POST /api/v1/matching/find-investors -- 2 execution budget units, Investor+"""
