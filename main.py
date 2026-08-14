@@ -876,10 +876,16 @@ async def generate_scaffold(
                                       react_firebase | expo_supabase | fastapi_supabase
       venture_data  (optional) dict -- uses pipeline output if omitted
     """
+    project_id = body.get("project_id") or user.project_id
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id is required")
+    stack_choice = body.get("stack_choice")
+    if not stack_choice:
+        raise HTTPException(status_code=422, detail="stack_choice is required")
     return await AppScaffoldService(brain).generate_scaffold(
         user_context=user,
-        project_id=body.get("project_id", user.project_id or "proj_001"),
-        stack_choice=body.get("stack_choice", "nextjs_supabase"),
+        project_id=str(project_id),
+        stack_choice=str(stack_choice),
         venture_data=body.get("venture_data"),
         arch_data=body.get("arch_data"),
     )

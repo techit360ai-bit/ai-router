@@ -3004,7 +3004,7 @@ class AppScaffoldService:
         self,
         user_context:  UserContext,
         project_id:    str,
-        stack_choice:  str = "nextjs_supabase",
+        stack_choice:  Optional[str] = None,
         venture_data:  Optional[Dict] = None,
         arch_data:     Optional[Dict] = None,
     ) -> Dict[str, Any]:
@@ -3066,17 +3066,15 @@ class AppScaffoldService:
         Returns:
           deploy_status, live_url, build_logs_url, estimated_ready_seconds
         """
-        # Production: call GitHub API + Vercel API
-        # Stub: return expected response shape
         return {
             "scaffold_id":          scaffold_id,
-            "deploy_status":        "deploying",
+            "deploy_status":        "unavailable",
             "deploy_target":        deploy_target,
-            "estimated_ready_seconds": 120,
-            "build_logs_url":       f"https://vercel.com/techit/{scaffold_id}/deployments",
-            "live_url":             f"https://{scaffold_id}.vercel.app",
-            "status_endpoint":      f"/api/v1/scaffold/{scaffold_id}/status",
-            "message":              "Deployment started. Your app will be live in ~2 minutes.",
+            "reason_code":          "production_deploy_connector_not_configured",
+            "deployment_started":   False,
+            "build_logs_url":       None,
+            "live_url":             None,
+            "message":              "Deployment is unavailable until an authenticated production connector is configured.",
         }
 
     def get_deploy_status(self, scaffold_id: str) -> Dict[str, Any]:
@@ -3086,12 +3084,12 @@ class AppScaffoldService:
         Poll deployment status. Frontend calls this every 5 seconds until
         deploy_status = 'deployed'.
         """
-        # Production: query Vercel API for build status
         return {
             "scaffold_id":   scaffold_id,
-            "deploy_status": "deployed",   # pending | deploying | deployed | failed
-            "live_url":      f"https://{scaffold_id}.vercel.app",
-            "ready":         True,
+            "deploy_status": "unavailable",
+            "reason_code":   "deployment_record_not_found",
+            "live_url":      None,
+            "ready":         False,
         }
 
     def get_live_url(self, scaffold_id: str) -> Dict[str, Any]:
@@ -3104,10 +3102,11 @@ class AppScaffoldService:
         """
         return {
             "scaffold_id":       scaffold_id,
-            "live_url":          f"https://{scaffold_id}.vercel.app",
-            "techit_subdomain":  f"https://{scaffold_id}.techit.app",
-            "deploy_status":     "deployed",
-            "share_message":     "Your app is live. Share it. Build on it. Raise on it.",
+            "live_url":          None,
+            "techit_subdomain":  None,
+            "deploy_status":     "unavailable",
+            "reason_code":       "verified_deployment_record_not_found",
+            "share_message":     None,
         }
 
     def get_available_stacks(self) -> List[Dict[str, Any]]:
