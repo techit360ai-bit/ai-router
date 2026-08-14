@@ -296,7 +296,9 @@ class ScoringEngine:
             "unicorn_potential_score": score,
             "classification":          label,
             "emoji":                   emoji,
-            "unicorn_probability_pct": score,
+            "unicorn_probability_pct": None,
+            "score_kind":              "heuristic_human_review_required",
+            "probability_calibrated":  False,
             "driver_breakdown":        breakdown,
         }
 

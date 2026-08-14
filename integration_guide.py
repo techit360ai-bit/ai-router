@@ -409,7 +409,7 @@ class IncubationHubService:
         return await self.run_task_analysis(user_context, venture_data, TaskType.PRODUCT_FEASIBILITY, "feasibility")
 
     async def run_risk_analysis(self, user_context: UserContext, venture_data: Dict) -> Dict:
-        return await self.run_task_analysis(user_context, venture_data, TaskType.RISK_ANALYSIS, "swot")
+        return await RiskEvaluatorService(self.brain).evaluate_idea_risk(user_context, venture_data)
 
     async def run_impact_analysis(self, user_context: UserContext, venture_data: Dict) -> Dict:
         return await self.run_task_analysis(user_context, venture_data, TaskType.IMPACT_PREDICTION, "impact")
@@ -937,9 +937,11 @@ class RiskEvaluatorService:
         ra  = r.output.get("risk_analysis", {})
         return {
             "risk_analysis":   ra,
-            "risk_level":      ra.get("competitive_risk", "medium"),
+            "risk_level":      ra.get("competitive_risk"),
             "top_risks":       ra.get("key_risks", []),
             "swot":            ra.get("swot", {}),
+            "evidence_status": ra.get("status", "insufficient_evidence"),
+            "missing_evidence": ra.get("evidence", {}).get("missing_fields", []),
             "recommendations": r.recommendations,
         }
 
@@ -971,11 +973,18 @@ class InvestorSectionService:
             user_context=investor_context,
             trigger_event=startup_data,
             shared_memory={
-                "mdr": startup_data.get("milestone_delivery_rate", 70),
-                "is":  startup_data.get("iteration_speed", 65),
-                "trv": startup_data.get("team_response_velocity", 75),
-                "rgs": startup_data.get("revenue_growth_signal", 40),
-                "cev": startup_data.get("capital_efficiency", 60),
+                "market_readiness": startup_data.get("market_readiness_score"),
+                "traction_score": startup_data.get("traction_score"),
+                "team_score": startup_data.get("team_score"),
+                "risk_inverse": startup_data.get("risk_inverse"),
+                "growth_rate": startup_data.get("growth_rate"),
+                "differentiation_score": startup_data.get("differentiation_score"),
+                "mdr": startup_data.get("milestone_delivery_rate"),
+                "is": startup_data.get("iteration_speed"),
+                "trv": startup_data.get("team_response_velocity"),
+                "rta": startup_data.get("revenue_traction_acceleration"),
+                "ugm": startup_data.get("user_growth_momentum"),
+                "cev": startup_data.get("capital_efficiency"),
             },
         )
         r = await self.brain.trigger_agent(AgentType.INVESTOR_INTELLIGENCE, ctx)
@@ -983,6 +992,9 @@ class InvestorSectionService:
             "evi_i":          r.output.get("evi_i"),
             "investment_score": r.output.get("investment_score"),
             "investor_signals": r.output.get("investor_signals"),
+            "evidence_status": r.output.get("evidence_status"),
+            "missing_evidence": r.output.get("missing_evidence", []),
+            "human_review_required": True,
             "recommendations": r.recommendations,
         }
 
@@ -990,13 +1002,38 @@ class InvestorSectionService:
         self, user_context: UserContext, project_scores: Dict
     ) -> Dict:
         """GET /api/v1/investor/readiness/{project_id} -- 0 + 2 execution budget units"""
+        required = (
+            "market_readiness_score", "traction_score", "team_score",
+            "risk_score", "revenue_growth_pct", "differentiation_score",
+        )
+        missing = []
+        values: Dict[str, float] = {}
+        for name in required:
+            try:
+                value = float(project_scores.get(name))
+            except (TypeError, ValueError):
+                missing.append(name)
+                continue
+            if not 0 <= value <= 100:
+                missing.append(name)
+                continue
+            values[name] = value
+        if missing:
+            return {
+                "investment_score": None,
+                "investment_readiness": "insufficient_evidence",
+                "evidence_status": "insufficient_evidence",
+                "missing_evidence": missing,
+                "human_review_required": True,
+                "top_improvements": ["Complete verified investor-readiness evidence"],
+            }
         invest_score = ScoringEngine.compute_investment_score(
-            market_readiness=project_scores.get("market_readiness_score", 50),
-            traction_score=min(100.0, project_scores.get("beta_users_count", 0) * 2),
-            team_score=min(100.0, project_scores.get("team_size", 1) * 15),
-            risk_inverse=100 - project_scores.get("risk_score", 40),
-            growth_rate=project_scores.get("revenue_growth_pct", 20),
-            differentiation_score=project_scores.get("unicorn_score", 50) * 0.8,
+            market_readiness=values["market_readiness_score"],
+            traction_score=values["traction_score"],
+            team_score=values["team_score"],
+            risk_inverse=100 - values["risk_score"],
+            growth_rate=values["revenue_growth_pct"],
+            differentiation_score=values["differentiation_score"],
         )
         readiness = (
             "high_priority" if invest_score >= 75 else
@@ -1013,7 +1050,8 @@ class InvestorSectionService:
             improvements.append("Complete investor data room (pitch deck + financials)")
 
         return {"investment_score": invest_score, "investment_readiness": readiness,
-                "top_improvements": improvements[:3]}
+                "evidence_status": "sufficient", "missing_evidence": [],
+                "human_review_required": True, "top_improvements": improvements[:3]}
 
     async def get_deal_flow_ranking(
         self, investor_context: UserContext, filters: Optional[Dict] = None

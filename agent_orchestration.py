@@ -362,7 +362,7 @@ class UnicornEvaluatorAgent(BaseAgent):
         return AgentResult(
             AgentType.UNICORN_EVALUATOR, True,
             {**ups, "ai_analysis": ai.output},
-            [f"Computed UPS: {ups['unicorn_potential_score']}% ({ups['classification']})"],
+            [f"Computed heuristic UPS: {ups['unicorn_potential_score']}/100 ({ups['classification']})"],
             recs, ["Run MarketIntelligenceAgent", "Run ProductFeasibilityAgent"],
             ms, ai.tokens_used,
         )
@@ -456,46 +456,100 @@ class InvestorIntelligenceAgent(BaseAgent):
     async def execute(self, context: AgentContext) -> AgentResult:
         t0  = datetime.now()
         ups = context.shared_memory.get("unicorn_evaluation", {})
-        score = ups.get("unicorn_potential_score", 50)
+        investment_fields = {
+            "market_readiness": context.shared_memory.get("market_readiness"),
+            "traction_score": context.shared_memory.get("traction_score"),
+            "team_score": context.shared_memory.get("team_score"),
+            "risk_inverse": context.shared_memory.get("risk_inverse"),
+            "growth_rate": context.shared_memory.get("growth_rate"),
+            "differentiation_score": context.shared_memory.get("differentiation_score"),
+        }
+        evi_fields = {
+            "mdr": context.shared_memory.get("mdr"),
+            "is": context.shared_memory.get("is"),
+            "trv": context.shared_memory.get("trv"),
+            "rta": context.shared_memory.get("rta"),
+            "ugm": context.shared_memory.get("ugm"),
+            "cev": context.shared_memory.get("cev"),
+        }
+        valid_investment, missing_investment = self._validated_scores(investment_fields)
+        valid_evi, missing_evi = self._validated_scores(evi_fields)
 
-        invest_score = ScoringEngine.compute_investment_score(
-            market_readiness=context.shared_memory.get("market_readiness", 60),
-            traction_score=min(100, context.user_context.beta_users_count * 2),
-            team_score=min(100, context.user_context.team_size * 15),
-            risk_inverse=max(0, 100 - (100 - score)),
-            growth_rate=context.shared_memory.get("growth_rate", 30),
-            differentiation_score=score * 0.7,
-        )
+        invest_score = None
+        if not missing_investment:
+            invest_score = ScoringEngine.compute_investment_score(**valid_investment)
 
-        # EVI-I computed from available signals
-        evi_i = ScoringEngine.compute_evi_investor(
-            mdr_score=context.shared_memory.get("mdr", 70),
-            is_score=context.shared_memory.get("is", 65),
-            trv_score=context.shared_memory.get("trv", 75),
-            rta_score=min(100, context.user_context.beta_users_count * 1.5),
-            ugm_score=min(100, context.user_context.beta_users_count),
-            cev_score=context.shared_memory.get("cev", 60),
-            days_since_last_update=context.user_context.days_since_update,
-        )
+        evi_i = None
+        if not missing_evi:
+            evi_i = ScoringEngine.compute_evi_investor(
+                mdr_score=valid_evi["mdr"],
+                is_score=valid_evi["is"],
+                trv_score=valid_evi["trv"],
+                rta_score=valid_evi["rta"],
+                ugm_score=valid_evi["ugm"],
+                cev_score=valid_evi["cev"],
+                days_since_last_update=context.user_context.days_since_update,
+            )
 
-        ai = await self._call_ai(
-            TaskType.INVESTOR_SIGNAL,
-            {"venture_profile": context.shared_memory.get("venture_profile", {}),
-             "unicorn_evaluation": ups,
-             "investment_score": invest_score,
-             "evi_i": evi_i},
-            context.user_context, max_tokens=3000,
-        )
+        missing_evidence = [
+            *(f"investment.{name}" for name in missing_investment),
+            *(f"evi_i.{name}" for name in missing_evi),
+        ]
+        evidence_status = "sufficient" if not missing_evidence else "insufficient_evidence"
+        ai = None
+        if evidence_status == "sufficient":
+            ai = await self._call_ai(
+                TaskType.INVESTOR_SIGNAL,
+                {"venture_profile": context.shared_memory.get("venture_profile", {}),
+                 "unicorn_evaluation": ups,
+                 "investment_score": invest_score,
+                 "evi_i": evi_i,
+                 "score_kind": "heuristic_human_review_required"},
+                context.user_context, max_tokens=3000,
+            )
         ms = int((datetime.now() - t0).total_seconds() * 1000)
+        actions = []
+        if invest_score is not None:
+            actions.append(f"Investment Score: {invest_score}/100")
+        if evi_i is not None:
+            actions.append(f"EVI-I: {evi_i['adjusted_evi_i']} ({evi_i['signal']})")
+        if not actions:
+            actions.append("Investor scoring blocked by insufficient evidence")
         return AgentResult(
             AgentType.INVESTOR_INTELLIGENCE, True,
-            {"investment_score": invest_score, "evi_i": evi_i, "investor_signals": ai.output},
-            [f"Investment Score: {invest_score}/100",
-             f"EVI-I: {evi_i['adjusted_evi_i']} ({evi_i['signal']})"],
-            ["Address top 2 investor concerns before outreach"],
-            ["Add to Investor Marketplace", "Generate Investor Readiness Report"],
-            ms, ai.tokens_used,
+            {
+                "investment_score": invest_score,
+                "evi_i": evi_i,
+                "investor_signals": ai.output if ai else None,
+                "evidence_status": evidence_status,
+                "missing_evidence": missing_evidence,
+                "score_kind": "heuristic_human_review_required",
+                "probability_calibrated": False,
+                "human_review_required": True,
+            },
+            actions,
+            ["Collect the missing verified investor evidence"] if missing_evidence else
+            ["Review evidence and assumptions before investor outreach"],
+            ["Complete investor evidence profile"] if missing_evidence else
+            ["Generate a human-reviewed investor readiness report"],
+            ms, ai.tokens_used if ai else 0,
         )
+
+    @staticmethod
+    def _validated_scores(values: Dict[str, Any]) -> tuple[Dict[str, float], List[str]]:
+        valid: Dict[str, float] = {}
+        missing: List[str] = []
+        for name, raw in values.items():
+            try:
+                score = float(raw)
+            except (TypeError, ValueError):
+                missing.append(name)
+                continue
+            if not math.isfinite(score) or not 0 <= score <= 100:
+                missing.append(name)
+                continue
+            valid[name] = score
+        return valid, missing
 
 
 class BusinessPlanGeneratorAgent(BaseAgent):
@@ -888,22 +942,44 @@ class RiskEvaluatorAgent(BaseAgent):
     async def execute(self, context: AgentContext) -> AgentResult:
         t0   = datetime.now()
         idea = (context.trigger_event or {}).get("idea", {})
-        ai   = await self._call_ai(TaskType.RISK_ANALYSIS, idea, context.user_context, ip_protected=True)
+        required_fields = ("problem", "solution", "target_customers")
+        missing_evidence = [name for name in required_fields if not str(idea.get(name) or "").strip()]
+        supplied_evidence = [name for name, value in idea.items() if value not in (None, "", [], {})]
+        ai = None
+        if not missing_evidence:
+            ai = await self._call_ai(TaskType.RISK_ANALYSIS, {
+                **idea,
+                "evidence_contract": {
+                    "source": "founder_supplied",
+                    "numeric_scores_allowed": False,
+                    "human_review_required": True,
+                },
+            }, context.user_context, ip_protected=True)
         ms   = int((datetime.now() - t0).total_seconds() * 1000)
+        evidence_status = "insufficient_evidence" if missing_evidence else "provisional_human_review_required"
         return AgentResult(
             AgentType.RISK_EVALUATOR, True,
             {"risk_analysis": {
-                "market_clarity_score": 7.5, "technical_feasibility": 8.0,
-                "competitive_risk": "medium",
-                "key_risks": ["Saturated market", "High CAC", "Regulatory compliance"],
-                "swot": {"strengths": ["Innovative approach"], "weaknesses": ["No market presence"],
-                         "opportunities": ["Growing market"], "threats": ["Established players"]},
-                "ai_analysis": ai.output,
+                "status": evidence_status,
+                "market_clarity_score": None,
+                "technical_feasibility": None,
+                "competitive_risk": None,
+                "key_risks": [],
+                "swot": {},
+                "ai_analysis": ai.output if ai else None,
+                "evidence": {
+                    "source": "founder_supplied",
+                    "supplied_fields": supplied_evidence,
+                    "missing_fields": missing_evidence,
+                },
+                "human_review_required": True,
             }},
-            ["Evaluated market risks", "Generated SWOT analysis"],
-            ["Address top 3 risks in 30-day sprint"],
-            ["Validate assumptions before building"],
-            ms, ai.tokens_used,
+            ["Generated provisional risk narrative"] if ai else
+            ["Risk analysis blocked by insufficient evidence"],
+            ["Validate risk claims with primary evidence"] if ai else
+            ["Supply the missing venture evidence"],
+            ["Human review of risk evidence"] if ai else ["Complete venture risk inputs"],
+            ms, ai.tokens_used if ai else 0,
         )
 
 
