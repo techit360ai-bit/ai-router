@@ -1,6 +1,6 @@
 # AI Router Production Hardening Plan
 
-Status: implementation started
+Status: P0 implementation complete; P1 policy/calibration work remains
 Branch: `hardening/ai-router-production-readiness-2026-08-14`
 Base: `57224fe` (`security/router-hardening-2026-08-13`)
 
@@ -69,7 +69,25 @@ Make production-facing AI Router decisions evidence-based, auditable, and fail-c
 
 ## Immediate Implementation Slice
 
-Start with P0 items 1–3 because they can create false business decisions today. Implement repository interfaces and typed response contracts first, then add focused tests before changing broader scoring policy.
+P0 items 1–3 and the scaffold integrity portion of item 7 are implemented. The remaining work starts with versioned policy/calibration because the current score formulas still embed business policy in source/config without outcome validation.
+
+## Completed Checkpoints
+
+- `efb0859` — committed this plan and continuation instructions.
+- `8875651` — collaborator matching reads persisted `matches`, `users`, and structured skill evidence; empty or untrusted input fails closed. Added `tests/test_matching_evidence.py`.
+- `da1a855` — risk and investor outputs require explicit evidence; removed fabricated SWOT/risk/investor defaults; UPS is marked heuristic and uncalibrated. Added `tests/test_decision_evidence_gates.py`.
+- `2c92ce1` — scaffold parsing and deployment surfaces fail closed; removed fictional artifact/live URLs and implicit stack defaults. Added `tests/test_scaffold_integrity.py`.
+
+Verification at this checkpoint: `pytest -q` => `131 passed` (existing deprecation and local pytest-cache permission warnings remain).
+
+## Next Session
+
+Implement item 4 first:
+
+1. Add a validated `config/scoring_policies.json` with policy id, effective date, weights, thresholds, decay, matching minimums, and valuation assumptions.
+2. Add a loader that rejects malformed or stale policy in production and exposes the policy id in score metadata.
+3. Migrate `ScoringEngine` and the remaining investor/matching helpers to consume the policy object.
+4. Add deterministic policy/backtest fixtures before changing any thresholds.
 
 ## Continuation Instructions
 
