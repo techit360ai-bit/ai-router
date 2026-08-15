@@ -278,6 +278,7 @@ class ExecutionCommandLayer:
                 "retry_number": output.get("retry_number", 0),
                 "cache_hit": cached,
                 "provider_cost_usd": output.get("provider_cost_usd"),
+                "routing_registry": self.model_router.registry.routing_metadata(),
             },
         )
         return response

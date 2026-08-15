@@ -1,5 +1,8 @@
 {
+  "schema_version": 1,
   "version": "2026-08-10.1",
+  "updated_at": "2026-08-14T00:00:00Z",
+  "owner": "platform-routing",
   "providers": [
     {"id": "openai", "adapter": "openai_responses", "api_key_env": "OPENAI_API_KEY"},
     {"id": "anthropic", "adapter": "anthropic_messages", "api_key_env": "ANTHROPIC_API_KEY"},
