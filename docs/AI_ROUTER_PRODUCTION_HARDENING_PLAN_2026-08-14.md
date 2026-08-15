@@ -1,6 +1,6 @@
 # AI Router Production Hardening Plan
 
-Status: P0, scoring/evaluation governance, ranking provenance, match policy migration, and provider freshness complete; release controls remain
+Status: implementation complete; production calibration approval awaits real labeled outcomes
 Branch: `hardening/ai-router-production-readiness-2026-08-14`
 Base: `57224fe` (`security/router-hardening-2026-08-13`)
 
@@ -67,9 +67,9 @@ Make production-facing AI Router decisions evidence-based, auditable, and fail-c
    - Keep production runtime checks fail-closed for database, Redis, MCP HTTPS, JWT, provider credentials, execution grants, settlement, and storage.
    - Acceptance: release checks cover P0/P1 contracts and deployment runbook documents remaining manual controls.
 
-## Immediate Implementation Slice
+## Implementation Result
 
-P0 items 1–3 and the scaffold integrity portion of item 7 are implemented. The remaining work starts with versioned policy/calibration because the current score formulas still embed business policy in source/config without outcome validation.
+Items 1–10 are implemented as code and release contracts. Consequential decisions remain human-review-only until database-backed production outcomes meet the configured sample, coverage, false-positive, false-negative, per-domain, and Brier-score thresholds.
 
 ## Completed Checkpoints
 
@@ -82,17 +82,17 @@ P0 items 1–3 and the scaffold integrity portion of item 7 are implemented. The
 - `76d3a02` — added privacy-safe collaborator ranking audit events, pseudonymous exposure references, field-level provenance, freshness, confidence, and missing-field reason codes. Added `tests/test_decision_audit.py`.
 - `9b9c659` — added the Alembic `matches.policy_id` migration and current-versus-legacy policy provenance handling for persisted match decisions.
 - `dd4c001` — added schema/version/freshness validation for model and task-policy registries, cost-complete profitability routing, and registry metadata on every AI response. Added `tests/test_registry_freshness.py`.
+- `c711313` — expanded CI release gates for the production environment, P0/P1 contracts, deterministic evaluation, migration head, and deployment runbook.
+- `f09927b` — completed investor ranking/parity auditing, immutable scaffold artifact registration, authenticated deployment broker integration, full scaffold JSON Schema validation, stack-selection rationale, hardening metrics/alerts, human override tracking, and database-backed production calibration outcomes.
 
-Verification at this checkpoint: `pytest -q` => `152 passed` (existing deprecation and local pytest-cache permission warnings remain). `python3 offline_evaluation.py` reports `human_review_only` as expected for the deliberately small, uncalibrated fixture set. `alembic heads` => `ab12cd34ef56`.
+Verification at this checkpoint: `python3 scripts/release_gate.py` => OK; `pytest -q` => `160 passed`; hardening contracts => `44 passed`; `alembic heads` => `bc23de45fa67`. Existing deprecation and local pytest-cache permission warnings remain.
 
-## Next Session
+## Production Activation
 
-Continue items 6 and 10 next:
-
-1. Add field-level evidence provenance, freshness, confidence, and missing-field reason codes to domain responses and monitoring events.
-2. Add ranking exposure and outcome-parity measurements for collaborator and investor matching without protected attributes or proxy features.
-3. Keep the evaluation release gate human-review-only until real outcome coverage and approved calibration metadata are available.
-4. Add release checks and runbook coverage for evidence gates, registry freshness, audit HMAC configuration, migration head, and remaining manual controls.
+1. Apply Alembic head `bc23de45fa67`.
+2. Record verified outcomes through `/api/v1/admin/calibration/outcomes`.
+3. Monitor `/api/v1/admin/calibration/report`; do not change calibration status until it reports `approved` from real production outcomes.
+4. Follow `docs/AI_ROUTER_PRODUCTION_RELEASE_RUNBOOK.md` for deployment and rollback.
 
 ## Continuation Instructions
 
@@ -112,7 +112,5 @@ After each milestone: run the focused tests, update this document's status, comm
 - Resolved: risk evaluation no longer wraps hard-coded risk or SWOT values around AI text.
 - Resolved: investor intelligence no longer converts absent evidence into mid-range scores.
 - Resolved: scaffold and deployment paths no longer return fictional artifact or live URLs.
-- Open: scoring policies are versioned and freshness-checked but remain uncalibrated against outcome data.
-- Open: the offline evaluator is deterministic and contract-enforcing, but its eight local fixtures are not production outcome evidence.
-- Open: fairness outcome monitoring, human override metrics, and production release gates remain unimplemented.
-- Open: existing persisted match rows remain legacy/unversioned until backfill; the schema now records policy ids for new decisions.
+- External activation dependency: no real labeled production outcome dataset is present in this workspace, so calibration remains `human_review_only` by design.
+- Existing persisted match rows remain legacy/unversioned until replay or evidence-preserving backfill; new decisions record policy ids.
