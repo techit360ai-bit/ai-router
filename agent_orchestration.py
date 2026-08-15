@@ -63,6 +63,7 @@ from ai_router_core import (
     UserContext, TaskType, UserRole,
     ScoringEngine,
 )
+from output_validation import OutputValidationError, validate_output
 from policy_registry import calibration_metadata
 
 
@@ -1550,6 +1551,26 @@ class AppScaffoldAgent(BaseAgent):
         "expo_supabase":     "Expo (React Native) + Supabase + NativeWind",
         "fastapi_supabase":  "FastAPI + Supabase + SQLAlchemy (API-only)",
     }
+    SCAFFOLD_SCHEMA = {
+        "type": "object",
+        "required": ["pages", "schema_sql", "api_routes", "env_template", "components", "setup_steps", "estimated_build_hours"],
+        "properties": {
+            "pages": {"type": "array", "items": {"type": "object", "required": ["route", "component_name"], "properties": {"route": {"type": "string", "minLength": 1}, "component_name": {"type": "string", "minLength": 1}}}},
+            "schema_sql": {"type": "string"},
+            "api_routes": {"type": "array", "items": {"type": "object", "required": ["method", "path"], "properties": {"method": {"type": "string"}, "path": {"type": "string", "minLength": 1}}}},
+            "env_template": {"type": "string"},
+            "components": {"type": "array"},
+            "setup_steps": {"type": "array", "items": {"type": "string"}},
+            "estimated_build_hours": {"type": "number", "minimum": 0},
+        },
+        "additionalProperties": True,
+    }
+    DEPLOY_SCHEMA = {
+        "type": "object",
+        "required": ["deploy_steps"],
+        "properties": {"deploy_steps": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}},
+        "additionalProperties": True,
+    }
 
     async def execute(self, context: AgentContext) -> AgentResult:
         t0      = datetime.now()
@@ -1559,7 +1580,7 @@ class AppScaffoldAgent(BaseAgent):
         profile = profile if isinstance(profile, dict) else {}
         arch = arch if isinstance(arch, dict) else {}
 
-        stack = self._select_stack(profile, arch, event.get("stack"))
+        stack, selection_rationale = self._select_stack(profile, arch, event.get("stack"))
         if stack is None:
             return AgentResult(
                 agent_type=AgentType.APP_SCAFFOLD,
@@ -1624,6 +1645,7 @@ class AppScaffoldAgent(BaseAgent):
         full_scaffold = {
             "scaffold_type":      stack,
             "stack_description":  self.SUPPORTED_STACKS.get(stack, stack),
+            "stack_selection_rationale": selection_rationale,
             "startup_name":       profile.get("startup_name", "MyStartup"),
             "pages":              scaffold.get("pages", []),
             "schema_sql":         scaffold.get("schema_sql", ""),
@@ -1672,58 +1694,39 @@ class AppScaffoldAgent(BaseAgent):
             tokens_used=scaffold_resp.tokens_used + deploy_resp.tokens_used,
         )
 
-    def _select_stack(self, profile: dict, arch: dict, requested_stack: Any = None) -> Optional[str]:
+    def _select_stack(self, profile: dict, arch: dict, requested_stack: Any = None) -> tuple[Optional[str], Optional[Dict[str, str]]]:
         """
         Select only an explicit, supported stack from the request or structured
         project architecture. The router does not infer technology from prose.
         """
-        for value in (
-            requested_stack,
-            profile.get("stack_choice"),
-            arch.get("stack_key"),
-            arch.get("scaffold_type"),
+        for source, value in (
+            ("request.stack_choice", requested_stack),
+            ("venture_profile.stack_choice", profile.get("stack_choice")),
+            ("tech_architecture.stack_key", arch.get("stack_key")),
+            ("tech_architecture.scaffold_type", arch.get("scaffold_type")),
         ):
             candidate = str(value or "").strip()
             if candidate in self.SUPPORTED_STACKS:
-                return candidate
-        return None
+                return candidate, {"source": source, "selected_stack": candidate, "reason": "explicit_approved_configuration"}
+        return None, None
 
     def _parse_scaffold(self, raw_output: str) -> Optional[dict]:
         """
         Parse and minimally validate the AI scaffold JSON response.
         """
-        import json, re
         try:
-            clean = re.sub(r"```(?:json)?|```", "", raw_output).strip()
-            parsed = json.loads(clean)
-        except (TypeError, ValueError):
+            parsed = validate_output(raw_output, self.SCAFFOLD_SCHEMA)
+        except (OutputValidationError, TypeError, ValueError):
             return None
-        required_types = {
-            "pages": list,
-            "schema_sql": str,
-            "api_routes": list,
-            "env_template": str,
-            "components": list,
-            "setup_steps": list,
-        }
-        if not isinstance(parsed, dict) or any(
-            not isinstance(parsed.get(name), expected)
-            for name, expected in required_types.items()
-        ):
-            return None
-        return parsed
+        return parsed if isinstance(parsed, dict) else None
 
     def _parse_deploy_config(self, raw_output: str) -> Optional[dict]:
         """Parse deploy config JSON and reject invalid output."""
-        import json, re
         try:
-            clean = re.sub(r"```(?:json)?|```", "", raw_output).strip()
-            parsed = json.loads(clean)
-        except (TypeError, ValueError):
+            parsed = validate_output(raw_output, self.DEPLOY_SCHEMA)
+        except (OutputValidationError, TypeError, ValueError):
             return None
-        if not isinstance(parsed, dict) or not isinstance(parsed.get("deploy_steps"), list):
-            return None
-        return parsed
+        return parsed if isinstance(parsed, dict) else None
 
     @staticmethod
     def _invalid_generation_result(t0: datetime, reason_code: str, tokens_used: int) -> AgentResult:

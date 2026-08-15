@@ -15,6 +15,7 @@ os.environ.setdefault("ENVIRONMENT", "development")
 from agent_orchestration import AgentContext, AppScaffoldAgent  # noqa: E402
 from ai_router_core import PromptEngine, TaskType, UserContext, UserRole  # noqa: E402
 from integration_guide import AppScaffoldService  # noqa: E402
+from live_domain_repository import LiveDomainRepository, reset_memory_store_for_tests  # noqa: E402
 
 
 def _user() -> UserContext:
@@ -108,14 +109,19 @@ def test_valid_generation_has_no_urls_until_artifact_registration() -> None:
     assert result.output["download_url"] is None
     assert result.output["deploy_url"] is None
     assert result.output["live_url"] is None
+    assert result.output["stack_selection_rationale"]["source"] == "request.stack_choice"
     assert context.shared_memory["app_scaffold"] == result.output
 
 
 def test_unconfigured_deployment_never_reports_started_or_live() -> None:
-    service = AppScaffoldService(SimpleNamespace())
+    class EmptyRepository:
+        def get_sandbox_build(self, *_args: Any) -> None:
+            return None
+
+    service = AppScaffoldService(SimpleNamespace(), EmptyRepository())  # type: ignore[arg-type]
     deployment = asyncio.run(service.deploy_scaffold(_user(), "scaffold-1"))
-    status = service.get_deploy_status("scaffold-1")
-    live = service.get_live_url("scaffold-1")
+    status = service.get_deploy_status("u_test", "scaffold-1")
+    live = service.get_live_url("u_test", "scaffold-1")
 
     assert deployment["deployment_started"] is False
     assert deployment["live_url"] is None
@@ -130,6 +136,26 @@ def test_scaffold_prompt_has_no_framework_default() -> None:
 
     assert "Use Next.js 14 App Router + Supabase + Tailwind CSS by default" not in prompt
     assert "explicit approved stack" in prompt
+
+
+def test_service_registers_real_artifact_before_returning_download_url(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    reset_memory_store_for_tests()
+
+    class Brain:
+        async def trigger_agent(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(success=True, output={
+                "scaffold_type": "nextjs_prisma", "schema_sql": "", "env_template": "",
+                "deploy_config": {"deploy_steps": ["build"]}, "artifact_registered": False,
+                "download_url": None, "deploy_url": None, "live_url": None,
+            }, actions_taken=[], next_steps=[])
+
+    result = asyncio.run(AppScaffoldService(Brain(), LiveDomainRepository()).generate_scaffold(
+        _user(), "p_test", "nextjs_prisma",
+    ))
+    assert result["artifact_registered"] is True
+    assert result["artifact_sha256"]
+    assert result["download_url"].endswith("/artifact")
 
 
 if __name__ == "__main__":

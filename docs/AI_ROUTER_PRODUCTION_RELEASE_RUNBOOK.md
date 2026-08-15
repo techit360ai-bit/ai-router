@@ -16,7 +16,7 @@ The gate compiles the code, validates the production environment contract, runs 
 
 1. Verify provider prices, context limits, output limits, and registry timestamps against provider documentation. Update the registry version and `updated_at` when evidence changes.
 2. Configure production JWT, execution-grant, settlement, private storage, provider, and decision-audit secrets. Never reuse the CI fixture values.
-3. Apply `alembic upgrade head` and confirm the database reports head `ab12cd34ef56` before starting API or worker traffic.
+3. Apply `alembic upgrade head` and confirm the database reports head `bc23de45fa67` before starting API or worker traffic.
 4. Start Postgres/pgvector and Redis, then worker and scheduler, then the API. Confirm `/ready` succeeds with live dependencies.
 5. Confirm structured decision-audit logs are exported to the approved restricted log sink. Audit events must not contain names, emails, skills, profile text, or raw user identifiers.
 6. Exercise collaborator matching, sparse risk, sparse investor, and malformed scaffold requests. Confirm they fail closed with no fabricated records, numeric conclusions, or artifact URLs.
@@ -24,6 +24,7 @@ The gate compiles the code, validates the production environment contract, runs 
 ## Manual Approval Blocks
 
 - Consequential score classifications remain human-review-only. `python3 offline_evaluation.py` must continue to report `human_review_only` until real labeled outcomes meet the approved coverage, false-positive, false-negative, and calibration thresholds.
+- Record verified production outcomes through the admin calibration API. Calibration is approved only when the database-backed report meets every configured sample, coverage, error-rate, per-domain, and Brier-score gate.
 - Existing match rows with no `policy_id` remain `legacy_or_unversioned`; do not backfill them with the current policy id unless the original scoring inputs are replayed under an approved migration process.
 - Scaffold download/deploy/live links remain disabled until an authenticated artifact registry and deployment connector persist verifiable records.
 - Ranking outcome parity cannot be approved until real outcomes are available. Do not add protected attributes or proxy features to routing or audit payloads.

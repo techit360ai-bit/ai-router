@@ -422,6 +422,32 @@ class LiveDomainRepository:
                     break
             return candidates
 
+    def matching_outcomes(self, user_id: str, match_type: str) -> List[Dict[str, Any]]:
+        if not self.database_backed:
+            return []
+        uid = _uuid(user_id)
+        if uid is None:
+            return []
+        with self._session() as db:
+            rows = db.query(Match).filter(
+                Match.seeker_id == uid,
+                Match.match_type == match_type,
+                Match.status.in_(("accepted", "rejected")),
+            ).all()
+            ids = {row.candidate_id for row in rows if row.candidate_id}
+            users = {row.id: row for row in db.query(User).filter(User.id.in_(ids)).all()} if ids else {}
+            outcomes = []
+            for row in rows:
+                user = users.get(row.candidate_id)
+                completeness = getattr(user, "profile_completeness_pct", None)
+                try:
+                    score = float(completeness)
+                    band = "high" if score >= 80 else "medium" if score >= 50 else "low"
+                except (TypeError, ValueError):
+                    band = "unknown"
+                outcomes.append({"status": row.status, "evidence_quality_band": band})
+            return outcomes
+
     @staticmethod
     def _skill_evidence(value: Any) -> Dict[str, Any]:
         """Accept only explicitly structured skills; preserve other text as a summary."""

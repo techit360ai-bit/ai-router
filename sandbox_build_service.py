@@ -92,6 +92,60 @@ class SandboxBuildService:
             "preview_url": f"/api/v1/incubation/builds/{build_id}/preview",
         }) or draft
 
+    def register_scaffold(self, user_id: str, project_id: str, scaffold: Dict[str, Any]) -> Dict[str, Any]:
+        draft = self.repo.create_sandbox_build(user_id, project_id, {
+            "status": "registering",
+            "scope": "generated_scaffold",
+            "manifest": {"scaffold_type": scaffold.get("scaffold_type")},
+        })
+        build_id = str(draft["id"])
+        archive = (ARTIFACT_ROOT / f"{build_id}.zip").resolve()
+        if ARTIFACT_ROOT not in archive.parents:
+            raise SandboxBuildError("invalid_build_path")
+        payload = json.dumps(scaffold, indent=2, sort_keys=True, default=str)
+        secret_findings = [pattern.pattern for pattern in SECRET_PATTERNS if pattern.search(payload)]
+        if secret_findings:
+            return self.repo.update_sandbox_build(user_id, build_id, {
+                "status": "checks_failed",
+                "checks": {"secret_scan": {"passed": False, "findings": secret_findings}},
+            }) or draft
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr("scaffold.json", payload)
+            bundle.writestr("schema.sql", str(scaffold.get("schema_sql") or ""))
+            bundle.writestr(".env.example", str(scaffold.get("env_template") or ""))
+            bundle.writestr("deploy.json", json.dumps(scaffold.get("deploy_config") or {}, indent=2, sort_keys=True))
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        return self.repo.update_sandbox_build(user_id, build_id, {
+            "status": "artifact_registered",
+            "manifest": {"scaffold_type": scaffold.get("scaffold_type"), "sha256": digest, "artifact_bytes": archive.stat().st_size},
+            "checks": {"schema": {"passed": True}, "secret_scan": {"passed": True, "findings": []}, "artifact_integrity": {"passed": True, "sha256": digest}},
+            "artifact_path": str(archive),
+        }) or draft
+
+    async def deploy_registered_artifact(
+        self, user_id: str, build_id: str, deploy_target: str, human_approved: bool,
+    ) -> Dict[str, Any]:
+        if not human_approved:
+            raise SandboxBuildError("human_deployment_approval_required")
+        build = self.repo.get_sandbox_build(user_id, build_id)
+        if not build or build.get("status") not in {"artifact_registered", "deployment_failed"}:
+            raise SandboxBuildError("registered_artifact_required")
+        broker = os.getenv("DEPLOYMENT_BROKER_URL", "").strip()
+        secret = os.getenv("DEPLOYMENT_BROKER_SECRET", "").strip()
+        if not broker or not secret:
+            return self.repo.update_sandbox_build(user_id, build_id, {"status": "deployment_integration_required"}) or build
+        import httpx
+        payload = {"artifact_id": build_id, "project_id": build.get("projectId"), "artifact_sha256": (build.get("manifest") or {}).get("sha256"), "artifact_path": build.get("artifactPath"), "deploy_target": deploy_target}
+        encoded = json.dumps(payload, separators=(",", ":")).encode()
+        signature = hmac.new(secret.encode(), encoded, hashlib.sha256).hexdigest()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(broker, content=encoded, headers={"Content-Type": "application/json", "X-TechIT-Signature": signature})
+            data = response.json() if response.content else {}
+        if response.status_code >= 400 or not data.get("deployment_id"):
+            return self.repo.update_sandbox_build(user_id, build_id, {"status": "deployment_failed", "checks": {**(build.get("checks") or {}), "deployment": {"passed": False, "status_code": response.status_code}}}) or build
+        status = "deployed_preview" if data.get("preview_url") else "deploying"
+        return self.repo.update_sandbox_build(user_id, build_id, {"status": status, "preview_url": data.get("preview_url"), "checks": {**(build.get("checks") or {}), "deployment": {"passed": True, "deployment_id": data["deployment_id"], "logs_url": data.get("logs_url"), "repository_url": data.get("repository_url")}}}) or build
+
     def _materialize(self, root: Path, name: str, venture: Dict[str, Any], roadmap: Dict[str, Any], scope: str) -> list[str]:
         slug = self._slug(name)
         problem = str(venture.get("problem") or "A validated customer problem")

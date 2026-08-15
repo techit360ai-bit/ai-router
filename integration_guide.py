@@ -40,6 +40,8 @@ from ai_router_core import (
 )
 from policy_registry import SCORING_POLICY, calibration_metadata
 from decision_audit import DecisionAuditRecorder, build_ranking_audit
+from sandbox_build_service import SandboxBuildError, SandboxBuildService
+from hardening_metrics import METRICS
 from agent_orchestration import (
     AgentOrchestrator, AgentType, AgentContext, VenturePipeline,
 )
@@ -283,6 +285,7 @@ class IncubationHubService:
         if not decision: raise ValueError("decision_required")
         updated = self.repo.record_incubation_decision(user_context.user_id, session_id, action, decision, str(body.get("rationale") or ""), user_context.user_id)
         if updated is None: raise ValueError("incubation_session_not_found")
+        METRICS.increment("human_overrides", action)
         return {"session": updated, "recorded": True, "immutable_event": (updated.get("state") or {}).get("decisions", [])[-1]}
 
     def _persist_analysis(
@@ -902,7 +905,10 @@ class MatchingEngineService:
         r   = await self.brain.trigger_agent(AgentType.MATCHING, ctx)
         matches = r.output.get("matches", [])
         evidence_status = r.output.get("evidence_status", "insufficient_evidence")
-        audit = build_ranking_audit(matches, evidence_status)
+        if evidence_status == "insufficient_evidence":
+            METRICS.increment("insufficient_evidence", "collaborator_matching")
+        outcomes = self.repo.matching_outcomes(user_context.user_id, "founder_builder")
+        audit = build_ranking_audit(matches, evidence_status, outcomes=outcomes)
         self.audit_recorder.record(audit)
         return {"matches": matches,
                 "explanations": r.output.get("explanations"),
@@ -916,11 +922,22 @@ class MatchingEngineService:
 
     async def find_investors(self, user_context: UserContext, startup_profile: Dict) -> Dict:
         """POST /api/v1/matching/find-investors -- 2 execution budget units, Investor+"""
+        criteria = {**startup_profile.get("criteria", {}), "match_type": "startup_investor"}
+        candidates = self.repo.collaborator_matches(user_context.user_id, criteria, limit=criteria.get("limit", 10))
         ctx = AgentContext(user_context=user_context,
-                           trigger_event={"criteria": {"match_type": "startup_investor"},
-                                          "startup_profile": startup_profile})
+                           trigger_event={"criteria": criteria, "startup_profile": startup_profile,
+                                          "persisted_candidates": candidates})
         r   = await self.brain.trigger_agent(AgentType.MATCHING, ctx)
-        return r.output
+        matches = r.output.get("matches", [])
+        evidence_status = r.output.get("evidence_status", "insufficient_evidence")
+        if evidence_status == "insufficient_evidence":
+            METRICS.increment("insufficient_evidence", "investor_matching")
+        audit = build_ranking_audit(
+            matches, evidence_status, event_type="investor_ranking",
+            outcomes=self.repo.matching_outcomes(user_context.user_id, "startup_investor"),
+        )
+        self.audit_recorder.record(audit)
+        return {**r.output, "audit": audit}
 
     def compute_compatibility(
         self, seeker_profile: Dict, candidate_profile: Dict
@@ -975,6 +992,8 @@ class RiskEvaluatorService:
         ctx = AgentContext(user_context=user_context, trigger_event={"idea": idea_data})
         r   = await self.brain.trigger_agent(AgentType.RISK_EVALUATOR, ctx)
         ra  = r.output.get("risk_analysis", {})
+        if ra.get("status") == "insufficient_evidence":
+            METRICS.increment("insufficient_evidence", "risk_analysis")
         return {
             "risk_analysis":   ra,
             "risk_level":      ra.get("competitive_risk"),
@@ -1028,6 +1047,9 @@ class InvestorSectionService:
             },
         )
         r = await self.brain.trigger_agent(AgentType.INVESTOR_INTELLIGENCE, ctx)
+        if r.output.get("evidence_status") == "insufficient_evidence":
+            METRICS.increment("insufficient_evidence", "investor_signals")
+        METRICS.increment("scoring_policy_versions", ScoringEngine.policy_metadata()["policy_id"])
         return {
             "evi_i":          r.output.get("evi_i"),
             "investment_score": r.output.get("investment_score"),
@@ -1061,6 +1083,7 @@ class InvestorSectionService:
                 continue
             values[name] = value
         if missing:
+            METRICS.increment("insufficient_evidence", "investor_readiness")
             return {
                 "investment_score": None,
                 "investment_readiness": "insufficient_evidence",
@@ -3043,8 +3066,10 @@ class AppScaffoldService:
         },
     }
 
-    def __init__(self, brain: TechITAIBrain) -> None:
+    def __init__(self, brain: TechITAIBrain, repository: Optional[LiveDomainRepository] = None) -> None:
         self.brain = brain
+        self.repo = repository or LiveDomainRepository()
+        self.artifacts = SandboxBuildService(self.repo)
 
     async def generate_scaffold(
         self,
@@ -3084,9 +3109,23 @@ class AppScaffoldService:
             },
         )
         result = await self.brain.trigger_agent(AgentType.APP_SCAFFOLD, ctx)
+        if not result.output.get("artifact_registered") and any(
+            result.output.get(key) for key in ("download_url", "deploy_url", "live_url")
+        ):
+            METRICS.increment("fabricated_data_regressions", "scaffold_url")
+            raise SandboxBuildError("unregistered_scaffold_exposed_artifact_url")
+        if not result.success:
+            return {**result.output, "project_id": project_id, "actions_taken": result.actions_taken, "next_steps": result.next_steps}
+        artifact = self.artifacts.register_scaffold(user_context.user_id, project_id, result.output)
+        registered = artifact.get("status") == "artifact_registered"
         return {
             **result.output,
             "project_id":   project_id,
+            "scaffold_id": artifact.get("id"),
+            "status": artifact.get("status"),
+            "artifact_registered": registered,
+            "artifact_sha256": (artifact.get("manifest") or {}).get("sha256"),
+            "download_url": f"/api/v1/incubation/builds/{artifact.get('id')}/artifact" if registered else None,
             "actions_taken": result.actions_taken,
             "next_steps":    result.next_steps,
         }
@@ -3096,6 +3135,7 @@ class AppScaffoldService:
         user_context: UserContext,
         scaffold_id:  str,
         deploy_target: str = "vercel",
+        human_approved: bool = False,
     ) -> Dict[str, Any]:
         """
         POST /api/v1/scaffold/{id}/deploy -- 3 execution budget units, Founder Pro+
@@ -3112,33 +3152,28 @@ class AppScaffoldService:
         Returns:
           deploy_status, live_url, build_logs_url, estimated_ready_seconds
         """
-        return {
-            "scaffold_id":          scaffold_id,
-            "deploy_status":        "unavailable",
-            "deploy_target":        deploy_target,
-            "reason_code":          "production_deploy_connector_not_configured",
-            "deployment_started":   False,
-            "build_logs_url":       None,
-            "live_url":             None,
-            "message":              "Deployment is unavailable until an authenticated production connector is configured.",
-        }
+        try:
+            record = await self.artifacts.deploy_registered_artifact(
+                user_context.user_id, scaffold_id, deploy_target, human_approved,
+            )
+        except SandboxBuildError as exc:
+            return {"scaffold_id": scaffold_id, "deploy_status": "unavailable", "reason_code": str(exc), "deployment_started": False, "build_logs_url": None, "live_url": None}
+        deployment = (record.get("checks") or {}).get("deployment") or {}
+        return {"scaffold_id": scaffold_id, "deploy_status": record.get("status"), "deploy_target": deploy_target, "deployment_started": bool(deployment.get("passed")), "deployment_id": deployment.get("deployment_id"), "build_logs_url": deployment.get("logs_url"), "live_url": record.get("previewUrl")}
 
-    def get_deploy_status(self, scaffold_id: str) -> Dict[str, Any]:
+    def get_deploy_status(self, user_id: str, scaffold_id: str) -> Dict[str, Any]:
         """
         GET /api/v1/scaffold/{id}/status -- 0 execution budget units, Free+
 
         Poll deployment status. Frontend calls this every 5 seconds until
         deploy_status = 'deployed'.
         """
-        return {
-            "scaffold_id":   scaffold_id,
-            "deploy_status": "unavailable",
-            "reason_code":   "deployment_record_not_found",
-            "live_url":      None,
-            "ready":         False,
-        }
+        record = self.repo.get_sandbox_build(user_id, scaffold_id)
+        if not record:
+            return {"scaffold_id": scaffold_id, "deploy_status": "unavailable", "reason_code": "deployment_record_not_found", "live_url": None, "ready": False}
+        return {"scaffold_id": scaffold_id, "deploy_status": record.get("status"), "live_url": record.get("previewUrl"), "ready": record.get("status") == "deployed_preview", "deployment": (record.get("checks") or {}).get("deployment")}
 
-    def get_live_url(self, scaffold_id: str) -> Dict[str, Any]:
+    def get_live_url(self, user_id: str, scaffold_id: str) -> Dict[str, Any]:
         """
         GET /api/v1/scaffold/{id}/live-url -- 0 execution budget units, Free+
 
@@ -3146,14 +3181,10 @@ class AppScaffoldService:
         The moment the user sees this is the 'Wait... I just built a product
         in minutes??' moment -- the TechIT growth engine.
         """
-        return {
-            "scaffold_id":       scaffold_id,
-            "live_url":          None,
-            "techit_subdomain":  None,
-            "deploy_status":     "unavailable",
-            "reason_code":       "verified_deployment_record_not_found",
-            "share_message":     None,
-        }
+        record = self.repo.get_sandbox_build(user_id, scaffold_id)
+        if not record or record.get("status") != "deployed_preview" or not record.get("previewUrl"):
+            return {"scaffold_id": scaffold_id, "live_url": None, "deploy_status": "unavailable", "reason_code": "verified_deployment_record_not_found", "share_message": None}
+        return {"scaffold_id": scaffold_id, "live_url": record["previewUrl"], "deploy_status": "deployed_preview", "share_message": "Deployment verified by the authenticated connector."}
 
     def get_available_stacks(self) -> List[Dict[str, Any]]:
         """

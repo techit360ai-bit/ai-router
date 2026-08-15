@@ -179,6 +179,11 @@ def test_service_loads_repository_candidates_before_agent_execution() -> None:
             assert limit == 5
             return [candidate]
 
+        def matching_outcomes(self, user_id: str, match_type: str) -> List[Dict[str, Any]]:
+            assert user_id == "u_test"
+            assert match_type == "founder_builder"
+            return []
+
     class FakeBrain:
         async def trigger_agent(self, _agent_type: Any, context: AgentContext) -> Any:
             assert context.trigger_event["persisted_candidates"] == [candidate]
@@ -212,6 +217,33 @@ def test_service_loads_repository_candidates_before_agent_execution() -> None:
     assert audit["protected_attributes_used"] is False
     assert audit["sensitive_profile_fields_recorded"] is False
     assert "real-user" not in str(audit)
+
+
+def test_investor_matching_uses_persisted_candidates_and_parity_audit() -> None:
+    candidate = {"user_id": "investor-1", "match_score": 88, "evidence": {"source": "persisted_match_record"}}
+
+    class Repo:
+        def collaborator_matches(self, _user_id: str, criteria: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+            assert criteria["match_type"] == "startup_investor"
+            return [candidate]
+
+        def matching_outcomes(self, _user_id: str, match_type: str) -> List[Dict[str, Any]]:
+            assert match_type == "startup_investor"
+            return [{"status": "accepted", "evidence_quality_band": "high"}]
+
+    class Brain:
+        async def trigger_agent(self, _kind: Any, context: AgentContext) -> Any:
+            return SimpleNamespace(output={"matches": context.trigger_event["persisted_candidates"], "evidence_status": "sufficient", "missing_evidence": []})
+
+    class Recorder:
+        def record(self, event: Dict[str, Any]) -> None:
+            self.event = event
+
+    recorder = Recorder()
+    result = asyncio.run(MatchingEngineService(Brain(), Repo(), recorder).find_investors(_user(), {}))  # type: ignore[arg-type]
+    assert result["matches"] == [candidate]
+    assert result["audit"]["event_type"] == "investor_ranking"
+    assert result["audit"]["outcome_parity"]["observed_outcomes"] == 1
 
 
 if __name__ == "__main__":

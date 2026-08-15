@@ -34,6 +34,7 @@ from provider_adapters import (
     call_provider_model,
 )
 from usage_settlement_client import UsageSettlementClient
+from hardening_metrics import METRICS
 
 
 class ExecutionCommandLayer:
@@ -256,6 +257,9 @@ class ExecutionCommandLayer:
     def _build_response(self, request: Any, output: Dict[str, Any], request_id: str,
                         started: float, cached: bool = False) -> Any:
         from ai_router_core import AIResponse
+        routing_metadata = self.model_router.registry.routing_metadata()
+        METRICS.increment("routing_registry_versions", routing_metadata["registry_version"])
+        METRICS.increment("task_policy_versions", routing_metadata["task_policy_version"])
         prompt_tokens = int(output.get("prompt_tokens") or 0)
         completion_tokens = int(output.get("completion_tokens") or 0)
         total_tokens = int(output.get("tokens") or prompt_tokens + completion_tokens)
@@ -278,7 +282,7 @@ class ExecutionCommandLayer:
                 "retry_number": output.get("retry_number", 0),
                 "cache_hit": cached,
                 "provider_cost_usd": output.get("provider_cost_usd"),
-                "routing_registry": self.model_router.registry.routing_metadata(),
+                "routing_registry": routing_metadata,
             },
         )
         return response
@@ -302,6 +306,7 @@ class ExecutionCommandLayer:
             "ip_protected": request.ip_protected,
         }
         self.execution_log.append(event)
+        METRICS.observe_provider(event)
         await self.telemetry.record_attempt(event)
 
     async def _record_successful_attempt(self, request: Any, config: Any, request_id: str,
@@ -327,6 +332,7 @@ class ExecutionCommandLayer:
             "ip_protected": request.ip_protected,
         }
         self.execution_log.append(event)
+        METRICS.observe_provider(event)
         await self.telemetry.record_attempt(event)
 
     async def _record_execution(self, request: Any, response: Any, started: float) -> None:

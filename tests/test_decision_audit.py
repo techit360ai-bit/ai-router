@@ -37,3 +37,17 @@ def test_production_audit_requires_hmac_key(monkeypatch) -> None:
 
     with pytest.raises(DecisionAuditError, match="HMAC_KEY"):
         build_ranking_audit([{"user_id": "candidate"}], "sufficient")
+
+
+def test_outcome_parity_is_measured_without_protected_attributes(monkeypatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    event = build_ranking_audit([], "sufficient", event_type="investor_ranking", outcomes=[
+        {"status": "accepted", "evidence_quality_band": "high"},
+        {"status": "rejected", "evidence_quality_band": "high"},
+        {"status": "accepted", "evidence_quality_band": "medium"},
+    ])
+
+    assert event["event_type"] == "investor_ranking"
+    assert event["outcome_parity"]["status"] == "measured"
+    assert event["outcome_parity"]["maximum_rate_gap"] == 0.5
+    assert event["protected_attributes_used"] is False

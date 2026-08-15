@@ -24,6 +24,7 @@
     "minimum_outcome_coverage": 0.8,
     "maximum_false_positive_rate": 0.1,
     "maximum_false_negative_rate": 0.1,
+    "maximum_brier_score": 0.2,
     "require_calibrated_probability_claims": true
   }
 }
