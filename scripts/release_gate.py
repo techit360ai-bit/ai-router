@@ -14,6 +14,8 @@ ENV_CONTRACT = {
     "ENVIRONMENT": "production",
     "ALLOW_DEMO_AUTH": "false",
     "JWT_ALGORITHM": "HS256",
+    "JWT_ISSUER": "techit-backend",
+    "JWT_AUDIENCE": "techit-platform",
     "JWT_SECRET": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "POSTGRES_PASSWORD": "ci-postgres-password",
     "DATABASE_URL": "postgresql://techit:secret@postgres.example:5432/techit_db",
@@ -26,7 +28,15 @@ ENV_CONTRACT = {
     # never mistake release-gate fixtures for credentials.
     "OPENAI_API_KEY": "ci-openai-placeholder",
     "ANTHROPIC_API_KEY": "ci-anthropic-placeholder",
-    "REQUIRE_AI_EXECUTION_GRANT": "false",
+    "REQUIRE_AI_EXECUTION_GRANT": "true",
+    "AI_EXECUTION_GRANT_SECRET": "ci-execution-grant-secret-0123456789abcdef",
+    "BACKEND_USAGE_SETTLEMENT_URL": "https://api.techit.example/internal/usage-settlement",
+    "AI_ROUTER_SETTLEMENT_SECRET": "ci-settlement-secret-0123456789abcdef",
+    "AWS_S3_BUCKET": "techit-production-uploads",
+    "AWS_ACCESS_KEY_ID": "ci-production-storage-access-key",
+    "AWS_SECRET_ACCESS_KEY": "ci-production-storage-secret-key",
+    "AWS_S3_ENDPOINT": "https://storage.techit.example",
+    "DECISION_AUDIT_HMAC_KEY": "ci-decision-audit-key-0123456789abcdef",
 }
 
 TEST_ENV = {
@@ -43,6 +53,13 @@ def release_gates() -> list[tuple[str, list[str], dict[str, str] | None]]:
     return [
         ("compile", [sys.executable, "-m", "compileall", "-q", "."], None),
         ("deployment-env-contract", [sys.executable, "scripts/validate_env.py"], ENV_CONTRACT),
+        ("hardening-contracts", [sys.executable, "-m", "pytest", "-q",
+          "tests/test_matching_evidence.py", "tests/test_decision_evidence_gates.py",
+          "tests/test_scaffold_integrity.py", "tests/test_scoring_policy_registry.py",
+          "tests/test_offline_evaluation.py", "tests/test_decision_audit.py",
+          "tests/test_registry_freshness.py"], TEST_ENV),
+        ("offline-evaluation", [sys.executable, "scripts/validate_offline_evaluation.py"], TEST_ENV),
+        ("migration-head", [sys.executable, "scripts/validate_migration_head.py"], TEST_ENV),
         ("scalability-readiness", [sys.executable, "scripts/scalability_check.py"], TEST_ENV),
         ("pytest", [sys.executable, "-m", "pytest", "-q"], TEST_ENV),
     ]
