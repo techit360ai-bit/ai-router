@@ -131,10 +131,12 @@ def test_repository_returns_real_match_and_structured_skills() -> None:
             profile_completeness_pct=90,
             github_connected=True,
             linkedin_connected=False,
+            created_at=SimpleNamespace(isoformat=lambda: "2026-08-13T10:00:00"),
         )],
         "user_skill_embeddings": [SimpleNamespace(
             user_id=candidate_id,
             skill_text='{"skills":["Python","FastAPI"]}',
+            updated_at=SimpleNamespace(isoformat=lambda: "2026-08-14T09:00:00"),
         )],
     })
 
@@ -150,6 +152,9 @@ def test_repository_returns_real_match_and_structured_skills() -> None:
     assert matches[0]["match_score"] == 83.4
     assert matches[0]["profile_signals"]["profile_completeness_pct"] == 90
     assert matches[0]["evidence"]["source"] == "persisted_match_record"
+    assert matches[0]["evidence"]["field_provenance"]["match_score"] == "matches.match_score"
+    assert matches[0]["evidence"]["field_confidence"]["skills"] == 1.0
+    assert matches[0]["evidence"]["freshness"]["skills"]["status"] == "known"
 
 
 def test_service_loads_repository_candidates_before_agent_execution() -> None:
@@ -176,13 +181,29 @@ def test_service_loads_repository_candidates_before_agent_execution() -> None:
                 "missing_evidence": [],
             })
 
+    class FakeAuditRecorder:
+        def __init__(self) -> None:
+            self.events: List[Dict[str, Any]] = []
+
+        def record(self, event: Dict[str, Any]) -> None:
+            self.events.append(event)
+
+    recorder = FakeAuditRecorder()
+
     result = asyncio.run(MatchingEngineService(
         FakeBrain(),  # type: ignore[arg-type]
         FakeRepository(),  # type: ignore[arg-type]
+        recorder,  # type: ignore[arg-type]
     ).find_collaborators(_user(), {"limit": 5}))
 
     assert result["matches"] == [candidate]
     assert result["evidence_status"] == "sufficient"
+    assert len(recorder.events) == 1
+    audit = recorder.events[0]
+    assert audit["ranking_exposure"][0]["candidate_ref"] != candidate["user_id"]
+    assert audit["protected_attributes_used"] is False
+    assert audit["sensitive_profile_fields_recorded"] is False
+    assert "real-user" not in str(audit)
 
 
 if __name__ == "__main__":

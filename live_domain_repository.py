@@ -303,7 +303,9 @@ class LiveDomainRepository:
             for row in skill_rows:
                 if row.user_id in skill_evidence:
                     continue
-                skill_evidence[row.user_id] = self._skill_evidence(row.skill_text)
+                parsed = self._skill_evidence(row.skill_text)
+                parsed["observed_at"] = _iso(getattr(row, "updated_at", None))
+                skill_evidence[row.user_id] = parsed
 
             required_skills = {
                 str(value).strip().casefold()
@@ -317,7 +319,10 @@ class LiveDomainRepository:
                 user = users.get(row.candidate_id)
                 if user is None:
                     continue
-                skills = skill_evidence.get(row.candidate_id, {"skills": [], "summary": None})
+                skills = skill_evidence.get(
+                    row.candidate_id,
+                    {"skills": [], "summary": None, "observed_at": None},
+                )
                 normalized_skills = {skill.casefold() for skill in skills["skills"]}
                 if required_skills and not required_skills.issubset(normalized_skills):
                     continue
@@ -362,6 +367,53 @@ class LiveDomainRepository:
                         "policy_id": None,
                         "policy_status": "legacy_or_unversioned",
                         "skill_source": "user_skill_embeddings" if skills["summary"] else None,
+                        "freshness": {
+                            "match_score": {
+                                "status": "known" if row.created_at else "unknown",
+                                "observed_at": _iso(row.created_at),
+                            },
+                            "profile": {
+                                "status": "known" if getattr(user, "created_at", None) else "unknown",
+                                "observed_at": _iso(getattr(user, "created_at", None)),
+                            },
+                            "skills": {
+                                "status": "known" if skills.get("observed_at") else "unknown",
+                                "observed_at": skills.get("observed_at"),
+                            },
+                        },
+                        "field_provenance": {
+                            "name": "users.full_name",
+                            "role": "users.role",
+                            "profile_signals": "users.profile_signals",
+                            "skills": "user_skill_embeddings.skill_text",
+                            "match_components": "matches.component_scores",
+                            "match_score": "matches.match_score",
+                            "risk_flags": "matches.risk_flags",
+                        },
+                        "field_confidence": {
+                            "name": 1.0 if user.full_name else 0.0,
+                            "skills": 1.0 if skills["skills"] else 0.0,
+                            "match_score": 1.0,
+                            "availability_overlap": 1.0 if row.availability_overlap is not None else 0.0,
+                            "trust_score": 1.0 if row.trust_score is not None else 0.0,
+                        },
+                        "missing_fields": [
+                            field for field, value in {
+                                "name": user.full_name,
+                                "skills": skills["skills"],
+                                "availability_overlap": row.availability_overlap,
+                                "trust_score": row.trust_score,
+                            }.items() if value in (None, [], "")
+                        ],
+                        "missing_field_reasons": {
+                            field: "not_recorded"
+                            for field, value in {
+                                "name": user.full_name,
+                                "skills": skills["skills"],
+                                "availability_overlap": row.availability_overlap,
+                                "trust_score": row.trust_score,
+                            }.items() if value in (None, [], "")
+                        },
                     },
                 })
                 if len(candidates) >= requested_limit:
