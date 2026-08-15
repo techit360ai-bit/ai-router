@@ -526,6 +526,7 @@ class InvestorIntelligenceAgent(BaseAgent):
                 "score_kind": "heuristic_human_review_required",
                 "probability_calibrated": False,
                 "human_review_required": True,
+                "policy": ScoringEngine.policy_metadata(),
             },
             actions,
             ["Collect the missing verified investor evidence"] if missing_evidence else
@@ -929,6 +930,7 @@ class MatchingAgent(BaseAgent):
                 "explanations": ai.output if ai else None,
                 "evidence_status": evidence_status,
                 "missing_evidence": [] if verified else ["persisted_match_candidates"],
+                "policy": ScoringEngine.policy_metadata(),
             },
             [f"Found {len(verified)} persisted compatible matches"],
             ["Review evidence and compatibility before outreach"] if verified else

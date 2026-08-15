@@ -20,6 +20,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import sessionmaker
 
 from runtime_config import PROD_ENVS, database_engine_options
+from policy_registry import SCORING_POLICY
 from database_schema import (
     CapTableEntry,
     CapitalPool,
@@ -358,6 +359,8 @@ class LiveDomainRepository:
                         "source": "persisted_match_record",
                         "match_id": str(row.id),
                         "computed_at": _iso(row.created_at),
+                        "policy_id": None,
+                        "policy_status": "legacy_or_unversioned",
                         "skill_source": "user_skill_embeddings" if skills["summary"] else None,
                     },
                 })
@@ -1065,7 +1068,11 @@ class LiveDomainRepository:
 
     def deal_room_detail(self, investor_id: str, project_id: str, startup: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         stage_order = ["Intro Call", "NDA Signed", "Due Diligence", "Term Sheet", "Negotiation", "Deal Closed"]
-        valuation = _num((startup or {}).get("mrr")) * 12 * 8
+        valuation = (
+            _num((startup or {}).get("mrr"))
+            * 12
+            * float(SCORING_POLICY["valuation"]["arr_multiple"])
+        )
         if not self.database_backed:
             room = next((r for r in _MEMORY["dealRooms"] if r.get("investorId") == investor_id and r.get("projectId") == project_id), None)
             if room is None:
