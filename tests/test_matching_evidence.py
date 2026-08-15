@@ -155,6 +155,14 @@ def test_repository_returns_real_match_and_structured_skills() -> None:
     assert matches[0]["evidence"]["field_provenance"]["match_score"] == "matches.match_score"
     assert matches[0]["evidence"]["field_confidence"]["skills"] == 1.0
     assert matches[0]["evidence"]["freshness"]["skills"]["status"] == "known"
+    assert matches[0]["evidence"]["policy_id"] is None
+    assert matches[0]["evidence"]["policy_status"] == "legacy_or_unversioned"
+
+
+def test_match_policy_status_recognizes_only_active_policy() -> None:
+    assert LiveDomainRepository._match_policy_status("techit-scoring-2026-08-14-v1") == "current"
+    assert LiveDomainRepository._match_policy_status(None) == "legacy_or_unversioned"
+    assert LiveDomainRepository._match_policy_status("older-policy") == "legacy_or_unversioned"
 
 
 def test_service_loads_repository_candidates_before_agent_execution() -> None:

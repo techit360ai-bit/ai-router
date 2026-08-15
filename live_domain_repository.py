@@ -339,6 +339,8 @@ class LiveDomainRepository:
                     continue
 
                 role = user.role.value if hasattr(user.role, "value") else str(user.role)
+                persisted_policy_id = getattr(row, "policy_id", None)
+                policy_status = self._match_policy_status(persisted_policy_id)
                 candidates.append({
                     "match_id": str(row.id),
                     "user_id": str(user.id),
@@ -364,8 +366,8 @@ class LiveDomainRepository:
                         "source": "persisted_match_record",
                         "match_id": str(row.id),
                         "computed_at": _iso(row.created_at),
-                        "policy_id": None,
-                        "policy_status": "legacy_or_unversioned",
+                        "policy_id": persisted_policy_id,
+                        "policy_status": policy_status,
                         "skill_source": "user_skill_embeddings" if skills["summary"] else None,
                         "freshness": {
                             "match_score": {
@@ -438,6 +440,13 @@ class LiveDomainRepository:
             return {"skills": [], "summary": summary}
         skills = [str(item).strip() for item in structured if str(item).strip()]
         return {"skills": skills, "summary": summary}
+
+    @staticmethod
+    def _match_policy_status(policy_id: Any) -> str:
+        return (
+            "current" if policy_id == SCORING_POLICY["policy_id"]
+            else "legacy_or_unversioned"
+        )
 
     # ------------------------------------------------------------------
     # Founder projects, dashboard scores, incubation persistence

@@ -860,6 +860,7 @@ class Match(Base):
     candidate_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     project_id   = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True)
     match_type   = Column(String(30), nullable=False)
+    policy_id    = Column(String(120), nullable=True)
 
     skill_similarity           = Column(Float)
     goal_similarity            = Column(Float)
