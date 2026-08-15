@@ -1,0 +1,65 @@
+{
+  "policy_id": "techit-scoring-2026-08-14-v1",
+  "effective_at": "2026-08-14T00:00:00Z",
+  "owner": "platform-risk",
+  "changelog": [
+    {
+      "version": "v1",
+      "effective_at": "2026-08-14T00:00:00Z",
+      "summary": "Initial registry migration preserving existing deterministic scoring behavior."
+    }
+  ],
+  "unicorn": {
+    "weights": {
+      "market_size": 0.15,
+      "problem_severity": 0.12,
+      "founder_advantage": 0.10,
+      "technological_moat": 0.12,
+      "scalability": 0.12,
+      "network_effects": 0.10,
+      "revenue_model_strength": 0.10,
+      "market_timing": 0.08,
+      "competition_landscape": 0.06,
+      "capital_efficiency": 0.05
+    },
+    "tiers": [
+      [90, 100, "Unicorn Candidate", "🦄"],
+      [75, 90, "High Potential Startup", "🚀"],
+      [65, 75, "Early Traction Potential", "📈"],
+      [50, 65, "Pre-Aha Stage", "🔍"],
+      [30, 50, "Idea Stage", "💡"],
+      [0, 30, "Weak Opportunity", "⚠️"]
+    ]
+  },
+  "gsis": {
+    "weights": {
+      "product_progress": 0.15,
+      "execution_velocity": 0.15,
+      "market_readiness": 0.20,
+      "beta_satisfaction": 0.10,
+      "revenue_growth": 0.10,
+      "founder_reputation": 0.10,
+      "community_influence": 0.05,
+      "investor_interest": 0.10,
+      "compliance": 0.05
+    },
+    "tiers": [[85, "Elite -- investor-ready"], [70, "Strong -- market-ready"], [55, "Developing -- on track"], [40, "Early -- needs focus"], [0, "At risk -- intervention needed"]],
+    "alert": {"trigger_above": 60, "risk_floor": 50, "delay_floor": 40, "drop_floor": 40}
+  },
+  "evi_investor": {
+    "weights": {"mdr": 0.25, "is": 0.20, "trv": 0.15, "rta": 0.20, "ugm": 0.10, "cev": 0.10},
+    "signal_thresholds": [[85, "exceptional_velocity"], [70, "strong_velocity"], [55, "moderate_velocity"], [40, "slow_velocity"], [0, "stalled"]]
+  },
+  "investment": {"weights": {"market_readiness": 0.30, "traction": 0.25, "team": 0.15, "risk_inverse": 0.15, "growth": 0.10, "differentiation": 0.05}},
+  "match": {
+    "weights": {"skill": 0.30, "goal": 0.20, "execution_style": 0.15, "availability": 0.15, "trust": 0.10, "domain": 0.10},
+    "minimums": {"recommended": 75, "review": 55}
+  },
+  "decay": {"exponent_per_inactive_day": 0.02},
+  "valuation": {"arr_multiple": 8.0},
+  "calibration": {
+    "status": "not_calibrated",
+    "probability_claims_allowed": false,
+    "evaluation_contract_id": "techit-offline-evaluation-2026-08-15-v1"
+  }
+}

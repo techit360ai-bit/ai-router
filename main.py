@@ -69,6 +69,9 @@ from runtime_config import (
 )
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
+from live_domain_repository import LiveDomainRepository
+from hardening_metrics import METRICS
+from production_calibration import ProductionCalibrationError, production_report, record_outcome
 
 logger = structlog.get_logger()
 
@@ -452,6 +455,35 @@ async def ready():
     if not ok:
         return JSONResponse(status_code=503, content=body)
     return body
+
+
+@app.get("/api/v1/admin/hardening-metrics", tags=["Admin"])
+async def hardening_metrics(user: UserContext = Depends(get_user_context)):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    return METRICS.snapshot()
+
+
+@app.post("/api/v1/admin/calibration/outcomes", tags=["Admin"])
+async def calibration_outcome(
+    body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    try:
+        row = record_outcome(db, body)
+    except ProductionCalibrationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"decision_id": row.decision_id, "domain": row.domain, "policy_id": row.policy_id, "recorded": True}
+
+
+@app.get("/api/v1/admin/calibration/report", tags=["Admin"])
+async def calibration_report(
+    policy_id: Optional[str] = None, user: UserContext = Depends(get_user_context), db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    return production_report(db, policy_id)
 
 
 @app.get("/", tags=["Status"])
@@ -863,6 +895,7 @@ async def investor_readiness(
 async def generate_scaffold(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
     """
     Generate a complete application scaffold from the venture profile.
@@ -875,10 +908,16 @@ async def generate_scaffold(
                                       react_firebase | expo_supabase | fastapi_supabase
       venture_data  (optional) dict -- uses pipeline output if omitted
     """
-    return await AppScaffoldService(brain).generate_scaffold(
+    project_id = body.get("project_id") or user.project_id
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id is required")
+    stack_choice = body.get("stack_choice")
+    if not stack_choice:
+        raise HTTPException(status_code=422, detail="stack_choice is required")
+    return await AppScaffoldService(brain, LiveDomainRepository(db)).generate_scaffold(
         user_context=user,
-        project_id=body.get("project_id", user.project_id or "proj_001"),
-        stack_choice=body.get("stack_choice", "nextjs_supabase"),
+        project_id=str(project_id),
+        stack_choice=str(stack_choice),
         venture_data=body.get("venture_data"),
         arch_data=body.get("arch_data"),
     )
@@ -889,16 +928,18 @@ async def deploy_scaffold(
     scaffold_id: str,
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
     """
     Trigger 1-click Vercel deployment of a generated scaffold.
     3 execution budget units. Founder Pro+
     Returns: deploy_status, live_url, build_logs_url, estimated_ready_seconds
     """
-    return await AppScaffoldService(brain).deploy_scaffold(
+    return await AppScaffoldService(brain, LiveDomainRepository(db)).deploy_scaffold(
         user_context=user,
         scaffold_id=scaffold_id,
         deploy_target=body.get("deploy_target", "vercel"),
+        human_approved=body.get("human_approved") is True,
     )
 
 
@@ -906,18 +947,20 @@ async def deploy_scaffold(
 async def scaffold_status(
     scaffold_id: str,
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
     """Poll deployment status. 0 execution budget units, Free+"""
-    return AppScaffoldService(brain).get_deploy_status(scaffold_id)
+    return AppScaffoldService(brain, LiveDomainRepository(db)).get_deploy_status(user.user_id, scaffold_id)
 
 
 @app.get("/api/v1/scaffold/{scaffold_id}/live-url", tags=["Prompt -> Live App"])
 async def scaffold_live_url(
     scaffold_id: str,
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
     """Get live URL after deployment. 0 execution budget units, Free+"""
-    return AppScaffoldService(brain).get_live_url(scaffold_id)
+    return AppScaffoldService(brain, LiveDomainRepository(db)).get_live_url(user.user_id, scaffold_id)
 
 
 @app.get("/api/v1/scaffold/{project_id}", tags=["Prompt -> Live App"])
@@ -1220,9 +1263,22 @@ async def update_progress(
 async def find_collaborators(
     criteria: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
-    """Find compatible collaborators via vector + rules + LLM. 1 execution budget unit, Builder+"""
-    return await MatchingEngineService(brain).find_collaborators(user, criteria)
+    """Find collaborators from persisted match evidence. 1 execution budget unit, Builder+"""
+    return await MatchingEngineService(
+        brain,
+        LiveDomainRepository(db),
+    ).find_collaborators(user, criteria)
+
+
+@app.post("/api/v1/matching/find-investors", tags=["Matching"])
+async def find_investors(
+    startup_profile: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    return await MatchingEngineService(brain, LiveDomainRepository(db)).find_investors(user, startup_profile)
 
 
 # ============================================================================

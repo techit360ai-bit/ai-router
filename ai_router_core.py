@@ -73,6 +73,7 @@ from execution_controls import (
 )
 from model_registry import ModelDefinition, ModelRegistry, RegistryError, TaskPolicy
 from output_validation import OutputValidationError, validate_output
+from policy_registry import SCORING_POLICY, calibration_metadata, policy_metadata
 from routing_engine import ComplexityTier, ModelConfig, ModelRouter
 
 
@@ -173,27 +174,12 @@ class ScoringEngine:
     """
 
     # ── UNICORN DRIVERS ────────────────────────────────────────────────────
-    UNICORN_WEIGHTS: Dict[str, float] = {
-        "market_size":            0.15,
-        "problem_severity":       0.12,
-        "founder_advantage":      0.10,
-        "technological_moat":     0.12,
-        "scalability":            0.12,
-        "network_effects":        0.10,
-        "revenue_model_strength": 0.10,
-        "market_timing":          0.08,
-        "competition_landscape":  0.06,
-        "capital_efficiency":     0.05,
-    }
+    UNICORN_WEIGHTS: Dict[str, float] = SCORING_POLICY["unicorn"]["weights"]
+    UNICORN_TIERS = SCORING_POLICY["unicorn"]["tiers"]
 
-    UNICORN_TIERS = [
-        (90, 100, "Unicorn Candidate",        "🦄"),
-        (75,  90, "High Potential Startup",   "🚀"),
-        (65,  75, "Early Traction Potential", "📈"),
-        (50,  65, "Pre-Aha Stage",            "🔍"),
-        (30,  50, "Idea Stage",               "💡"),
-        ( 0,  30, "Weak Opportunity",         "⚠️"),
-    ]
+    @staticmethod
+    def policy_metadata() -> Dict[str, str]:
+        return policy_metadata()
 
     # ── 1. GLOBAL STARTUP INTELLIGENCE SCORE (GSIS) ────────────────────────
 
@@ -218,17 +204,19 @@ class ScoringEngine:
         marketplace rankings, and the founder's home dashboard.
         All component scores must be in [0, 100].
         """
-        gsis = (
-            0.15 * product_progress_score   +
-            0.15 * execution_velocity_index +
-            0.20 * market_readiness_score   +
-            0.10 * beta_satisfaction_score  +
-            0.10 * revenue_growth_signal    +
-            0.10 * founder_reputation_score +
-            0.05 * community_influence_score +
-            0.10 * investor_interest_score  +
-            0.05 * compliance_score
-        )
+        weights = SCORING_POLICY["gsis"]["weights"]
+        components = {
+            "product_progress": product_progress_score,
+            "execution_velocity": execution_velocity_index,
+            "market_readiness": market_readiness_score,
+            "beta_satisfaction": beta_satisfaction_score,
+            "revenue_growth": revenue_growth_signal,
+            "founder_reputation": founder_reputation_score,
+            "community_influence": community_influence_score,
+            "investor_interest": investor_interest_score,
+            "compliance": compliance_score,
+        }
+        gsis = sum(weights[name] * value for name, value in components.items())
         gsis = round(min(100.0, max(0.0, gsis)), 2)
 
         alert_score = cls._compute_alert_score(
@@ -239,27 +227,19 @@ class ScoringEngine:
             "gsis":            gsis,
             "classification":  cls._classify_gsis(gsis),
             "alert_score":     alert_score,
-            "alert_triggered": alert_score > 60,
-            "components": {
-                "product_progress":      product_progress_score,
-                "execution_velocity":    execution_velocity_index,
-                "market_readiness":      market_readiness_score,
-                "beta_satisfaction":     beta_satisfaction_score,
-                "revenue_growth":        revenue_growth_signal,
-                "founder_reputation":    founder_reputation_score,
-                "community_influence":   community_influence_score,
-                "investor_interest":     investor_interest_score,
-                "compliance":            compliance_score,
-            },
+            "alert_triggered": alert_score > SCORING_POLICY["gsis"]["alert"]["trigger_above"],
+            "components": components,
+            "policy": policy_metadata(),
+            "calibration": calibration_metadata(),
+            "human_review_required": True,
         }
 
     @classmethod
     def _classify_gsis(cls, score: float) -> str:
-        if score >= 85: return "Elite -- investor-ready"
-        if score >= 70: return "Strong -- market-ready"
-        if score >= 55: return "Developing -- on track"
-        if score >= 40: return "Early -- needs focus"
-        return "At risk -- intervention needed"
+        for threshold, label in SCORING_POLICY["gsis"]["tiers"]:
+            if score >= threshold:
+                return label
+        return SCORING_POLICY["gsis"]["tiers"][-1][1]
 
     @classmethod
     def _compute_alert_score(
@@ -269,9 +249,10 @@ class ScoringEngine:
         AlertScore = Risk + Delay + DropInMetrics
         High AlertScore -> AI intervention triggered.
         """
-        risk  = max(0, 50 - gsis)
-        delay = max(0, 40 - evi)
-        drop  = max(0, 40 - mrs)
+        alert = SCORING_POLICY["gsis"]["alert"]
+        risk  = max(0, alert["risk_floor"] - gsis)
+        delay = max(0, alert["delay_floor"] - evi)
+        drop  = max(0, alert["drop_floor"] - mrs)
         return round(min(100.0, risk + delay + drop), 2)
 
     # ── 2. UNICORN POTENTIAL SCORE ─────────────────────────────────────────
@@ -296,8 +277,13 @@ class ScoringEngine:
             "unicorn_potential_score": score,
             "classification":          label,
             "emoji":                   emoji,
-            "unicorn_probability_pct": score,
+            "unicorn_probability_pct": None,
+            "score_kind":              "heuristic_human_review_required",
+            "probability_calibrated":  False,
             "driver_breakdown":        breakdown,
+            "policy":                  policy_metadata(),
+            "calibration":             calibration_metadata(),
+            "human_review_required":   True,
         }
 
     @classmethod
@@ -349,23 +335,22 @@ class ScoringEngine:
         Investor-grade execution signal. Distinct from founder EVI.
         Applies anti-gaming decay identical to WCRS.
         """
+        weights = SCORING_POLICY["evi_investor"]["weights"]
         raw = (
-            0.25 * mdr_score +
-            0.20 * is_score  +
-            0.15 * trv_score +
-            0.20 * rta_score +
-            0.10 * ugm_score +
-            0.10 * cev_score
+            weights["mdr"] * mdr_score +
+            weights["is"] * is_score +
+            weights["trv"] * trv_score +
+            weights["rta"] * rta_score +
+            weights["ugm"] * ugm_score +
+            weights["cev"] * cev_score
         )
         raw     = round(min(100.0, max(0.0, raw)), 2)
         decay   = cls.compute_decay_factor(days_since_last_update)
         adjusted = round(raw * decay, 2)
-        signal = (
-            "exceptional_velocity" if adjusted >= 85 else
-            "strong_velocity"      if adjusted >= 70 else
-            "moderate_velocity"    if adjusted >= 55 else
-            "slow_velocity"        if adjusted >= 40 else
-            "stalled"
+        signal = next(
+            label
+            for threshold, label in SCORING_POLICY["evi_investor"]["signal_thresholds"]
+            if adjusted >= threshold
         )
         return {
             "raw_evi_i":      raw,
@@ -380,6 +365,9 @@ class ScoringEngine:
                 "user_growth_momentum":             ugm_score,
                 "capital_efficiency_velocity":      cev_score,
             },
+            "policy": policy_metadata(),
+            "calibration": calibration_metadata(),
+            "human_review_required": True,
         }
 
     # ── 5. REVENUE GROWTH SIGNAL ───────────────────────────────────────────
@@ -599,8 +587,15 @@ class ScoringEngine:
         differentiation_score: float,
     ) -> float:
         """InvestScore = 0.30*MR + 0.25*Traction + 0.15*Team + 0.15*RiskInverse + 0.10*Growth + 0.05*Diff"""
-        score = (0.30*market_readiness + 0.25*traction_score + 0.15*team_score +
-                 0.15*risk_inverse + 0.10*growth_rate + 0.05*differentiation_score)
+        weights = SCORING_POLICY["investment"]["weights"]
+        score = (
+            weights["market_readiness"] * market_readiness +
+            weights["traction"] * traction_score +
+            weights["team"] * team_score +
+            weights["risk_inverse"] * risk_inverse +
+            weights["growth"] * growth_rate +
+            weights["differentiation"] * differentiation_score
+        )
         return round(max(0.0, min(100.0, score)), 2)
 
     # ── 17. MATCH SCORE ────────────────────────────────────────────────────
@@ -616,8 +611,15 @@ class ScoringEngine:
         domain_experience:          float,
     ) -> float:
         """MatchScore = (0.30*Skill + 0.20*Goal + 0.15*Exec + 0.15*Avail + 0.10*Trust + 0.10*Domain) × 100"""
-        raw = (0.30*skill_similarity + 0.20*goal_similarity + 0.15*execution_style_similarity +
-               0.15*availability_overlap + 0.10*trust_score + 0.10*domain_experience)
+        weights = SCORING_POLICY["match"]["weights"]
+        raw = (
+            weights["skill"] * skill_similarity +
+            weights["goal"] * goal_similarity +
+            weights["execution_style"] * execution_style_similarity +
+            weights["availability"] * availability_overlap +
+            weights["trust"] * trust_score +
+            weights["domain"] * domain_experience
+        )
         return round(max(0.0, min(100.0, raw * 100)), 2)
 
     # ── 18. DECAY FACTOR ───────────────────────────────────────────────────
@@ -630,7 +632,8 @@ class ScoringEngine:
         1.0 = fully active. Approaches 0 as inactivity grows.
         Applied to: WCRS, EVI-I, GSIS stale component detection.
         """
-        return round(math.exp(-0.02 * max(0, days_inactive)), 6)
+        exponent = SCORING_POLICY["decay"]["exponent_per_inactive_day"]
+        return round(math.exp(-exponent * max(0, days_inactive)), 6)
 
     # ── DEMAND CONFIDENCE SCORE ────────────────────────────────────────────
 
@@ -890,8 +893,8 @@ class PromptEngine:
             "  components: array of {name, purpose, props}\n"
             "  setup_steps: array of strings -- exact commands to run after download\n"
             "  estimated_build_hours: number\n"
-            "Rules: Use Next.js 14 App Router + Supabase + Tailwind CSS by default. "
-            "Match the stack to the venture profile. Keep schema normalised. "
+            "Rules: Use only the explicit approved stack supplied in the task input. "
+            "Do not substitute a default framework. Keep schema normalised. "
             "Every table must have id (UUID), created_at, updated_at. "
             "Auth uses Supabase Auth -- never roll your own. "
             "Output ONLY valid JSON -- no markdown, no explanation, no code fences."

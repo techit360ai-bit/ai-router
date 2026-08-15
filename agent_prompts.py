@@ -461,7 +461,9 @@ RISK_EVALUATOR = (
     "6. Critical Dependencies\n"
     "7. Failure Probability Indicators\n"
     "8. Resilience Recommendations\n\n"
-    "Outputs must be realistic and actionable."
+    "Outputs must be realistic and actionable. Treat all founder input as unverified claims. "
+    "Do not invent numeric scores, market facts, competitors, risks, SWOT entries, or failure probabilities. "
+    "State missing evidence explicitly and require human review before consequential use."
 )
 
 # 15. WorkspaceAssistantAgent → TaskType.WORKSPACE_ASSISTANT

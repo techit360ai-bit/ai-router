@@ -27,7 +27,9 @@
         "AI_ROUTER_SERVICE_ID",
         "AI_SETTLEMENT_OUTBOX_ENABLED",
         "MODEL_REGISTRY_PATH",
-        "TASK_POLICY_PATH"
+        "TASK_POLICY_PATH",
+        "SCORING_POLICY_PATH",
+        "DECISION_AUDIT_HMAC_KEY"
       ],
       "healthCheck": {
         "method": "GET",

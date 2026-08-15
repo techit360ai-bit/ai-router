@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
@@ -100,6 +101,10 @@ class ModelRegistry:
             or os.getenv("TASK_POLICY_PATH", str(DEFAULT_TASK_POLICIES))
         )
         self.version = ""
+        self.task_policy_version = ""
+        self.registry_updated_at = ""
+        self.task_policy_updated_at = ""
+        self.owner = ""
         self.providers: Dict[str, ProviderDefinition] = {}
         self.models: Dict[str, ModelDefinition] = {}
         self.task_policies: Dict[str, TaskPolicy] = {}
@@ -120,9 +125,18 @@ class ModelRegistry:
     def _load(self) -> None:
         registry = self._read_json(self.model_registry_path)
         policies = self._read_json(self.task_policy_path)
+        self._validate_document_metadata(registry, "model registry")
+        self._validate_document_metadata(policies, "task policy registry")
         self.version = str(registry.get("version") or "unversioned")
+        self.task_policy_version = str(policies.get("version") or "unversioned")
+        self.registry_updated_at = str(registry["updated_at"])
+        self.task_policy_updated_at = str(policies["updated_at"])
+        self.owner = str(registry["owner"])
 
         for raw in registry.get("providers", []):
+            missing_provider = [field for field in ("id", "adapter", "api_key_env") if field not in raw]
+            if missing_provider:
+                raise RegistryError(f"provider metadata is incomplete: {', '.join(missing_provider)}")
             provider = ProviderDefinition(
                 id=str(raw["id"]),
                 adapter=str(raw["adapter"]),
@@ -137,6 +151,14 @@ class ModelRegistry:
             self.providers[provider.id] = provider
 
         for raw in registry.get("models", []):
+            required_model_fields = (
+                "id", "provider", "upstream_model", "enabled", "user_selectable",
+                "quality_tier", "quality_score", "latency_score", "context_window",
+                "max_output_tokens", "capabilities",
+            )
+            missing_model = [field for field in required_model_fields if field not in raw]
+            if missing_model:
+                raise RegistryError(f"model metadata is incomplete: {', '.join(missing_model)}")
             model = ModelDefinition(
                 id=str(raw["id"]),
                 provider=str(raw["provider"]),
@@ -159,6 +181,10 @@ class ModelRegistry:
                 raise RegistryError(f"model {model.id} references unknown provider {model.provider}")
             if model.id in self.models:
                 raise RegistryError(f"duplicate model id: {model.id}")
+            if not 0 <= model.quality_score <= 100 or not 0 <= model.latency_score <= 100:
+                raise RegistryError(f"model quality/latency score is invalid: {model.id}")
+            if model.context_window <= 0 or model.max_output_tokens <= 0 or not model.capabilities:
+                raise RegistryError(f"model execution metadata is invalid: {model.id}")
             self.models[model.id] = model
 
         defaults = policies.get("defaults") or {}
@@ -185,6 +211,39 @@ class ModelRegistry:
 
         if not self.providers or not self.models or not self.task_policies:
             raise RegistryError("provider, model, and task policy registries must not be empty")
+
+    @staticmethod
+    def _validate_document_metadata(document: Mapping[str, Any], name: str) -> None:
+        if document.get("schema_version") != 1:
+            raise RegistryError(f"{name} schema_version must be 1")
+        for field in ("version", "updated_at", "owner"):
+            if not isinstance(document.get(field), str) or not document[field].strip():
+                raise RegistryError(f"{name} requires non-empty {field}")
+        try:
+            updated_at = datetime.fromisoformat(document["updated_at"].replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise RegistryError(f"{name} updated_at must be an ISO timestamp") from exc
+        environment = os.getenv("ENVIRONMENT", "development").strip().lower()
+        if environment not in {"production", "staging"}:
+            return
+        now = datetime.now(timezone.utc)
+        if updated_at > now:
+            raise RegistryError(f"{name} updated_at cannot be in the future")
+        try:
+            max_age_days = float(os.getenv("MODEL_REGISTRY_MAX_AGE_DAYS", "30"))
+        except ValueError as exc:
+            raise RegistryError("MODEL_REGISTRY_MAX_AGE_DAYS must be numeric") from exc
+        if max_age_days < 0 or (now - updated_at).total_seconds() > max_age_days * 86400:
+            raise RegistryError(f"{name} is stale for production routing")
+
+    def routing_metadata(self) -> Dict[str, str]:
+        return {
+            "registry_version": self.version,
+            "registry_updated_at": self.registry_updated_at,
+            "task_policy_version": self.task_policy_version,
+            "task_policy_updated_at": self.task_policy_updated_at,
+            "owner": self.owner,
+        }
 
     @staticmethod
     def _optional_float(value: Any) -> Optional[float]:

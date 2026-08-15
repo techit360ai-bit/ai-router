@@ -63,6 +63,8 @@ from ai_router_core import (
     UserContext, TaskType, UserRole,
     ScoringEngine,
 )
+from output_validation import OutputValidationError, validate_output
+from policy_registry import calibration_metadata
 
 
 # ============================================================================
@@ -362,7 +364,7 @@ class UnicornEvaluatorAgent(BaseAgent):
         return AgentResult(
             AgentType.UNICORN_EVALUATOR, True,
             {**ups, "ai_analysis": ai.output},
-            [f"Computed UPS: {ups['unicorn_potential_score']}% ({ups['classification']})"],
+            [f"Computed heuristic UPS: {ups['unicorn_potential_score']}/100 ({ups['classification']})"],
             recs, ["Run MarketIntelligenceAgent", "Run ProductFeasibilityAgent"],
             ms, ai.tokens_used,
         )
@@ -456,46 +458,102 @@ class InvestorIntelligenceAgent(BaseAgent):
     async def execute(self, context: AgentContext) -> AgentResult:
         t0  = datetime.now()
         ups = context.shared_memory.get("unicorn_evaluation", {})
-        score = ups.get("unicorn_potential_score", 50)
+        investment_fields = {
+            "market_readiness": context.shared_memory.get("market_readiness"),
+            "traction_score": context.shared_memory.get("traction_score"),
+            "team_score": context.shared_memory.get("team_score"),
+            "risk_inverse": context.shared_memory.get("risk_inverse"),
+            "growth_rate": context.shared_memory.get("growth_rate"),
+            "differentiation_score": context.shared_memory.get("differentiation_score"),
+        }
+        evi_fields = {
+            "mdr": context.shared_memory.get("mdr"),
+            "is": context.shared_memory.get("is"),
+            "trv": context.shared_memory.get("trv"),
+            "rta": context.shared_memory.get("rta"),
+            "ugm": context.shared_memory.get("ugm"),
+            "cev": context.shared_memory.get("cev"),
+        }
+        valid_investment, missing_investment = self._validated_scores(investment_fields)
+        valid_evi, missing_evi = self._validated_scores(evi_fields)
 
-        invest_score = ScoringEngine.compute_investment_score(
-            market_readiness=context.shared_memory.get("market_readiness", 60),
-            traction_score=min(100, context.user_context.beta_users_count * 2),
-            team_score=min(100, context.user_context.team_size * 15),
-            risk_inverse=max(0, 100 - (100 - score)),
-            growth_rate=context.shared_memory.get("growth_rate", 30),
-            differentiation_score=score * 0.7,
-        )
+        invest_score = None
+        if not missing_investment:
+            invest_score = ScoringEngine.compute_investment_score(**valid_investment)
 
-        # EVI-I computed from available signals
-        evi_i = ScoringEngine.compute_evi_investor(
-            mdr_score=context.shared_memory.get("mdr", 70),
-            is_score=context.shared_memory.get("is", 65),
-            trv_score=context.shared_memory.get("trv", 75),
-            rta_score=min(100, context.user_context.beta_users_count * 1.5),
-            ugm_score=min(100, context.user_context.beta_users_count),
-            cev_score=context.shared_memory.get("cev", 60),
-            days_since_last_update=context.user_context.days_since_update,
-        )
+        evi_i = None
+        if not missing_evi:
+            evi_i = ScoringEngine.compute_evi_investor(
+                mdr_score=valid_evi["mdr"],
+                is_score=valid_evi["is"],
+                trv_score=valid_evi["trv"],
+                rta_score=valid_evi["rta"],
+                ugm_score=valid_evi["ugm"],
+                cev_score=valid_evi["cev"],
+                days_since_last_update=context.user_context.days_since_update,
+            )
 
-        ai = await self._call_ai(
-            TaskType.INVESTOR_SIGNAL,
-            {"venture_profile": context.shared_memory.get("venture_profile", {}),
-             "unicorn_evaluation": ups,
-             "investment_score": invest_score,
-             "evi_i": evi_i},
-            context.user_context, max_tokens=3000,
-        )
+        missing_evidence = [
+            *(f"investment.{name}" for name in missing_investment),
+            *(f"evi_i.{name}" for name in missing_evi),
+        ]
+        evidence_status = "sufficient" if not missing_evidence else "insufficient_evidence"
+        ai = None
+        if evidence_status == "sufficient":
+            ai = await self._call_ai(
+                TaskType.INVESTOR_SIGNAL,
+                {"venture_profile": context.shared_memory.get("venture_profile", {}),
+                 "unicorn_evaluation": ups,
+                 "investment_score": invest_score,
+                 "evi_i": evi_i,
+                 "score_kind": "heuristic_human_review_required"},
+                context.user_context, max_tokens=3000,
+            )
         ms = int((datetime.now() - t0).total_seconds() * 1000)
+        actions = []
+        if invest_score is not None:
+            actions.append(f"Investment Score: {invest_score}/100")
+        if evi_i is not None:
+            actions.append(f"EVI-I: {evi_i['adjusted_evi_i']} ({evi_i['signal']})")
+        if not actions:
+            actions.append("Investor scoring blocked by insufficient evidence")
         return AgentResult(
             AgentType.INVESTOR_INTELLIGENCE, True,
-            {"investment_score": invest_score, "evi_i": evi_i, "investor_signals": ai.output},
-            [f"Investment Score: {invest_score}/100",
-             f"EVI-I: {evi_i['adjusted_evi_i']} ({evi_i['signal']})"],
-            ["Address top 2 investor concerns before outreach"],
-            ["Add to Investor Marketplace", "Generate Investor Readiness Report"],
-            ms, ai.tokens_used,
+            {
+                "investment_score": invest_score,
+                "evi_i": evi_i,
+                "investor_signals": ai.output if ai else None,
+                "evidence_status": evidence_status,
+                "missing_evidence": missing_evidence,
+                "score_kind": "heuristic_human_review_required",
+                "probability_calibrated": False,
+                "human_review_required": True,
+                "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
+            },
+            actions,
+            ["Collect the missing verified investor evidence"] if missing_evidence else
+            ["Review evidence and assumptions before investor outreach"],
+            ["Complete investor evidence profile"] if missing_evidence else
+            ["Generate a human-reviewed investor readiness report"],
+            ms, ai.tokens_used if ai else 0,
         )
+
+    @staticmethod
+    def _validated_scores(values: Dict[str, Any]) -> tuple[Dict[str, float], List[str]]:
+        valid: Dict[str, float] = {}
+        missing: List[str] = []
+        for name, raw in values.items():
+            try:
+                score = float(raw)
+            except (TypeError, ValueError):
+                missing.append(name)
+                continue
+            if not math.isfinite(score) or not 0 <= score <= 100:
+                missing.append(name)
+                continue
+            valid[name] = score
+        return valid, missing
 
 
 class BusinessPlanGeneratorAgent(BaseAgent):
@@ -838,43 +896,51 @@ class AdaptiveTrainingAgent(BaseAgent):
 class MatchingAgent(BaseAgent):
     async def execute(self, context: AgentContext) -> AgentResult:
         t0       = datetime.now()
-        criteria = (context.trigger_event or {}).get("criteria", {})
-        candidates = [
-            {"user_id": "builder_001", "name": "Aisha Osei",
-             "skills": ["React", "Node.js", "Python"], "similarity_score": 0.91,
-             "availability": "available", "trust_score": 0.85},
-            {"user_id": "builder_002", "name": "David Mensah",
-             "skills": ["Python", "ML", "FastAPI"], "similarity_score": 0.85,
-             "availability": "part-time", "trust_score": 0.78},
-        ]
-        required = set(criteria.get("required_skills", []))
-        filtered = [
-            {**c, "match_score": ScoringEngine.compute_match_score(
-                c["similarity_score"], 0.75, 0.70,
-                1.0 if c["availability"] == "available" else 0.5,
-                c.get("trust_score", 0.75), 0.65,
-            )}
-            for c in candidates
-            if c["similarity_score"] >= 0.70
-            and (not required or required.issubset(set(c["skills"])))
-            and (not criteria.get("availability_required") or c["availability"] == "available")
-        ]
-        filtered.sort(key=lambda x: x["match_score"], reverse=True)
+        trigger = context.trigger_event or {}
+        candidates = trigger.get("persisted_candidates")
+        if not isinstance(candidates, list):
+            candidates = []
+        verified = []
+        for candidate in candidates:
+            if (
+                not isinstance(candidate, dict)
+                or not candidate.get("user_id")
+                or candidate.get("match_score") is None
+                or not isinstance(candidate.get("evidence"), dict)
+                or candidate["evidence"].get("source") != "persisted_match_record"
+            ):
+                continue
+            try:
+                float(candidate["match_score"])
+            except (TypeError, ValueError):
+                continue
+            verified.append(candidate)
+        verified.sort(key=lambda item: float(item["match_score"]), reverse=True)
 
         ai = await self._call_ai(
             TaskType.MATCHING,
             {"seeker_profile": context.user_context.to_prompt_context(),
-             "top_matches": filtered[:3]},
+             "top_matches": verified[:3]},
             context.user_context,
-        ) if filtered else None
+        ) if verified else None
 
         ms = int((datetime.now() - t0).total_seconds() * 1000)
+        evidence_status = "sufficient" if verified else "insufficient_evidence"
         return AgentResult(
             AgentType.MATCHING, True,
-            {"matches": filtered, "explanations": ai.output if ai else "No matches found"},
-            [f"Found {len(filtered)} compatible matches"],
-            ["Review compatibility before outreach"],
-            ["Connect with top match within 48 hours"],
+            {
+                "matches": verified,
+                "explanations": ai.output if ai else None,
+                "evidence_status": evidence_status,
+                "missing_evidence": [] if verified else ["persisted_match_candidates"],
+                "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
+                "human_review_required": True,
+            },
+            [f"Found {len(verified)} persisted compatible matches"],
+            ["Review evidence and compatibility before outreach"] if verified else
+            ["Collect profile and collaboration evidence before matching"],
+            ["Invite a reviewed match"] if verified else ["Complete matching profiles"],
             ms, ai.tokens_used if ai else 0,
         )
 
@@ -883,22 +949,44 @@ class RiskEvaluatorAgent(BaseAgent):
     async def execute(self, context: AgentContext) -> AgentResult:
         t0   = datetime.now()
         idea = (context.trigger_event or {}).get("idea", {})
-        ai   = await self._call_ai(TaskType.RISK_ANALYSIS, idea, context.user_context, ip_protected=True)
+        required_fields = ("problem", "solution", "target_customers")
+        missing_evidence = [name for name in required_fields if not str(idea.get(name) or "").strip()]
+        supplied_evidence = [name for name, value in idea.items() if value not in (None, "", [], {})]
+        ai = None
+        if not missing_evidence:
+            ai = await self._call_ai(TaskType.RISK_ANALYSIS, {
+                **idea,
+                "evidence_contract": {
+                    "source": "founder_supplied",
+                    "numeric_scores_allowed": False,
+                    "human_review_required": True,
+                },
+            }, context.user_context, ip_protected=True)
         ms   = int((datetime.now() - t0).total_seconds() * 1000)
+        evidence_status = "insufficient_evidence" if missing_evidence else "provisional_human_review_required"
         return AgentResult(
             AgentType.RISK_EVALUATOR, True,
             {"risk_analysis": {
-                "market_clarity_score": 7.5, "technical_feasibility": 8.0,
-                "competitive_risk": "medium",
-                "key_risks": ["Saturated market", "High CAC", "Regulatory compliance"],
-                "swot": {"strengths": ["Innovative approach"], "weaknesses": ["No market presence"],
-                         "opportunities": ["Growing market"], "threats": ["Established players"]},
-                "ai_analysis": ai.output,
+                "status": evidence_status,
+                "market_clarity_score": None,
+                "technical_feasibility": None,
+                "competitive_risk": None,
+                "key_risks": [],
+                "swot": {},
+                "ai_analysis": ai.output if ai else None,
+                "evidence": {
+                    "source": "founder_supplied",
+                    "supplied_fields": supplied_evidence,
+                    "missing_fields": missing_evidence,
+                },
+                "human_review_required": True,
             }},
-            ["Evaluated market risks", "Generated SWOT analysis"],
-            ["Address top 3 risks in 30-day sprint"],
-            ["Validate assumptions before building"],
-            ms, ai.tokens_used,
+            ["Generated provisional risk narrative"] if ai else
+            ["Risk analysis blocked by insufficient evidence"],
+            ["Validate risk claims with primary evidence"] if ai else
+            ["Supply the missing venture evidence"],
+            ["Human review of risk evidence"] if ai else ["Complete venture risk inputs"],
+            ms, ai.tokens_used if ai else 0,
         )
 
 
@@ -1463,14 +1551,54 @@ class AppScaffoldAgent(BaseAgent):
         "expo_supabase":     "Expo (React Native) + Supabase + NativeWind",
         "fastapi_supabase":  "FastAPI + Supabase + SQLAlchemy (API-only)",
     }
+    SCAFFOLD_SCHEMA = {
+        "type": "object",
+        "required": ["pages", "schema_sql", "api_routes", "env_template", "components", "setup_steps", "estimated_build_hours"],
+        "properties": {
+            "pages": {"type": "array", "items": {"type": "object", "required": ["route", "component_name"], "properties": {"route": {"type": "string", "minLength": 1}, "component_name": {"type": "string", "minLength": 1}}}},
+            "schema_sql": {"type": "string"},
+            "api_routes": {"type": "array", "items": {"type": "object", "required": ["method", "path"], "properties": {"method": {"type": "string"}, "path": {"type": "string", "minLength": 1}}}},
+            "env_template": {"type": "string"},
+            "components": {"type": "array"},
+            "setup_steps": {"type": "array", "items": {"type": "string"}},
+            "estimated_build_hours": {"type": "number", "minimum": 0},
+        },
+        "additionalProperties": True,
+    }
+    DEPLOY_SCHEMA = {
+        "type": "object",
+        "required": ["deploy_steps"],
+        "properties": {"deploy_steps": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}},
+        "additionalProperties": True,
+    }
 
     async def execute(self, context: AgentContext) -> AgentResult:
         t0      = datetime.now()
+        event   = context.trigger_event or {}
         profile = context.shared_memory.get("venture_profile", context.trigger_event or {})
         arch    = context.shared_memory.get("tech_architecture", {})
+        profile = profile if isinstance(profile, dict) else {}
+        arch = arch if isinstance(arch, dict) else {}
 
-        # Determine best stack from tech architecture output
-        stack = self._select_stack(profile, arch)
+        stack, selection_rationale = self._select_stack(profile, arch, event.get("stack"))
+        if stack is None:
+            return AgentResult(
+                agent_type=AgentType.APP_SCAFFOLD,
+                success=False,
+                output={
+                    "status": "insufficient_configuration",
+                    "reason_code": "explicit_supported_stack_required",
+                    "supported_stacks": sorted(self.SUPPORTED_STACKS),
+                    "artifact_registered": False,
+                    "download_url": None,
+                    "deploy_url": None,
+                    "live_url": None,
+                },
+                actions_taken=["Scaffold generation blocked before model execution"],
+                recommendations=["Select an approved stack for this project"],
+                next_steps=["Submit a supported stack with the scaffold request"],
+                execution_time_ms=int((datetime.now() - t0).total_seconds() * 1000),
+            )
 
         # Step 1: Generate scaffold structure
         scaffold_resp = await self._call_ai(
@@ -1493,6 +1621,8 @@ class AppScaffoldAgent(BaseAgent):
 
         # Step 2: Parse scaffold JSON
         scaffold = self._parse_scaffold(scaffold_resp.output)
+        if scaffold is None:
+            return self._invalid_generation_result(t0, "invalid_scaffold_output", scaffold_resp.tokens_used)
 
         # Step 3: Generate deploy configuration
         deploy_resp = await self._call_ai(
@@ -1504,11 +1634,18 @@ class AppScaffoldAgent(BaseAgent):
             max_tokens=3000,
         )
         deploy_config = self._parse_deploy_config(deploy_resp.output)
+        if deploy_config is None:
+            return self._invalid_generation_result(
+                t0,
+                "invalid_deploy_configuration_output",
+                scaffold_resp.tokens_used + deploy_resp.tokens_used,
+            )
 
         # Step 4: Build the complete scaffold output
         full_scaffold = {
             "scaffold_type":      stack,
             "stack_description":  self.SUPPORTED_STACKS.get(stack, stack),
+            "stack_selection_rationale": selection_rationale,
             "startup_name":       profile.get("startup_name", "MyStartup"),
             "pages":              scaffold.get("pages", []),
             "schema_sql":         scaffold.get("schema_sql", ""),
@@ -1516,11 +1653,13 @@ class AppScaffoldAgent(BaseAgent):
             "env_template":       scaffold.get("env_template", ""),
             "components":         scaffold.get("components", []),
             "setup_steps":        scaffold.get("setup_steps", []),
-            "estimated_build_hours": scaffold.get("estimated_build_hours", 4),
+            "estimated_build_hours": scaffold.get("estimated_build_hours"),
             "deploy_config":      deploy_config,
-            "download_url":       f"https://app.techit.io/scaffold/{context.user_context.project_id}/download.zip",
-            "vercel_deploy_url":  f"https://vercel.com/new/clone?repository-url=https://github.com/techit-scaffold/{context.user_context.project_id}",
-            "live_preview_url":   f"https://{profile.get('startup_name','my-app').lower().replace(' ','-')}.techit.app",
+            "status":             "generated_unregistered",
+            "artifact_registered": False,
+            "download_url":       None,
+            "deploy_url":         None,
+            "live_url":           None,
             "ip_protected":       True,
         }
 
@@ -1538,83 +1677,76 @@ class AppScaffoldAgent(BaseAgent):
             actions_taken=[
                 f"Selected stack: {self.SUPPORTED_STACKS.get(stack, stack)}",
                 f"Generated {pages_count} pages and {routes_count} API routes",
-                "Built Supabase schema SQL",
-                "Generated Vercel + GitHub Actions deploy config",
+                "Validated scaffold structure",
+                "Validated deployment configuration structure",
                 "Created .env.example template",
             ],
             recommendations=[
-                "Download the scaffold ZIP and run: npm install && npm run dev",
-                "Push to GitHub then click the Vercel deploy button",
-                "Your live URL will be ready in ~2 minutes",
+                "Review generated code and security controls",
+                "Register an immutable artifact before download or deployment",
             ],
             next_steps=[
-                f"Download: {full_scaffold['download_url']}",
-                f"1-click deploy: {full_scaffold['vercel_deploy_url']}",
-                f"Live preview: {full_scaffold['live_preview_url']}",
+                "Persist files in the artifact service",
+                "Run build, dependency, secret, and policy checks",
+                "Deploy through an authenticated production connector",
             ],
             execution_time_ms=ms,
             tokens_used=scaffold_resp.tokens_used + deploy_resp.tokens_used,
         )
 
-    def _select_stack(self, profile: dict, arch: dict) -> str:
+    def _select_stack(self, profile: dict, arch: dict, requested_stack: Any = None) -> tuple[Optional[str], Optional[Dict[str, str]]]:
         """
-        Select the optimal stack based on venture profile and architecture output.
-        Mobile products -> Expo; API-first B2B -> FastAPI; default -> Next.js + Supabase.
-        Production: parse from TechArchitectAgent structured output.
+        Select only an explicit, supported stack from the request or structured
+        project architecture. The router does not infer technology from prose.
         """
-        description = (
-            str(profile.get("solution", "")) +
-            str(arch.get("tech_architecture", ""))
-        ).lower()
-        if any(w in description for w in ["mobile", "app store", "ios", "android"]):
-            return "expo_supabase"
-        if any(w in description for w in ["api-first", "b2b api", "developer tool", "sdk"]):
-            return "fastapi_supabase"
-        return "nextjs_supabase"  # sensible default for 80% of startups
+        for source, value in (
+            ("request.stack_choice", requested_stack),
+            ("venture_profile.stack_choice", profile.get("stack_choice")),
+            ("tech_architecture.stack_key", arch.get("stack_key")),
+            ("tech_architecture.scaffold_type", arch.get("scaffold_type")),
+        ):
+            candidate = str(value or "").strip()
+            if candidate in self.SUPPORTED_STACKS:
+                return candidate, {"source": source, "selected_stack": candidate, "reason": "explicit_approved_configuration"}
+        return None, None
 
-    def _parse_scaffold(self, raw_output: str) -> dict:
+    def _parse_scaffold(self, raw_output: str) -> Optional[dict]:
         """
-        Parse the AI scaffold JSON response.
-        Returns a safe default if parsing fails -- never blocks the pipeline.
+        Parse and minimally validate the AI scaffold JSON response.
         """
-        import json, re
         try:
-            # Strip markdown fences if model adds them despite instructions
-            clean = re.sub(r"```(?:json)?|```", "", raw_output).strip()
-            return json.loads(clean)
-        except Exception:
-            # Safe fallback: return minimal valid scaffold
-            return {
-                "pages": [
-                    {"route": "/", "component_name": "HomePage", "description": "Landing page", "auth_required": False},
-                    {"route": "/dashboard", "component_name": "DashboardPage", "description": "Main dashboard", "auth_required": True},
-                    {"route": "/login", "component_name": "LoginPage", "description": "Authentication", "auth_required": False},
-                ],
-                "schema_sql": "-- Schema generation pending -- re-run scaffold",
-                "api_routes": [
-                    {"method": "GET", "path": "/api/health", "description": "Health check", "auth_required": False},
-                ],
-                "env_template": "NEXT_PUBLIC_SUPABASE_URL=\nNEXT_PUBLIC_SUPABASE_ANON_KEY=\nSUPABASE_SERVICE_ROLE_KEY=\n",
-                "components": [],
-                "setup_steps": ["npm install", "cp .env.example .env.local", "npm run dev"],
-                "estimated_build_hours": 4,
-            }
+            parsed = validate_output(raw_output, self.SCAFFOLD_SCHEMA)
+        except (OutputValidationError, TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
-    def _parse_deploy_config(self, raw_output: str) -> dict:
-        """Parse deploy config JSON, return safe fallback on error."""
-        import json, re
+    def _parse_deploy_config(self, raw_output: str) -> Optional[dict]:
+        """Parse deploy config JSON and reject invalid output."""
         try:
-            clean = re.sub(r"```(?:json)?|```", "", raw_output).strip()
-            return json.loads(clean)
-        except Exception:
-            return {
-                "vercel_json": '{"buildCommand":"npm run build","outputDirectory":".next","framework":"nextjs"}',
-                "deploy_steps": [
-                    "git init && git add . && git commit -m 'Initial scaffold'",
-                    "vercel --prod",
-                ],
-                "deploy_url_pattern": "https://[project-name].vercel.app",
-            }
+            parsed = validate_output(raw_output, self.DEPLOY_SCHEMA)
+        except (OutputValidationError, TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @staticmethod
+    def _invalid_generation_result(t0: datetime, reason_code: str, tokens_used: int) -> AgentResult:
+        return AgentResult(
+            agent_type=AgentType.APP_SCAFFOLD,
+            success=False,
+            output={
+                "status": "invalid_model_output",
+                "reason_code": reason_code,
+                "artifact_registered": False,
+                "download_url": None,
+                "deploy_url": None,
+                "live_url": None,
+            },
+            actions_taken=["Rejected invalid generated artifact"],
+            recommendations=["Regenerate and validate before artifact registration"],
+            next_steps=["Retry generation with structured output enforcement"],
+            execution_time_ms=int((datetime.now() - t0).total_seconds() * 1000),
+            tokens_used=tokens_used,
+        )
 
 
 # ============================================================================

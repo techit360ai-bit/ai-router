@@ -860,6 +860,7 @@ class Match(Base):
     candidate_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     project_id   = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True)
     match_type   = Column(String(30), nullable=False)
+    policy_id    = Column(String(120), nullable=True)
 
     skill_similarity           = Column(Float)
     goal_similarity            = Column(Float)
@@ -877,6 +878,31 @@ class Match(Base):
     __table_args__ = (
         Index("idx_match_seeker",    "seeker_id",   "status"),
         Index("idx_match_score",     "match_score"),
+    )
+
+
+class DecisionOutcome(Base):
+    """Verified production outcome attached to a versioned router decision."""
+    __tablename__ = "decision_outcomes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    decision_id = Column(String(120), nullable=False)
+    domain = Column(String(40), nullable=False)
+    policy_id = Column(String(120), nullable=False)
+    predicted_score = Column(Float)
+    predicted_probability = Column(Float)
+    predicted_positive = Column(Boolean)
+    observed_positive = Column(Boolean)
+    observed_at = Column(TIMESTAMP)
+    source = Column(String(50), nullable=False)
+    evidence = Column(JSON, default=lambda: {})
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("decision_id", "domain", name="uq_decision_outcome_domain"),
+        Index("idx_decision_outcome_policy_domain", "policy_id", "domain"),
+        Index("idx_decision_outcome_observed", "observed_at"),
     )
 
 

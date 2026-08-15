@@ -38,6 +38,10 @@ from ai_router_core import (
     AIRequest, UserContext, TaskType, UserRole,
     ScoringEngine,
 )
+from policy_registry import SCORING_POLICY, calibration_metadata
+from decision_audit import DecisionAuditRecorder, build_ranking_audit
+from sandbox_build_service import SandboxBuildError, SandboxBuildService
+from hardening_metrics import METRICS
 from agent_orchestration import (
     AgentOrchestrator, AgentType, AgentContext, VenturePipeline,
 )
@@ -281,6 +285,7 @@ class IncubationHubService:
         if not decision: raise ValueError("decision_required")
         updated = self.repo.record_incubation_decision(user_context.user_id, session_id, action, decision, str(body.get("rationale") or ""), user_context.user_id)
         if updated is None: raise ValueError("incubation_session_not_found")
+        METRICS.increment("human_overrides", action)
         return {"session": updated, "recorded": True, "immutable_event": (updated.get("state") or {}).get("decisions", [])[-1]}
 
     def _persist_analysis(
@@ -409,7 +414,7 @@ class IncubationHubService:
         return await self.run_task_analysis(user_context, venture_data, TaskType.PRODUCT_FEASIBILITY, "feasibility")
 
     async def run_risk_analysis(self, user_context: UserContext, venture_data: Dict) -> Dict:
-        return await self.run_task_analysis(user_context, venture_data, TaskType.RISK_ANALYSIS, "swot")
+        return await RiskEvaluatorService(self.brain).evaluate_idea_risk(user_context, venture_data)
 
     async def run_impact_analysis(self, user_context: UserContext, venture_data: Dict) -> Dict:
         return await self.run_task_analysis(user_context, venture_data, TaskType.IMPACT_PREDICTION, "impact")
@@ -874,40 +879,104 @@ class AdaptiveTrainingService:
 # ============================================================================
 
 class MatchingEngineService:
-    def __init__(self, brain: TechITAIBrain) -> None:
+    def __init__(
+        self,
+        brain: TechITAIBrain,
+        repository: Optional[LiveDomainRepository] = None,
+        audit_recorder: Optional[DecisionAuditRecorder] = None,
+    ) -> None:
         self.brain = brain
+        self.repo = repository or LiveDomainRepository()
+        self.audit_recorder = audit_recorder or DecisionAuditRecorder()
 
     async def find_collaborators(self, user_context: UserContext, criteria: Dict) -> Dict:
         """POST /api/v1/matching/find-collaborators -- 1 execution budget unit, Builder+"""
+        candidates = self.repo.collaborator_matches(
+            user_context.user_id,
+            criteria,
+            limit=criteria.get("limit", 10),
+        )
         ctx = AgentContext(user_context=user_context,
-                           trigger_event={"criteria": criteria, "match_type": "founder_builder"})
+                           trigger_event={
+                               "criteria": criteria,
+                               "match_type": "founder_builder",
+                               "persisted_candidates": candidates,
+                           })
         r   = await self.brain.trigger_agent(AgentType.MATCHING, ctx)
-        return {"matches": r.output.get("matches", []),
+        matches = r.output.get("matches", [])
+        evidence_status = r.output.get("evidence_status", "insufficient_evidence")
+        if evidence_status == "insufficient_evidence":
+            METRICS.increment("insufficient_evidence", "collaborator_matching")
+        outcomes = self.repo.matching_outcomes(user_context.user_id, "founder_builder")
+        audit = build_ranking_audit(matches, evidence_status, outcomes=outcomes)
+        self.audit_recorder.record(audit)
+        return {"matches": matches,
                 "explanations": r.output.get("explanations"),
-                "total_found": len(r.output.get("matches", []))}
+                "total_found": len(matches),
+                "evidence_status": evidence_status,
+                "missing_evidence": r.output.get("missing_evidence", []),
+                "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
+                "human_review_required": True,
+                "audit": audit}
 
     async def find_investors(self, user_context: UserContext, startup_profile: Dict) -> Dict:
         """POST /api/v1/matching/find-investors -- 2 execution budget units, Investor+"""
+        criteria = {**startup_profile.get("criteria", {}), "match_type": "startup_investor"}
+        candidates = self.repo.collaborator_matches(user_context.user_id, criteria, limit=criteria.get("limit", 10))
         ctx = AgentContext(user_context=user_context,
-                           trigger_event={"criteria": {"match_type": "startup_investor"},
-                                          "startup_profile": startup_profile})
+                           trigger_event={"criteria": criteria, "startup_profile": startup_profile,
+                                          "persisted_candidates": candidates})
         r   = await self.brain.trigger_agent(AgentType.MATCHING, ctx)
-        return r.output
+        matches = r.output.get("matches", [])
+        evidence_status = r.output.get("evidence_status", "insufficient_evidence")
+        if evidence_status == "insufficient_evidence":
+            METRICS.increment("insufficient_evidence", "investor_matching")
+        audit = build_ranking_audit(
+            matches, evidence_status, event_type="investor_ranking",
+            outcomes=self.repo.matching_outcomes(user_context.user_id, "startup_investor"),
+        )
+        self.audit_recorder.record(audit)
+        return {**r.output, "audit": audit}
 
     def compute_compatibility(
         self, seeker_profile: Dict, candidate_profile: Dict
     ) -> Dict:
         """GET /api/v1/matching/compatibility -- 0 execution budget units"""
-        score = ScoringEngine.compute_match_score(
-            seeker_profile.get("skill_similarity", 0.7),
-            seeker_profile.get("goal_similarity",  0.7),
-            seeker_profile.get("exec_style_sim",   0.6),
-            candidate_profile.get("availability_score", 0.8),
-            candidate_profile.get("trust_score",        0.75),
-            candidate_profile.get("domain_score",       0.65),
+        fields = (
+            ("skill_similarity", seeker_profile),
+            ("goal_similarity", seeker_profile),
+            ("exec_style_sim", seeker_profile),
+            ("availability_score", candidate_profile),
+            ("trust_score", candidate_profile),
+            ("domain_score", candidate_profile),
         )
+        missing = [name for name, source in fields if source.get(name) is None]
+        if missing:
+            return {
+                "match_score": None,
+                "compatibility": "insufficient_evidence",
+                "evidence_status": "insufficient_evidence",
+                "missing_evidence": missing,
+                "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
+                "human_review_required": True,
+            }
+        score = ScoringEngine.compute_match_score(
+            seeker_profile["skill_similarity"],
+            seeker_profile["goal_similarity"],
+            seeker_profile["exec_style_sim"],
+            candidate_profile["availability_score"],
+            candidate_profile["trust_score"],
+            candidate_profile["domain_score"],
+        )
+        minimums = SCORING_POLICY["match"]["minimums"]
         return {"match_score": score,
-                "compatibility": "high" if score >= 75 else "medium" if score >= 55 else "low"}
+                "compatibility": "high" if score >= minimums["recommended"] else
+                                 "medium" if score >= minimums["review"] else "low",
+                "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
+                "human_review_required": True}
 
 
 # ============================================================================
@@ -923,11 +992,15 @@ class RiskEvaluatorService:
         ctx = AgentContext(user_context=user_context, trigger_event={"idea": idea_data})
         r   = await self.brain.trigger_agent(AgentType.RISK_EVALUATOR, ctx)
         ra  = r.output.get("risk_analysis", {})
+        if ra.get("status") == "insufficient_evidence":
+            METRICS.increment("insufficient_evidence", "risk_analysis")
         return {
             "risk_analysis":   ra,
-            "risk_level":      ra.get("competitive_risk", "medium"),
+            "risk_level":      ra.get("competitive_risk"),
             "top_risks":       ra.get("key_risks", []),
             "swot":            ra.get("swot", {}),
+            "evidence_status": ra.get("status", "insufficient_evidence"),
+            "missing_evidence": ra.get("evidence", {}).get("missing_fields", []),
             "recommendations": r.recommendations,
         }
 
@@ -959,18 +1032,33 @@ class InvestorSectionService:
             user_context=investor_context,
             trigger_event=startup_data,
             shared_memory={
-                "mdr": startup_data.get("milestone_delivery_rate", 70),
-                "is":  startup_data.get("iteration_speed", 65),
-                "trv": startup_data.get("team_response_velocity", 75),
-                "rgs": startup_data.get("revenue_growth_signal", 40),
-                "cev": startup_data.get("capital_efficiency", 60),
+                "market_readiness": startup_data.get("market_readiness_score"),
+                "traction_score": startup_data.get("traction_score"),
+                "team_score": startup_data.get("team_score"),
+                "risk_inverse": startup_data.get("risk_inverse"),
+                "growth_rate": startup_data.get("growth_rate"),
+                "differentiation_score": startup_data.get("differentiation_score"),
+                "mdr": startup_data.get("milestone_delivery_rate"),
+                "is": startup_data.get("iteration_speed"),
+                "trv": startup_data.get("team_response_velocity"),
+                "rta": startup_data.get("revenue_traction_acceleration"),
+                "ugm": startup_data.get("user_growth_momentum"),
+                "cev": startup_data.get("capital_efficiency"),
             },
         )
         r = await self.brain.trigger_agent(AgentType.INVESTOR_INTELLIGENCE, ctx)
+        if r.output.get("evidence_status") == "insufficient_evidence":
+            METRICS.increment("insufficient_evidence", "investor_signals")
+        METRICS.increment("scoring_policy_versions", ScoringEngine.policy_metadata()["policy_id"])
         return {
             "evi_i":          r.output.get("evi_i"),
             "investment_score": r.output.get("investment_score"),
             "investor_signals": r.output.get("investor_signals"),
+            "evidence_status": r.output.get("evidence_status"),
+            "missing_evidence": r.output.get("missing_evidence", []),
+            "human_review_required": True,
+            "policy": r.output.get("policy", ScoringEngine.policy_metadata()),
+            "calibration": r.output.get("calibration", calibration_metadata()),
             "recommendations": r.recommendations,
         }
 
@@ -978,13 +1066,41 @@ class InvestorSectionService:
         self, user_context: UserContext, project_scores: Dict
     ) -> Dict:
         """GET /api/v1/investor/readiness/{project_id} -- 0 + 2 execution budget units"""
+        required = (
+            "market_readiness_score", "traction_score", "team_score",
+            "risk_score", "revenue_growth_pct", "differentiation_score",
+        )
+        missing = []
+        values: Dict[str, float] = {}
+        for name in required:
+            try:
+                value = float(project_scores.get(name))
+            except (TypeError, ValueError):
+                missing.append(name)
+                continue
+            if not 0 <= value <= 100:
+                missing.append(name)
+                continue
+            values[name] = value
+        if missing:
+            METRICS.increment("insufficient_evidence", "investor_readiness")
+            return {
+                "investment_score": None,
+                "investment_readiness": "insufficient_evidence",
+                "evidence_status": "insufficient_evidence",
+                "missing_evidence": missing,
+                "human_review_required": True,
+                "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
+                "top_improvements": ["Complete verified investor-readiness evidence"],
+            }
         invest_score = ScoringEngine.compute_investment_score(
-            market_readiness=project_scores.get("market_readiness_score", 50),
-            traction_score=min(100.0, project_scores.get("beta_users_count", 0) * 2),
-            team_score=min(100.0, project_scores.get("team_size", 1) * 15),
-            risk_inverse=100 - project_scores.get("risk_score", 40),
-            growth_rate=project_scores.get("revenue_growth_pct", 20),
-            differentiation_score=project_scores.get("unicorn_score", 50) * 0.8,
+            market_readiness=values["market_readiness_score"],
+            traction_score=values["traction_score"],
+            team_score=values["team_score"],
+            risk_inverse=100 - values["risk_score"],
+            growth_rate=values["revenue_growth_pct"],
+            differentiation_score=values["differentiation_score"],
         )
         readiness = (
             "high_priority" if invest_score >= 75 else
@@ -1001,6 +1117,9 @@ class InvestorSectionService:
             improvements.append("Complete investor data room (pitch deck + financials)")
 
         return {"investment_score": invest_score, "investment_readiness": readiness,
+                "evidence_status": "sufficient", "missing_evidence": [],
+                "human_review_required": True, "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
                 "top_improvements": improvements[:3]}
 
     async def get_deal_flow_ranking(
@@ -2947,14 +3066,16 @@ class AppScaffoldService:
         },
     }
 
-    def __init__(self, brain: TechITAIBrain) -> None:
+    def __init__(self, brain: TechITAIBrain, repository: Optional[LiveDomainRepository] = None) -> None:
         self.brain = brain
+        self.repo = repository or LiveDomainRepository()
+        self.artifacts = SandboxBuildService(self.repo)
 
     async def generate_scaffold(
         self,
         user_context:  UserContext,
         project_id:    str,
-        stack_choice:  str = "nextjs_supabase",
+        stack_choice:  Optional[str] = None,
         venture_data:  Optional[Dict] = None,
         arch_data:     Optional[Dict] = None,
     ) -> Dict[str, Any]:
@@ -2988,9 +3109,23 @@ class AppScaffoldService:
             },
         )
         result = await self.brain.trigger_agent(AgentType.APP_SCAFFOLD, ctx)
+        if not result.output.get("artifact_registered") and any(
+            result.output.get(key) for key in ("download_url", "deploy_url", "live_url")
+        ):
+            METRICS.increment("fabricated_data_regressions", "scaffold_url")
+            raise SandboxBuildError("unregistered_scaffold_exposed_artifact_url")
+        if not result.success:
+            return {**result.output, "project_id": project_id, "actions_taken": result.actions_taken, "next_steps": result.next_steps}
+        artifact = self.artifacts.register_scaffold(user_context.user_id, project_id, result.output)
+        registered = artifact.get("status") == "artifact_registered"
         return {
             **result.output,
             "project_id":   project_id,
+            "scaffold_id": artifact.get("id"),
+            "status": artifact.get("status"),
+            "artifact_registered": registered,
+            "artifact_sha256": (artifact.get("manifest") or {}).get("sha256"),
+            "download_url": f"/api/v1/incubation/builds/{artifact.get('id')}/artifact" if registered else None,
             "actions_taken": result.actions_taken,
             "next_steps":    result.next_steps,
         }
@@ -3000,6 +3135,7 @@ class AppScaffoldService:
         user_context: UserContext,
         scaffold_id:  str,
         deploy_target: str = "vercel",
+        human_approved: bool = False,
     ) -> Dict[str, Any]:
         """
         POST /api/v1/scaffold/{id}/deploy -- 3 execution budget units, Founder Pro+
@@ -3016,35 +3152,28 @@ class AppScaffoldService:
         Returns:
           deploy_status, live_url, build_logs_url, estimated_ready_seconds
         """
-        # Production: call GitHub API + Vercel API
-        # Stub: return expected response shape
-        return {
-            "scaffold_id":          scaffold_id,
-            "deploy_status":        "deploying",
-            "deploy_target":        deploy_target,
-            "estimated_ready_seconds": 120,
-            "build_logs_url":       f"https://vercel.com/techit/{scaffold_id}/deployments",
-            "live_url":             f"https://{scaffold_id}.vercel.app",
-            "status_endpoint":      f"/api/v1/scaffold/{scaffold_id}/status",
-            "message":              "Deployment started. Your app will be live in ~2 minutes.",
-        }
+        try:
+            record = await self.artifacts.deploy_registered_artifact(
+                user_context.user_id, scaffold_id, deploy_target, human_approved,
+            )
+        except SandboxBuildError as exc:
+            return {"scaffold_id": scaffold_id, "deploy_status": "unavailable", "reason_code": str(exc), "deployment_started": False, "build_logs_url": None, "live_url": None}
+        deployment = (record.get("checks") or {}).get("deployment") or {}
+        return {"scaffold_id": scaffold_id, "deploy_status": record.get("status"), "deploy_target": deploy_target, "deployment_started": bool(deployment.get("passed")), "deployment_id": deployment.get("deployment_id"), "build_logs_url": deployment.get("logs_url"), "live_url": record.get("previewUrl")}
 
-    def get_deploy_status(self, scaffold_id: str) -> Dict[str, Any]:
+    def get_deploy_status(self, user_id: str, scaffold_id: str) -> Dict[str, Any]:
         """
         GET /api/v1/scaffold/{id}/status -- 0 execution budget units, Free+
 
         Poll deployment status. Frontend calls this every 5 seconds until
         deploy_status = 'deployed'.
         """
-        # Production: query Vercel API for build status
-        return {
-            "scaffold_id":   scaffold_id,
-            "deploy_status": "deployed",   # pending | deploying | deployed | failed
-            "live_url":      f"https://{scaffold_id}.vercel.app",
-            "ready":         True,
-        }
+        record = self.repo.get_sandbox_build(user_id, scaffold_id)
+        if not record:
+            return {"scaffold_id": scaffold_id, "deploy_status": "unavailable", "reason_code": "deployment_record_not_found", "live_url": None, "ready": False}
+        return {"scaffold_id": scaffold_id, "deploy_status": record.get("status"), "live_url": record.get("previewUrl"), "ready": record.get("status") == "deployed_preview", "deployment": (record.get("checks") or {}).get("deployment")}
 
-    def get_live_url(self, scaffold_id: str) -> Dict[str, Any]:
+    def get_live_url(self, user_id: str, scaffold_id: str) -> Dict[str, Any]:
         """
         GET /api/v1/scaffold/{id}/live-url -- 0 execution budget units, Free+
 
@@ -3052,13 +3181,10 @@ class AppScaffoldService:
         The moment the user sees this is the 'Wait... I just built a product
         in minutes??' moment -- the TechIT growth engine.
         """
-        return {
-            "scaffold_id":       scaffold_id,
-            "live_url":          f"https://{scaffold_id}.vercel.app",
-            "techit_subdomain":  f"https://{scaffold_id}.techit.app",
-            "deploy_status":     "deployed",
-            "share_message":     "Your app is live. Share it. Build on it. Raise on it.",
-        }
+        record = self.repo.get_sandbox_build(user_id, scaffold_id)
+        if not record or record.get("status") != "deployed_preview" or not record.get("previewUrl"):
+            return {"scaffold_id": scaffold_id, "live_url": None, "deploy_status": "unavailable", "reason_code": "verified_deployment_record_not_found", "share_message": None}
+        return {"scaffold_id": scaffold_id, "live_url": record["previewUrl"], "deploy_status": "deployed_preview", "share_message": "Deployment verified by the authenticated connector."}
 
     def get_available_stacks(self) -> List[Dict[str, Any]]:
         """

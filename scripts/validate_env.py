@@ -140,6 +140,10 @@ def validate_integrations() -> None:
     from model_registry import ModelRegistry
     ModelRegistry()
 
+    audit_key = require_value("DECISION_AUDIT_HMAC_KEY")
+    if len(audit_key) < 32 or "placeholder" in audit_key.lower():
+        fail("DECISION_AUDIT_HMAC_KEY must be at least 32 characters and non-placeholder")
+
     if os.getenv("REQUIRE_AI_EXECUTION_GRANT", "false").lower() in {"1", "true", "yes"}:
         secret = os.getenv("AI_EXECUTION_GRANT_SECRET") or os.getenv("JWT_SECRET", "")
         if len(secret) < 32:
@@ -153,6 +157,8 @@ def main() -> int:
         validate_datastores()
         validate_urls()
         validate_integrations()
+        from runtime_config import assert_runtime_ready
+        assert_runtime_ready()
     except Exception as exc:  # noqa: BLE001
         print(str(exc), file=sys.stderr)
         return 1
