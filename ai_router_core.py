@@ -73,7 +73,7 @@ from execution_controls import (
 )
 from model_registry import ModelDefinition, ModelRegistry, RegistryError, TaskPolicy
 from output_validation import OutputValidationError, validate_output
-from policy_registry import SCORING_POLICY, policy_metadata
+from policy_registry import SCORING_POLICY, calibration_metadata, policy_metadata
 from routing_engine import ComplexityTier, ModelConfig, ModelRouter
 
 
@@ -230,6 +230,8 @@ class ScoringEngine:
             "alert_triggered": alert_score > SCORING_POLICY["gsis"]["alert"]["trigger_above"],
             "components": components,
             "policy": policy_metadata(),
+            "calibration": calibration_metadata(),
+            "human_review_required": True,
         }
 
     @classmethod
@@ -280,6 +282,8 @@ class ScoringEngine:
             "probability_calibrated":  False,
             "driver_breakdown":        breakdown,
             "policy":                  policy_metadata(),
+            "calibration":             calibration_metadata(),
+            "human_review_required":   True,
         }
 
     @classmethod
@@ -362,6 +366,8 @@ class ScoringEngine:
                 "capital_efficiency_velocity":      cev_score,
             },
             "policy": policy_metadata(),
+            "calibration": calibration_metadata(),
+            "human_review_required": True,
         }
 
     # ── 5. REVENUE GROWTH SIGNAL ───────────────────────────────────────────

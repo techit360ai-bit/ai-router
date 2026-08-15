@@ -38,7 +38,7 @@ from ai_router_core import (
     AIRequest, UserContext, TaskType, UserRole,
     ScoringEngine,
 )
-from policy_registry import SCORING_POLICY
+from policy_registry import SCORING_POLICY, calibration_metadata
 from agent_orchestration import (
     AgentOrchestrator, AgentType, AgentContext, VenturePipeline,
 )
@@ -898,7 +898,9 @@ class MatchingEngineService:
                 "total_found": len(r.output.get("matches", [])),
                 "evidence_status": r.output.get("evidence_status", "insufficient_evidence"),
                 "missing_evidence": r.output.get("missing_evidence", []),
-                "policy": ScoringEngine.policy_metadata()}
+                "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
+                "human_review_required": True}
 
     async def find_investors(self, user_context: UserContext, startup_profile: Dict) -> Dict:
         """POST /api/v1/matching/find-investors -- 2 execution budget units, Investor+"""
@@ -928,6 +930,8 @@ class MatchingEngineService:
                 "evidence_status": "insufficient_evidence",
                 "missing_evidence": missing,
                 "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
+                "human_review_required": True,
             }
         score = ScoringEngine.compute_match_score(
             seeker_profile["skill_similarity"],
@@ -941,7 +945,9 @@ class MatchingEngineService:
         return {"match_score": score,
                 "compatibility": "high" if score >= minimums["recommended"] else
                                  "medium" if score >= minimums["review"] else "low",
-                "policy": ScoringEngine.policy_metadata()}
+                "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
+                "human_review_required": True}
 
 
 # ============================================================================
@@ -1018,6 +1024,7 @@ class InvestorSectionService:
             "missing_evidence": r.output.get("missing_evidence", []),
             "human_review_required": True,
             "policy": r.output.get("policy", ScoringEngine.policy_metadata()),
+            "calibration": r.output.get("calibration", calibration_metadata()),
             "recommendations": r.recommendations,
         }
 
@@ -1049,6 +1056,7 @@ class InvestorSectionService:
                 "missing_evidence": missing,
                 "human_review_required": True,
                 "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
                 "top_improvements": ["Complete verified investor-readiness evidence"],
             }
         invest_score = ScoringEngine.compute_investment_score(
@@ -1076,6 +1084,7 @@ class InvestorSectionService:
         return {"investment_score": invest_score, "investment_readiness": readiness,
                 "evidence_status": "sufficient", "missing_evidence": [],
                 "human_review_required": True, "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
                 "top_improvements": improvements[:3]}
 
     async def get_deal_flow_ranking(

@@ -1,0 +1,29 @@
+{
+  "contract_id": "techit-offline-evaluation-2026-08-15-v1",
+  "fixture_schema_version": 1,
+  "policy_id": "techit-scoring-2026-08-14-v1",
+  "owner": "platform-risk",
+  "numeric_tolerance": 0.000001,
+  "domains": {
+    "matching": {"score_path": "match_score"},
+    "gsis": {"score_path": "gsis"},
+    "ups": {"score_path": "unicorn_potential_score"},
+    "evi_investor": {"score_path": "adjusted_evi_i"},
+    "investment": {"score_path": "investment_score"},
+    "risk": {"required_fields": ["problem", "solution", "target_customers"]},
+    "valuation": {"score_path": "valuation"}
+  },
+  "probability_claims": {
+    "required_calibration_status": "calibrated",
+    "minimum_sample_size": 1000,
+    "required_metadata": ["method", "sample_size", "as_of"]
+  },
+  "release_gates": {
+    "minimum_total_cases": 100,
+    "minimum_cases_per_domain": 10,
+    "minimum_outcome_coverage": 0.8,
+    "maximum_false_positive_rate": 0.1,
+    "maximum_false_negative_rate": 0.1,
+    "require_calibrated_probability_claims": true
+  }
+}

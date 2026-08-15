@@ -63,6 +63,7 @@ from ai_router_core import (
     UserContext, TaskType, UserRole,
     ScoringEngine,
 )
+from policy_registry import calibration_metadata
 
 
 # ============================================================================
@@ -527,6 +528,7 @@ class InvestorIntelligenceAgent(BaseAgent):
                 "probability_calibrated": False,
                 "human_review_required": True,
                 "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
             },
             actions,
             ["Collect the missing verified investor evidence"] if missing_evidence else
@@ -931,6 +933,8 @@ class MatchingAgent(BaseAgent):
                 "evidence_status": evidence_status,
                 "missing_evidence": [] if verified else ["persisted_match_candidates"],
                 "policy": ScoringEngine.policy_metadata(),
+                "calibration": calibration_metadata(),
+                "human_review_required": True,
             },
             [f"Found {len(verified)} persisted compatible matches"],
             ["Review evidence and compatibility before outreach"] if verified else

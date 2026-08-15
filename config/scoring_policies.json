@@ -56,5 +56,10 @@
     "minimums": {"recommended": 75, "review": 55}
   },
   "decay": {"exponent_per_inactive_day": 0.02},
-  "valuation": {"arr_multiple": 8.0}
+  "valuation": {"arr_multiple": 8.0},
+  "calibration": {
+    "status": "not_calibrated",
+    "probability_claims_allowed": false,
+    "evaluation_contract_id": "techit-offline-evaluation-2026-08-15-v1"
+  }
 }

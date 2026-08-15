@@ -35,7 +35,7 @@ def _validate(policy: Any) -> None:
             raise ScoringPolicyError(f"Scoring policy requires non-empty {field}")
     if not isinstance(policy.get("changelog"), list) or not policy["changelog"]:
         raise ScoringPolicyError("Scoring policy requires a non-empty changelog")
-    for section_name in ("unicorn", "gsis", "evi_investor", "investment", "match", "decay", "valuation"):
+    for section_name in ("unicorn", "gsis", "evi_investor", "investment", "match", "decay", "valuation", "calibration"):
         if not isinstance(policy.get(section_name), dict):
             raise ScoringPolicyError(f"Scoring policy section is missing: {section_name}")
     for section_name in ("unicorn", "gsis", "evi_investor", "investment", "match"):
@@ -66,6 +66,15 @@ def _validate(policy: Any) -> None:
         raise ScoringPolicyError("Valuation multiple must be positive")
     if not 0 <= review <= recommended <= 100:
         raise ScoringPolicyError("Match minimums must satisfy 0 <= review <= recommended <= 100")
+    calibration = policy["calibration"]
+    if calibration.get("status") not in {"not_calibrated", "calibrated"}:
+        raise ScoringPolicyError("Calibration status must be not_calibrated or calibrated")
+    if not isinstance(calibration.get("probability_claims_allowed"), bool):
+        raise ScoringPolicyError("Calibration probability_claims_allowed must be boolean")
+    if calibration["probability_claims_allowed"] and calibration["status"] != "calibrated":
+        raise ScoringPolicyError("Probability claims cannot be enabled before calibration")
+    if not isinstance(calibration.get("evaluation_contract_id"), str):
+        raise ScoringPolicyError("Calibration evaluation_contract_id is required")
 
 
 def _validate_freshness(policy: Dict[str, Any]) -> None:
@@ -96,4 +105,14 @@ def policy_metadata() -> Dict[str, str]:
         "policy_id": str(SCORING_POLICY["policy_id"]),
         "effective_at": str(SCORING_POLICY["effective_at"]),
         "owner": str(SCORING_POLICY["owner"]),
+    }
+
+
+def calibration_metadata() -> Dict[str, Any]:
+    calibration = SCORING_POLICY["calibration"]
+    return {
+        "status": str(calibration["status"]),
+        "probability_claims_allowed": bool(calibration["probability_claims_allowed"]),
+        "evaluation_contract_id": str(calibration["evaluation_contract_id"]),
+        "human_review_required": calibration["status"] != "calibrated",
     }
