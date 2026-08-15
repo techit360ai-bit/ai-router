@@ -1,6 +1,6 @@
 # AI Router Production Hardening Plan
 
-Status: P0, scoring policy registry, and offline evaluation contract complete; calibration and operational controls remain
+Status: P0, scoring policy registry, offline evaluation, and ranking provenance slice complete; operational controls remain
 Branch: `hardening/ai-router-production-readiness-2026-08-14`
 Base: `57224fe` (`security/router-hardening-2026-08-13`)
 
@@ -79,8 +79,9 @@ P0 items 1–3 and the scaffold integrity portion of item 7 are implemented. The
 - `2c92ce1` — scaffold parsing and deployment surfaces fail closed; removed fictional artifact/live URLs and implicit stack defaults. Added `tests/test_scaffold_integrity.py`.
 - `86fb0f8` — added validated `config/scoring_policies.json`, production freshness checks, policy-backed GSIS/UPS/EVI-I/investment/match/decay/valuation inputs, and policy metadata on score responses. Added `tests/test_scoring_policy_registry.py`.
 - `4496e5c` — added `config/evaluation_contract.json`, deterministic fixtures for matching/GSIS/UPS/EVI-I/investment/risk/valuation, score-drift checks, FP/FN and coverage metrics, and rejection of uncalibrated numeric probability claims. Added `tests/test_offline_evaluation.py`.
+- `76d3a02` — added privacy-safe collaborator ranking audit events, pseudonymous exposure references, field-level provenance, freshness, confidence, and missing-field reason codes. Added `tests/test_decision_audit.py`.
 
-Verification at this checkpoint: `pytest -q` => `144 passed` (existing deprecation and local pytest-cache permission warnings remain). `python3 offline_evaluation.py` reports `human_review_only` as expected for the deliberately small, uncalibrated fixture set.
+Verification at this checkpoint: `pytest -q` => `146 passed` (existing deprecation and local pytest-cache permission warnings remain). `python3 offline_evaluation.py` reports `human_review_only` as expected for the deliberately small, uncalibrated fixture set.
 
 ## Next Session
 
