@@ -1,6 +1,6 @@
 # AI Router Production Hardening Plan
 
-Status: P0, scoring policy registry, offline evaluation, ranking provenance, and match policy migration complete; operational controls remain
+Status: P0, scoring/evaluation governance, ranking provenance, match policy migration, and provider freshness complete; release controls remain
 Branch: `hardening/ai-router-production-readiness-2026-08-14`
 Base: `57224fe` (`security/router-hardening-2026-08-13`)
 
@@ -81,17 +81,18 @@ P0 items 1–3 and the scaffold integrity portion of item 7 are implemented. The
 - `4496e5c` — added `config/evaluation_contract.json`, deterministic fixtures for matching/GSIS/UPS/EVI-I/investment/risk/valuation, score-drift checks, FP/FN and coverage metrics, and rejection of uncalibrated numeric probability claims. Added `tests/test_offline_evaluation.py`.
 - `76d3a02` — added privacy-safe collaborator ranking audit events, pseudonymous exposure references, field-level provenance, freshness, confidence, and missing-field reason codes. Added `tests/test_decision_audit.py`.
 - `9b9c659` — added the Alembic `matches.policy_id` migration and current-versus-legacy policy provenance handling for persisted match decisions.
+- `dd4c001` — added schema/version/freshness validation for model and task-policy registries, cost-complete profitability routing, and registry metadata on every AI response. Added `tests/test_registry_freshness.py`.
 
-Verification at this checkpoint: `pytest -q` => `147 passed` (existing deprecation and local pytest-cache permission warnings remain). `python3 offline_evaluation.py` reports `human_review_only` as expected for the deliberately small, uncalibrated fixture set. `alembic heads` => `ab12cd34ef56`.
+Verification at this checkpoint: `pytest -q` => `152 passed` (existing deprecation and local pytest-cache permission warnings remain). `python3 offline_evaluation.py` reports `human_review_only` as expected for the deliberately small, uncalibrated fixture set. `alembic heads` => `ab12cd34ef56`.
 
 ## Next Session
 
-Continue items 6 and 8 next:
+Continue items 6 and 10 next:
 
 1. Add field-level evidence provenance, freshness, confidence, and missing-field reason codes to domain responses and monitoring events.
 2. Add ranking exposure and outcome-parity measurements for collaborator and investor matching without protected attributes or proxy features.
 3. Keep the evaluation release gate human-review-only until real outcome coverage and approved calibration metadata are available.
-4. Add provider registry freshness checks, stale metadata alerts, and release gates for incomplete routing configuration.
+4. Add release checks and runbook coverage for evidence gates, registry freshness, audit HMAC configuration, migration head, and remaining manual controls.
 
 ## Continuation Instructions
 
@@ -113,5 +114,5 @@ After each milestone: run the focused tests, update this document's status, comm
 - Resolved: scaffold and deployment paths no longer return fictional artifact or live URLs.
 - Open: scoring policies are versioned and freshness-checked but remain uncalibrated against outcome data.
 - Open: the offline evaluator is deterministic and contract-enforcing, but its eight local fixtures are not production outcome evidence.
-- Open: provider registry freshness, fairness monitoring, human override metrics, and release gates remain unimplemented.
+- Open: fairness outcome monitoring, human override metrics, and production release gates remain unimplemented.
 - Open: existing persisted match rows remain legacy/unversioned until backfill; the schema now records policy ids for new decisions.
