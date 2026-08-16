@@ -46,6 +46,94 @@
     "tiers": [[85, "Elite -- investor-ready"], [70, "Strong -- market-ready"], [55, "Developing -- on track"], [40, "Early -- needs focus"], [0, "At risk -- intervention needed"]],
     "alert": {"trigger_above": 60, "risk_floor": 50, "delay_floor": 40, "drop_floor": 40}
   },
+  "gsis_v2": {
+    "model_version": "gsis-v2.0.0",
+    "stage_models": {
+      "BUILD": {
+        "problem": 0.15,
+        "customer_validation": 0.15,
+        "solution": 0.15,
+        "team": 0.10,
+        "product": 0.15,
+        "market": 0.10,
+        "business_model": 0.10,
+        "execution": 0.10
+      },
+      "LAUNCH": {
+        "acquisition": 0.15,
+        "activation": 0.15,
+        "retention": 0.20,
+        "pmf": 0.15,
+        "monetization": 0.10,
+        "gtm": 0.10,
+        "customer_satisfaction": 0.05,
+        "execution": 0.05,
+        "competitive_position": 0.05
+      },
+      "GROWTH": {
+        "revenue_growth": 0.15,
+        "customer_growth": 0.10,
+        "retention": 0.15,
+        "unit_economics": 0.15,
+        "acquisition_efficiency": 0.10,
+        "expansion": 0.10,
+        "market_position": 0.10,
+        "operations": 0.05,
+        "moat": 0.05,
+        "capital_efficiency": 0.05
+      }
+    },
+    "stage_detection": {
+      "launch_min_product": 50,
+      "launch_min_users": 1,
+      "growth_min_retention": 50,
+      "growth_min_repeatable_acquisition": 60,
+      "growth_min_revenue": 1
+    },
+    "readiness": {
+      "BUILD": {
+        "next_stage": "LAUNCH",
+        "components": {"problem": 0.20, "customer_validation": 0.20, "product": 0.20, "activation": 0.10, "gtm": 0.10, "business_model": 0.10, "operations": 0.10},
+        "critical_gates": {"problem": 55, "customer_validation": 45, "product": 55},
+        "thresholds": {"approaching": 55, "ready": 75, "advanced": 90}
+      },
+      "LAUNCH": {
+        "next_stage": "GROWTH",
+        "components": {"retention": 0.25, "pmf": 0.20, "acquisition": 0.15, "monetization": 0.10, "unit_economics": 0.10, "operations": 0.10, "expansion": 0.10},
+        "critical_gates": {"retention": 55, "pmf": 55, "acquisition": 50},
+        "thresholds": {"approaching": 55, "ready": 75, "advanced": 90}
+      },
+      "GROWTH": {
+        "next_stage": "SCALE",
+        "components": {"retention": 0.20, "unit_economics": 0.20, "operations": 0.20, "acquisition_efficiency": 0.15, "expansion": 0.10, "moat": 0.10, "capital_efficiency": 0.05},
+        "critical_gates": {"retention": 60, "unit_economics": 55, "operations": 55},
+        "thresholds": {"approaching": 60, "ready": 80, "advanced": 92}
+      }
+    },
+    "global_weights": {"stage_health": 0.65, "momentum": 0.10, "readiness": 0.15, "risk_inverse": 0.10},
+    "evidence_level_factors": {"1": 0.25, "2": 0.45, "3": 0.70, "4": 0.90, "5": 1.00},
+    "freshness": {"current_days": 7, "recent_days": 30, "stale_days": 90, "recent_factor": 0.85, "stale_factor": 0.55},
+    "decay": {
+      "BUILD": {"expected_activity_days": 14, "exponent": 0.012},
+      "LAUNCH": {"expected_activity_days": 7, "exponent": 0.020},
+      "GROWTH": {"expected_activity_days": 3, "exponent": 0.028}
+    },
+    "pmf_metrics": {"retention": 0.30, "activation": 0.15, "organic_growth": 0.10, "referrals": 0.10, "willingness_to_pay": 0.10, "customer_satisfaction": 0.10, "expansion": 0.10, "churn_inverse": 0.05},
+    "risk_categories": {
+      "market": ["market", "customer_validation"],
+      "customer": ["activation", "retention", "customer_satisfaction"],
+      "product": ["solution", "product"],
+      "technical": ["technical", "operations"],
+      "business_model": ["business_model", "monetization", "unit_economics"],
+      "financial": ["revenue_growth", "capital_efficiency"],
+      "team": ["team"],
+      "regulatory": ["regulatory"],
+      "competitive": ["competitive_position", "market_position", "moat"],
+      "execution": ["execution", "acquisition_efficiency"]
+    },
+    "risk_levels": {"medium": 35, "high": 55, "critical": 75},
+    "health_tiers": [[85, "EXCEPTIONAL"], [70, "HEALTHY"], [58, "PROMISING"], [45, "FRAGILE"], [0, "AT_RISK"]]
+  },
   "evi_investor": {
     "weights": {"mdr": 0.25, "is": 0.20, "trv": 0.15, "rta": 0.20, "ugm": 0.10, "cev": 0.10},
     "signal_thresholds": [[85, "exceptional_velocity"], [70, "strong_velocity"], [55, "moderate_velocity"], [40, "slow_velocity"], [0, "stalled"]]

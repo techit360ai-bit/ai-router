@@ -1,6 +1,6 @@
 # GSIS v2 Stage-Aware Startup Intelligence Engine
 
-Status: implementation in progress
+Status: Phases 1-2 vertical slice complete; Phases 3-4 pending
 
 Plan commit: create this document before code changes so work can resume safely in a new context window.
 
@@ -120,3 +120,10 @@ The v2 engine is configuration-driven and implements stage detection, stage-spec
 4. Run frontend verification: `npm run build --prefix frontend` from `new-frontend`.
 5. Continue from the first incomplete delivery phase and update `Status` plus this checklist when a phase lands.
 
+## Current checkpoint
+
+- Complete: configuration-driven BUILD/LAUNCH/GROWTH models, evidence confidence/freshness, missing-data coverage, stage detection, stage-aware decay, momentum, PMF, risk, readiness gates, bottleneck, next action, health classification, legacy linkage, role projections, and single/batch v2 APIs.
+- Complete: founder operating scorecard in the existing dashboard card language, compact Deal Intelligence signals/filters, and the investor startup analysis scorecard.
+- Complete: BUILD weights adjusted to Team 10% and Execution 10%.
+- Verified: focused AI-router tests and the frontend production build.
+- Pending: PostgreSQL persistence/migrations, immutable v2 snapshots, background refresh jobs, recommendation-to-task outcomes, admin configuration UI, contextual benchmarks, and calibrated prediction.

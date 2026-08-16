@@ -35,7 +35,7 @@ def _validate(policy: Any) -> None:
             raise ScoringPolicyError(f"Scoring policy requires non-empty {field}")
     if not isinstance(policy.get("changelog"), list) or not policy["changelog"]:
         raise ScoringPolicyError("Scoring policy requires a non-empty changelog")
-    for section_name in ("unicorn", "gsis", "evi_investor", "investment", "match", "decay", "valuation", "calibration"):
+    for section_name in ("unicorn", "gsis", "gsis_v2", "evi_investor", "investment", "match", "decay", "valuation", "calibration"):
         if not isinstance(policy.get(section_name), dict):
             raise ScoringPolicyError(f"Scoring policy section is missing: {section_name}")
     for section_name in ("unicorn", "gsis", "evi_investor", "investment", "match"):
@@ -52,6 +52,15 @@ def _validate(policy: Any) -> None:
             raise ScoringPolicyError(f"Scoring policy weights must sum to 1: {section_name}")
         if any(value < 0 for value in numeric_weights):
             raise ScoringPolicyError(f"Scoring policy weights cannot be negative: {section_name}")
+    gsis_v2 = policy["gsis_v2"]
+    if not isinstance(gsis_v2.get("model_version"), str) or not gsis_v2["model_version"].strip():
+        raise ScoringPolicyError("GSIS v2 model_version is required")
+    for stage in ("BUILD", "LAUNCH", "GROWTH"):
+        weights = gsis_v2.get("stage_models", {}).get(stage)
+        if not isinstance(weights, dict) or abs(sum(float(value) for value in weights.values()) - 1.0) > 1e-6:
+            raise ScoringPolicyError(f"GSIS v2 stage weights must sum to 1: {stage}")
+        if not isinstance(gsis_v2.get("readiness", {}).get(stage), dict):
+            raise ScoringPolicyError(f"GSIS v2 readiness policy is missing: {stage}")
     try:
         exponent = float(policy["decay"].get("exponent_per_inactive_day"))
         multiple = float(policy["valuation"].get("arr_multiple"))

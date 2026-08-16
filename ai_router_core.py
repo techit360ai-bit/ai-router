@@ -71,6 +71,7 @@ from execution_controls import (
     ProviderCircuitBreaker,
     ResponseCache,
 )
+from gsis_v2 import compute_scorecard as compute_gsis_v2_scorecard
 from model_registry import ModelDefinition, ModelRegistry, RegistryError, TaskPolicy
 from output_validation import OutputValidationError, validate_output
 from policy_registry import SCORING_POLICY, calibration_metadata, policy_metadata
@@ -182,6 +183,11 @@ class ScoringEngine:
         return policy_metadata()
 
     # ── 1. GLOBAL STARTUP INTELLIGENCE SCORE (GSIS) ────────────────────────
+
+    @classmethod
+    def compute_gsis_v2(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Compute the versioned, stage-aware GSIS v2 scorecard."""
+        return compute_gsis_v2_scorecard(payload)
 
     @classmethod
     def compute_gsis(

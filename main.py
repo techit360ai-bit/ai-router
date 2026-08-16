@@ -56,9 +56,11 @@ from integration_guide import (
     WorkspaceService,
     HackathonService,
 )
-from ai_router_core import ModelRouter, TaskType, UserContext, UserRole
+from ai_router_core import ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
+from gsis_v2 import project_scorecard
 from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationError
 from model_registry import ModelRegistry, RegistryError
+from policy_registry import SCORING_POLICY
 from runtime_config import (
     PROD_ENVS,
     RuntimeCheck,
@@ -1006,6 +1008,47 @@ async def compute_gsis(
 ):
     """Compute GSIS from component scores. 1 execution budget unit, Free+"""
     return await GSISService(brain).compute_with_narrative(user, scores)
+
+
+def _gsis_projection_role(user: UserContext) -> str:
+    role = user.role.value if isinstance(user.role, UserRole) else str(user.role)
+    if role == UserRole.INVESTOR.value:
+        return "investor"
+    if role == UserRole.ADMIN.value:
+        return "admin"
+    return "founder"
+
+
+@app.post("/api/v2/gsis/scorecard", tags=["Dashboard"])
+async def compute_gsis_v2(
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Compute one deterministic, stage-aware GSIS v2 role projection."""
+    scorecard = ScoringEngine.compute_gsis_v2(payload)
+    return project_scorecard(scorecard, _gsis_projection_role(user))
+
+
+@app.post("/api/v2/gsis/scorecards", tags=["Dashboard"])
+async def compute_gsis_v2_batch(
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Compute up to 100 deterministic GSIS v2 role projections."""
+    startups = payload.get("startups")
+    if not isinstance(startups, list):
+        raise HTTPException(status_code=422, detail="startups must be a list")
+    if len(startups) > 100:
+        raise HTTPException(status_code=422, detail="a maximum of 100 startups is supported")
+    role = _gsis_projection_role(user)
+    return {
+        "scorecards": [
+            project_scorecard(ScoringEngine.compute_gsis_v2(startup), role)
+            for startup in startups
+            if isinstance(startup, dict)
+        ],
+        "model_version": SCORING_POLICY["gsis_v2"]["model_version"],
+    }
 
 
 # ============================================================================
