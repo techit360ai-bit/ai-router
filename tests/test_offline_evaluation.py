@@ -23,12 +23,12 @@ from offline_evaluation import (  # noqa: E402
 def test_backtests_cover_all_domains_and_remain_human_review_only() -> None:
     report = run_backtests()
 
-    assert report["cases_total"] == 8
+    assert report["cases_total"] == 9
     assert set(report["domain_case_counts"]) == REQUIRED_DOMAINS
     assert all(count >= 1 for count in report["domain_case_counts"].values())
     assert report["outcome_metrics"]["coverage"] == 1.0
     assert report["outcome_metrics"]["false_positive_rate"] == 0.0
-    assert report["outcome_metrics"]["false_negative_rate"] == pytest.approx(1 / 3, abs=1e-6)
+    assert report["outcome_metrics"]["false_negative_rate"] == pytest.approx(1 / 4, abs=1e-6)
     assert report["drift_metrics"]["maximum_absolute_drift"] == 0.0
     assert report["calibration_metrics"]["numeric_probability_claims"] == 0
     assert report["release_gate"]["status"] == "human_review_only"

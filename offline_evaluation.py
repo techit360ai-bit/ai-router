@@ -11,7 +11,7 @@ from policy_registry import SCORING_POLICY, calibration_metadata, policy_metadat
 
 
 REQUIRED_DOMAINS = {
-    "matching", "gsis", "ups", "evi_investor", "investment", "risk", "valuation",
+    "matching", "gsis", "gsis_v2", "ups", "evi_investor", "investment", "risk", "valuation",
 }
 DEFAULT_CONTRACT_PATH = Path(__file__).with_name("config") / "evaluation_contract.json"
 DEFAULT_FIXTURE_PATH = Path(__file__).with_name("tests") / "fixtures" / "scoring_backtest_cases.json"
@@ -84,6 +84,8 @@ def _evaluate_case(case: Mapping[str, Any], contract: Mapping[str, Any]) -> Dict
         return _score_result(match_score=score, classification=classification)
     if domain == "gsis":
         return ScoringEngine.compute_gsis(**values)
+    if domain == "gsis_v2":
+        return ScoringEngine.compute_gsis_v2(values)
     if domain == "ups":
         return ScoringEngine.compute_unicorn_potential_score(values)
     if domain == "evi_investor":

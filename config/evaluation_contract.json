@@ -7,6 +7,7 @@
   "domains": {
     "matching": {"score_path": "match_score"},
     "gsis": {"score_path": "gsis"},
+    "gsis_v2": {"score_path": "gsis"},
     "ups": {"score_path": "unicorn_potential_score"},
     "evi_investor": {"score_path": "adjusted_evi_i"},
     "investment": {"score_path": "investment_score"},

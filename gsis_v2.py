@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
+from threading import RLock
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional, Tuple
 
@@ -10,6 +12,7 @@ from policy_registry import SCORING_POLICY, policy_metadata
 
 
 POLICY = SCORING_POLICY["gsis_v2"]
+_POLICY_LOCK = RLock()
 SUPPORTED_STAGES = {"BUILD", "LAUNCH", "GROWTH"}
 STATUS_FACTORS = {
     "observed": 1.0,
@@ -18,6 +21,32 @@ STATUS_FACTORS = {
     "ai_inferred": 0.4,
     "unknown": 0.0,
 }
+
+
+def activate_policy_override(overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """Atomically activate validated admin overrides without rewriting scoring code."""
+    if not isinstance(overrides, dict):
+        raise ValueError("GSIS configuration must be an object")
+
+    def merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+        result = deepcopy(base)
+        for key, value in incoming.items():
+            if isinstance(value, dict) and isinstance(result.get(key), dict):
+                result[key] = merge(result[key], value)
+            else:
+                result[key] = deepcopy(value)
+        return result
+
+    global POLICY
+    candidate = merge(POLICY, overrides)
+    for stage in SUPPORTED_STAGES:
+        weights = candidate.get("stage_models", {}).get(stage, {})
+        if not weights or abs(sum(float(value) for value in weights.values()) - 1.0) > 1e-6:
+            raise ValueError(f"{stage} weights must sum to 1")
+    with _POLICY_LOCK:
+        POLICY = candidate
+        SCORING_POLICY["gsis_v2"] = candidate
+    return deepcopy(candidate)
 
 
 def _clamp(value: float, minimum: float = 0.0, maximum: float = 100.0) -> float:
@@ -393,6 +422,20 @@ def _health_classification(gsis: Optional[float], momentum: float, risk_score: O
     return "AT_RISK"
 
 
+def _prediction_estimates(stage: str, readiness: Dict[str, Any], momentum: Dict[str, Any], confidence: float) -> Dict[str, Any]:
+    """Return non-calibrated estimates until verified outcome data approves probabilities."""
+    readiness_score = readiness.get("score")
+    momentum_score = float(momentum.get("score") or 0)
+    base = None if readiness_score is None else _clamp(float(readiness_score) + momentum_score)
+    band = "UNKNOWN" if base is None else "HIGH" if base >= 75 else "MEDIUM" if base >= 50 else "LOW"
+    return {
+        "calibration_status": "not_calibrated",
+        "launch_readiness_30d": {"estimate": band if stage == "BUILD" else "N/A", "probability": None, "confidence": round(confidence, 4), "label": "AI_ESTIMATE"},
+        "growth_readiness_90d": {"estimate": band if stage in {"BUILD", "LAUNCH"} else "N/A", "probability": None, "confidence": round(confidence, 4), "label": "AI_ESTIMATE"},
+        "stagnation": {"estimate": "HIGH" if momentum_score <= -10 else "MEDIUM" if momentum_score < 0 else "LOW", "probability": None, "confidence": round(confidence, 4), "label": "AI_ESTIMATE"},
+    }
+
+
 def compute_scorecard(payload: Dict[str, Any]) -> Dict[str, Any]:
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
     evaluated_at = _now(payload)
@@ -441,6 +484,7 @@ def compute_scorecard(payload: Dict[str, Any]) -> Dict[str, Any]:
         "weakest_area": None if weakest is None else {"category": weakest["key"].upper(), "score": weakest["score"]},
         "bottleneck": bottleneck,
         "recommendation": recommendation,
+        "predictions": _prediction_estimates(detected, readiness, momentum, confidence),
         "legacy": {"gsis": payload.get("legacy_gsis"), "model": "GSIS v1" if payload.get("legacy_gsis") is not None else None},
     }
     return scorecard
@@ -464,7 +508,7 @@ def project_scorecard(scorecard: Dict[str, Any], role: str) -> Dict[str, Any]:
     if role == "feed":
         return {key: common[key] for key in ("startup_id", "model", "evaluated_at", "gsis", "stage", "momentum")}
     if role == "investor":
-        return {**common, "risk": scorecard["risk"], "readiness": scorecard["readiness"], "components": scorecard["components"], "strongest_area": scorecard["strongest_area"], "weakest_area": scorecard["weakest_area"], "bottleneck": scorecard["bottleneck"], "legacy": scorecard["legacy"]}
+        return {**common, "risk": scorecard["risk"], "readiness": scorecard["readiness"], "components": scorecard["components"], "strongest_area": scorecard["strongest_area"], "weakest_area": scorecard["weakest_area"], "bottleneck": scorecard["bottleneck"], "predictions": scorecard["predictions"], "legacy": scorecard["legacy"]}
     if role == "founder":
-        return {**common, "risk": {key: scorecard["risk"][key] for key in ("score", "level", "primary_risk", "trend")}, "readiness": scorecard["readiness"], "strongest_area": scorecard["strongest_area"], "weakest_area": scorecard["weakest_area"], "bottleneck": scorecard["bottleneck"], "recommendation": scorecard["recommendation"], "components": scorecard["components"], "legacy": scorecard["legacy"]}
+        return {**common, "risk": {key: scorecard["risk"][key] for key in ("score", "level", "primary_risk", "trend")}, "readiness": scorecard["readiness"], "strongest_area": scorecard["strongest_area"], "weakest_area": scorecard["weakest_area"], "bottleneck": scorecard["bottleneck"], "recommendation": scorecard["recommendation"], "predictions": scorecard["predictions"], "components": scorecard["components"], "legacy": scorecard["legacy"]}
     return scorecard

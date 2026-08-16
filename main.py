@@ -61,6 +61,16 @@ from gsis_v2 import project_scorecard
 from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationError
 from model_registry import ModelRegistry, RegistryError
 from policy_registry import SCORING_POLICY
+from database_schema import Project, GsisV2ConfigAudit, GsisV2Recommendation
+from gsis_v2_persistence import (
+    audit_config,
+    list_benchmarks,
+    list_recommendations,
+    record_recommendation_outcome,
+    score_and_persist,
+    scorecard_history,
+    save_benchmark,
+)
 from runtime_config import (
     PROD_ENVS,
     RuntimeCheck,
@@ -1049,6 +1059,145 @@ async def compute_gsis_v2_batch(
         ],
         "model_version": SCORING_POLICY["gsis_v2"]["model_version"],
     }
+
+
+def _project_row(db: Any, project_id: str) -> Any:
+    try:
+        from uuid import UUID
+        project_uuid = UUID(project_id)
+    except (TypeError, ValueError):
+        project_uuid = project_id
+    return db.query(Project).filter(Project.id == project_uuid).first()
+
+
+def _require_project_owner(user: UserContext, db: Any, project_id: str) -> Any:
+    project = _project_row(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if user.role != UserRole.ADMIN and str(project.owner_id) != str(user.user_id):
+        raise HTTPException(status_code=403, detail="project access denied")
+    return project
+
+
+@app.post("/api/v2/gsis/projects/{project_id}/refresh", tags=["GSIS v2"])
+async def refresh_persisted_gsis_v2(
+    project_id: str,
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Compute, persist, and snapshot a project scorecard without rewriting legacy scores."""
+    project = _require_project_owner(user, db, project_id)
+    scorecard = score_and_persist(db, project_id, payload, owner_id=project.owner_id, trigger="api")
+    return project_scorecard(scorecard, _gsis_projection_role(user))
+
+
+@app.get("/api/v2/gsis/projects/{project_id}/history", tags=["GSIS v2"])
+async def persisted_gsis_v2_history(
+    project_id: str,
+    limit: int = 90,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    _require_project_owner(user, db, project_id)
+    return {"project_id": project_id, "snapshots": scorecard_history(db, project_id, limit)}
+
+
+@app.get("/api/v2/gsis/projects/{project_id}/recommendations", tags=["GSIS v2"])
+async def persisted_gsis_v2_recommendations(
+    project_id: str,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    _require_project_owner(user, db, project_id)
+    return {"project_id": project_id, "recommendations": list_recommendations(db, project_id)}
+
+
+@app.post("/api/v2/gsis/recommendations/{recommendation_id}/outcome", tags=["GSIS v2"])
+async def gsis_v2_recommendation_outcome(
+    recommendation_id: str,
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    try:
+        from uuid import UUID
+        recommendation_uuid = UUID(recommendation_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="invalid recommendation id")
+    recommendation = db.query(GsisV2Recommendation).filter(GsisV2Recommendation.id == recommendation_uuid).first()
+    if recommendation is None:
+        raise HTTPException(status_code=404, detail="recommendation not found")
+    if user.role != UserRole.ADMIN and str(recommendation.owner_id) != str(user.user_id):
+        raise HTTPException(status_code=403, detail="recommendation access denied")
+    try:
+        return record_recommendation_outcome(db, recommendation_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v2/gsis/benchmarks", tags=["GSIS v2"])
+async def gsis_v2_benchmarks(
+    stage: Optional[str] = None,
+    metric: Optional[str] = None,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    return {"benchmarks": list_benchmarks(db, stage=stage, metric=metric)}
+
+
+@app.get("/api/v2/admin/gsis/config", tags=["Admin"])
+async def gsis_v2_config(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    audits = db.query(GsisV2ConfigAudit).order_by(GsisV2ConfigAudit.created_at.desc()).limit(20).all()
+    return {
+        "active_model_version": SCORING_POLICY["gsis_v2"]["model_version"],
+        "policy": SCORING_POLICY["gsis_v2"],
+        "audit": [{"version": row.version, "reason": row.reason, "created_at": row.created_at.isoformat() if row.created_at else None} for row in audits],
+    }
+
+
+@app.post("/api/v2/admin/gsis/config", tags=["Admin"])
+async def gsis_v2_config_update(
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    try:
+        return audit_config(db, payload, changed_by=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/admin/gsis/benchmarks", tags=["Admin"])
+async def gsis_v2_benchmark_create(
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    try:
+        return save_benchmark(db, payload, changed_by=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v2/admin/gsis/calibration", tags=["Admin"])
+async def gsis_v2_calibration(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    report = production_report(db, "techit-scoring-2026-08-14-v1")
+    return {"model_version": SCORING_POLICY["gsis_v2"]["model_version"], "prediction_policy": "probabilities remain disabled until calibration is approved", "report": report}
 
 
 # ============================================================================

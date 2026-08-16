@@ -24,6 +24,13 @@
       "outcome": {"observed_positive": false, "prediction": {"path": "gsis", "gte": 70}}
     },
     {
+      "case_id": "gsis-v2-build-positive",
+      "domain": "gsis_v2",
+      "input": {"evaluated_at": "2026-08-16T10:00:00Z", "metrics": {"problem": {"score": 80, "status": "observed", "evidence_level": 4, "observed_at": "2026-08-16T10:00:00Z"}, "team": {"score": 90, "status": "observed", "evidence_level": 4, "observed_at": "2026-08-16T10:00:00Z"}}},
+      "expected": {"gsis": 84.0, "stage_health": 84.0, "stage": {"detected_stage": "BUILD"}, "predictions": {"launch_readiness_30d": {"probability": null, "label": "AI_ESTIMATE"}}},
+      "outcome": {"observed_positive": true, "prediction": {"path": "gsis", "gte": 70}}
+    },
+    {
       "case_id": "ups-heuristic-negative",
       "domain": "ups",
       "input": {"market_size": 10},

@@ -11,7 +11,7 @@ from offline_evaluation import load_evaluation_contract
 from policy_registry import SCORING_POLICY
 
 
-ALLOWED_DOMAINS = {"matching", "gsis", "ups", "evi_investor", "investment", "risk", "valuation"}
+ALLOWED_DOMAINS = {"matching", "gsis", "gsis_v2", "ups", "evi_investor", "investment", "risk", "valuation"}
 VERIFIED_SOURCES = {"verified_platform_event", "verified_financial_record", "verified_match_outcome", "human_reviewed_outcome"}
 
 

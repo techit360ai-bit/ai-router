@@ -485,6 +485,144 @@ class ScoreSnapshot(Base):
     )
 
 
+# ============================================================================
+# GSIS V2 -- VERSIONED INTELLIGENCE RECORDS
+# ============================================================================
+
+class GsisV2Profile(Base):
+    """Latest canonical GSIS v2 scorecard for a project."""
+    __tablename__ = "gsis_v2_profiles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, unique=True)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    model_version = Column(String(80), nullable=False)
+    detected_stage = Column(String(20), nullable=False)
+    declared_stage = Column(String(30))
+    gsis = Column(Float)
+    stage_health = Column(Float)
+    momentum = Column(Float)
+    pmf = Column(Float)
+    risk_score = Column(Float)
+    risk_level = Column(String(20))
+    readiness_score = Column(Float)
+    readiness_status = Column(String(20))
+    confidence = Column(Float)
+    data_coverage = Column(Float)
+    health_classification = Column(String(30))
+    bottleneck = Column(String(80))
+    scorecard = Column(JSON, nullable=False)
+    calculated_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_gsis_v2_profile_stage", "detected_stage"),
+        Index("idx_gsis_v2_profile_updated", "updated_at"),
+    )
+
+
+class GsisV2Snapshot(Base):
+    """Immutable historical GSIS v2 scorecard snapshot."""
+    __tablename__ = "gsis_v2_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    model_version = Column(String(80), nullable=False)
+    gsis = Column(Float)
+    detected_stage = Column(String(20), nullable=False)
+    momentum = Column(Float)
+    risk_score = Column(Float)
+    readiness_score = Column(Float)
+    confidence = Column(Float)
+    data_coverage = Column(Float)
+    trigger = Column(String(80), nullable=False, default="scheduled")
+    scorecard = Column(JSON, nullable=False)
+    snapshotted_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_gsis_v2_snapshot_project_time", "project_id", "snapshotted_at"),
+        Index("idx_gsis_v2_snapshot_stage", "detected_stage"),
+    )
+
+
+class GsisV2Recommendation(Base):
+    """Action generated from a scorecard and linked to execution metadata."""
+    __tablename__ = "gsis_v2_recommendations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    model_version = Column(String(80), nullable=False)
+    category = Column(String(80), nullable=False)
+    action = Column(Text, nullable=False)
+    success_metric = Column(Text)
+    expected_impact = Column(String(20))
+    confidence = Column(Float)
+    time_horizon_days = Column(Integer)
+    task_id = Column(String(120))
+    status = Column(String(20), nullable=False, default="recommended")
+    outcome_id = Column(UUID(as_uuid=True), nullable=True)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (Index("idx_gsis_v2_recommendation_project", "project_id", "created_at"),)
+
+
+class GsisV2RecommendationOutcome(Base):
+    """Observed result of an accepted GSIS recommendation."""
+    __tablename__ = "gsis_v2_recommendation_outcomes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    recommendation_id = Column(UUID(as_uuid=True), ForeignKey("gsis_v2_recommendations.id"), nullable=False, unique=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    metric = Column(String(120), nullable=False)
+    baseline_value = Column(Float)
+    observed_value = Column(Float)
+    expected_value = Column(Float)
+    outcome = Column(String(30), nullable=False)
+    evidence = Column(JSON, nullable=True)
+    observed_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+
+
+class GsisV2Benchmark(Base):
+    """Contextual benchmark data scoped by stage, business model, industry, and geography."""
+    __tablename__ = "gsis_v2_benchmarks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    metric = Column(String(120), nullable=False)
+    stage = Column(String(20), nullable=False)
+    business_model = Column(String(60))
+    industry = Column(String(100))
+    geography = Column(String(100))
+    sample_size = Column(Integer, default=0, nullable=False)
+    p25 = Column(Float)
+    median = Column(Float)
+    p75 = Column(Float)
+    source = Column(String(200), nullable=False)
+    as_of = Column(TIMESTAMP)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (Index("idx_gsis_v2_benchmark_lookup", "metric", "stage", "business_model", "industry", "geography"),)
+
+
+class GsisV2ConfigAudit(Base):
+    """Versioned admin scoring configuration change audit record."""
+    __tablename__ = "gsis_v2_config_audits"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    version = Column(String(80), nullable=False)
+    config = Column(JSON, nullable=False)
+    changed_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    reason = Column(Text)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (Index("idx_gsis_v2_config_audit_version", "version", "created_at"),)
+
+
 class WCRSHistory(Base):
     """Historical WCRS marketplace ranking for trend charts."""
     __tablename__ = "wcrs_history"

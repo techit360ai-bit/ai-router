@@ -1,6 +1,6 @@
 # GSIS v2 Stage-Aware Startup Intelligence Engine
 
-Status: Phases 1-2 vertical slice complete; Phases 3-4 pending
+Status: Phases 1-4 implemented
 
 Plan commit: create this document before code changes so work can resume safely in a new context window.
 
@@ -126,4 +126,6 @@ The v2 engine is configuration-driven and implements stage detection, stage-spec
 - Complete: founder operating scorecard in the existing dashboard card language, compact Deal Intelligence signals/filters, and the investor startup analysis scorecard.
 - Complete: BUILD weights adjusted to Team 10% and Execution 10%.
 - Verified: focused AI-router tests and the frontend production build.
-- Pending: PostgreSQL persistence/migrations, immutable v2 snapshots, background refresh jobs, recommendation-to-task outcomes, admin configuration UI, contextual benchmarks, and calibrated prediction.
+- Complete: PostgreSQL profile/snapshot/recommendation/outcome/benchmark/config-audit persistence and Alembic migration.
+- Complete: six-hour background scorecard refresh, recommendation task-completion feedback, admin configuration activation/audit, contextual benchmark APIs, and prediction estimates governed by production calibration gates.
+- Prediction probabilities remain intentionally disabled until verified GSIS v2 outcomes satisfy the existing minimum sample, coverage, false-positive, false-negative, and Brier-score release gates.

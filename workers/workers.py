@@ -94,6 +94,7 @@ celery.conf.update(
         "workers.daily_investor_signals":       {"queue": "ai_heavy"},
         "workers.adaptive_curriculum_weekly":   {"queue": "ai_heavy"},
         "workers.wcrs_gsis_refresh":            {"queue": "scheduled"},
+        "workers.gsis_v2_snapshot_refresh":     {"queue": "scheduled"},
         "workers.stagnation_roster":            {"queue": "scheduled"},
         "workers.admin_anomaly_scan":           {"queue": "ai_light"},
         "workers.investor_alert_check":         {"queue": "scheduled"},
@@ -131,6 +132,10 @@ celery.conf.beat_schedule = {
     "wcrs-gsis-refresh": {
         "task":     "workers.wcrs_gsis_refresh",
         "schedule": crontab(minute="*/30"),
+    },
+    "gsis-v2-snapshot-refresh": {
+        "task":     "workers.gsis_v2_snapshot_refresh",
+        "schedule": crontab(minute=10, hour="*/6"),
     },
     "stagnation-roster": {
         "task":     "workers.stagnation_roster",
@@ -1228,6 +1233,61 @@ def wcrs_gsis_refresh(self):
                     total=len(projects), updated=updated)
     except Exception as exc:
         logger.error("wcrs_gsis_refresh_task_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=60)
+
+
+# ============================================================================
+# TASK 5B: GSIS V2 PROFILE + IMMUTABLE SNAPSHOT REFRESH
+# ============================================================================
+
+@celery.task(name="workers.gsis_v2_snapshot_refresh", bind=True, max_retries=2)
+def gsis_v2_snapshot_refresh(self):
+    """Refresh stage-aware profiles and append immutable snapshots every six hours."""
+    try:
+        from datetime import timezone
+        from gsis_v2_persistence import activate_latest_config, score_and_persist
+
+        with _get_db() as db:
+            activate_latest_config(db)
+        projects = _fetch_all_projects_with_scores()
+        updated = 0
+        failed = 0
+        now = datetime.now(timezone.utc)
+        logger.info("gsis_v2_snapshot_refresh_start", count=len(projects))
+        for project in projects:
+            stage = str(project.get("stage") or "build")
+            if "." in stage:
+                stage = stage.rsplit(".", 1)[-1]
+            metrics = {
+                "product": {"score": project.get("product_progress_score"), "status": "derived", "evidence_level": 2, "source": "legacy_project"},
+                "execution": {"score": project.get("evi_score"), "status": "derived", "evidence_level": 2, "source": "legacy_project"},
+                "market": {"score": project.get("market_readiness_score"), "status": "derived", "evidence_level": 2, "source": "legacy_project"},
+                "customer_validation": {"score": project.get("beta_satisfaction_score"), "status": "derived", "evidence_level": 2, "source": "legacy_project"},
+                "retention": {"score": project.get("beta_satisfaction_score"), "status": "derived", "evidence_level": 2, "source": "legacy_project"},
+                "revenue_growth": {"score": project.get("revenue_growth_signal"), "status": "derived", "evidence_level": 2, "source": "legacy_project"},
+                "team": {"score": project.get("founder_reliability_score"), "status": "derived", "evidence_level": 2, "source": "legacy_project"},
+                "product_available": {"value": stage.lower() in {"beta", "launch", "growth", "scale"}, "status": "derived", "evidence_level": 2, "source": "project_stage"},
+            }
+            metrics = {key: value for key, value in metrics.items() if value.get("score", value.get("value")) is not None}
+            days = int(project.get("days_since_update") or 0)
+            payload = {
+                "declared_stage": stage,
+                "legacy_gsis": project.get("gsis_score"),
+                "evaluated_at": now.isoformat(),
+                "last_activity_at": (now - timedelta(days=days)).isoformat(),
+                "metrics": metrics,
+            }
+            try:
+                with _get_db() as db:
+                    score_and_persist(db, project["id"], payload, owner_id=project.get("owner_id"), trigger="scheduled")
+                updated += 1
+            except Exception as exc:
+                failed += 1
+                logger.warning("gsis_v2_snapshot_project_failed", project_id=str(project.get("id")), error=str(exc))
+        logger.info("gsis_v2_snapshot_refresh_complete", total=len(projects), updated=updated, failed=failed)
+        return {"total": len(projects), "updated": updated, "failed": failed}
+    except Exception as exc:
+        logger.error("gsis_v2_snapshot_refresh_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=60)
 
 
