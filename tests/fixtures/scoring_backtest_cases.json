@@ -1,0 +1,69 @@
+{
+  "fixture_schema_version": 1,
+  "contract_id": "techit-offline-evaluation-2026-08-15-v1",
+  "cases": [
+    {
+      "case_id": "matching-high-positive",
+      "domain": "matching",
+      "input": {"skill_similarity": 0.95, "goal_similarity": 0.9, "execution_style_similarity": 0.8, "availability_overlap": 0.9, "trust_score": 0.85, "domain_experience": 0.8},
+      "expected": {"match_score": 88.5, "classification": "high"},
+      "outcome": {"observed_positive": true, "prediction": {"path": "match_score", "gte": 75}}
+    },
+    {
+      "case_id": "matching-low-negative",
+      "domain": "matching",
+      "input": {"skill_similarity": 0.4, "goal_similarity": 0.5, "execution_style_similarity": 0.4, "availability_overlap": 0.2, "trust_score": 0.5, "domain_experience": 0.3},
+      "expected": {"match_score": 39.0, "classification": "low"},
+      "outcome": {"observed_positive": false, "prediction": {"path": "match_score", "gte": 75}}
+    },
+    {
+      "case_id": "gsis-developing-negative",
+      "domain": "gsis",
+      "input": {"product_progress_score": 80, "execution_velocity_index": 70, "market_readiness_score": 60, "beta_satisfaction_score": 50, "revenue_growth_signal": 40, "founder_reputation_score": 30, "community_influence_score": 20, "investor_interest_score": 10, "compliance_score": 100},
+      "expected": {"gsis": 53.5, "classification": "Early -- needs focus"},
+      "outcome": {"observed_positive": false, "prediction": {"path": "gsis", "gte": 70}}
+    },
+    {
+      "case_id": "gsis-v2-build-positive",
+      "domain": "gsis_v2",
+      "input": {"evaluated_at": "2026-08-16T10:00:00Z", "metrics": {"problem": {"score": 80, "status": "observed", "evidence_level": 4, "observed_at": "2026-08-16T10:00:00Z"}, "team": {"score": 90, "status": "observed", "evidence_level": 4, "observed_at": "2026-08-16T10:00:00Z"}}},
+      "expected": {"gsis": 84.0, "stage_health": 84.0, "stage": {"detected_stage": "BUILD"}, "predictions": {"launch_readiness_30d": {"probability": null, "label": "AI_ESTIMATE"}}},
+      "outcome": {"observed_positive": true, "prediction": {"path": "gsis", "gte": 70}}
+    },
+    {
+      "case_id": "ups-heuristic-negative",
+      "domain": "ups",
+      "input": {"market_size": 10},
+      "expected": {"unicorn_potential_score": 15.0, "classification": "Weak Opportunity", "unicorn_probability_pct": null},
+      "outcome": {"observed_positive": false, "prediction": {"path": "unicorn_potential_score", "gte": 75}}
+    },
+    {
+      "case_id": "evi-moderate-observed-positive",
+      "domain": "evi_investor",
+      "input": {"mdr_score": 80, "is_score": 70, "trv_score": 60, "rta_score": 50, "ugm_score": 40, "cev_score": 90, "days_since_last_update": 0},
+      "expected": {"raw_evi_i": 66.0, "adjusted_evi_i": 66.0, "signal": "moderate_velocity"},
+      "outcome": {"observed_positive": true, "prediction": {"path": "adjusted_evi_i", "gte": 70}}
+    },
+    {
+      "case_id": "investment-ready-positive",
+      "domain": "investment",
+      "input": {"market_readiness": 80, "traction_score": 70, "team_score": 60, "risk_inverse": 50, "growth_rate": 40, "differentiation_score": 30},
+      "expected": {"investment_score": 63.5},
+      "outcome": {"observed_positive": true, "prediction": {"path": "investment_score", "gte": 60}}
+    },
+    {
+      "case_id": "risk-sparse-negative",
+      "domain": "risk",
+      "input": {"problem": "Teams duplicate compliance evidence."},
+      "expected": {"status": "insufficient_evidence", "missing_fields": ["solution", "target_customers"]},
+      "outcome": {"observed_positive": false, "prediction": {"path": "status", "equals": "provisional_human_review_required"}}
+    },
+    {
+      "case_id": "valuation-below-threshold-negative",
+      "domain": "valuation",
+      "input": {"mrr": 10000},
+      "expected": {"valuation": 960000.0},
+      "outcome": {"observed_positive": false, "prediction": {"path": "valuation", "gte": 1000000}}
+    }
+  ]
+}

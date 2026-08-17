@@ -56,9 +56,21 @@ from integration_guide import (
     WorkspaceService,
     HackathonService,
 )
-from ai_router_core import ModelRouter, TaskType, UserContext, UserRole
+from ai_router_core import ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
+from gsis_v2 import project_scorecard
 from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationError
 from model_registry import ModelRegistry, RegistryError
+from policy_registry import SCORING_POLICY
+from database_schema import Project, GsisV2ConfigAudit, GsisV2Recommendation
+from gsis_v2_persistence import (
+    audit_config,
+    list_benchmarks,
+    list_recommendations,
+    record_recommendation_outcome,
+    score_and_persist,
+    scorecard_history,
+    save_benchmark,
+)
 from runtime_config import (
     PROD_ENVS,
     RuntimeCheck,
@@ -69,6 +81,9 @@ from runtime_config import (
 )
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
+from live_domain_repository import LiveDomainRepository
+from hardening_metrics import METRICS
+from production_calibration import ProductionCalibrationError, production_report, record_outcome
 
 logger = structlog.get_logger()
 
@@ -142,6 +157,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-site"
+    if ENVIRONMENT == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 # ============================================================================
@@ -236,7 +264,11 @@ def _context_from_claim(user_id: str, payload: Dict[str, Any]) -> UserContext:
     )
 
 
-def _hydrate_from_db(ctx: UserContext, db) -> UserContext:
+class IdentityHydrationError(RuntimeError):
+    """Persisted identity could not be proven for an authenticated request."""
+
+
+def _hydrate_from_db(ctx: UserContext, db, *, require_user: bool = False) -> UserContext:
     """Hydrate only identity/role metadata; execution authorization is separate."""
     from dataclasses import replace as dc_replace
 
@@ -248,9 +280,13 @@ def _hydrate_from_db(ctx: UserContext, db) -> UserContext:
         ).scalar_one_or_none()
     except Exception as exc:  # noqa: BLE001
         logger.warning("user_db_hydrate_failed", user_id=ctx.user_id, error=str(exc))
+        if require_user:
+            raise IdentityHydrationError("Persisted identity lookup failed") from exc
         return ctx
 
     if row is None:
+        if require_user:
+            raise IdentityHydrationError("Authenticated user does not exist in the identity store")
         return ctx
 
     return dc_replace(
@@ -291,7 +327,14 @@ async def get_user_context(request: Request) -> UserContext:
 
     try:
         from jose import JWTError, jwt
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        decode_options: Dict[str, Any] = {}
+        issuer = os.getenv("JWT_ISSUER", "").strip()
+        audience = os.getenv("JWT_AUDIENCE", "").strip()
+        if issuer:
+            decode_options["issuer"] = issuer
+        if audience:
+            decode_options["audience"] = audience
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM], **decode_options)
     except JWTError as exc:
         logger.warning("auth_jwt_invalid", reason="decode_failed", error=str(exc))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -323,11 +366,13 @@ async def get_user_context(request: Request) -> UserContext:
         Session = _db_session_factory()
         session = Session()
         try:
-            ctx = _hydrate_from_db(ctx, session)
+            ctx = _hydrate_from_db(ctx, session, require_user=ENVIRONMENT in PROD_ENVS)
         finally:
             session.close()
     except Exception as exc:  # noqa: BLE001
         logger.warning("user_db_session_unavailable", user_id=str(user_id), error=str(exc))
+        if ENVIRONMENT in PROD_ENVS:
+            raise HTTPException(status_code=503, detail="Identity verification is temporarily unavailable") from exc
 
     return ctx
 
@@ -422,6 +467,35 @@ async def ready():
     if not ok:
         return JSONResponse(status_code=503, content=body)
     return body
+
+
+@app.get("/api/v1/admin/hardening-metrics", tags=["Admin"])
+async def hardening_metrics(user: UserContext = Depends(get_user_context)):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    return METRICS.snapshot()
+
+
+@app.post("/api/v1/admin/calibration/outcomes", tags=["Admin"])
+async def calibration_outcome(
+    body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    try:
+        row = record_outcome(db, body)
+    except ProductionCalibrationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"decision_id": row.decision_id, "domain": row.domain, "policy_id": row.policy_id, "recorded": True}
+
+
+@app.get("/api/v1/admin/calibration/report", tags=["Admin"])
+async def calibration_report(
+    policy_id: Optional[str] = None, user: UserContext = Depends(get_user_context), db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    return production_report(db, policy_id)
 
 
 @app.get("/", tags=["Status"])
@@ -833,6 +907,7 @@ async def investor_readiness(
 async def generate_scaffold(
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
     """
     Generate a complete application scaffold from the venture profile.
@@ -845,10 +920,16 @@ async def generate_scaffold(
                                       react_firebase | expo_supabase | fastapi_supabase
       venture_data  (optional) dict -- uses pipeline output if omitted
     """
-    return await AppScaffoldService(brain).generate_scaffold(
+    project_id = body.get("project_id") or user.project_id
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id is required")
+    stack_choice = body.get("stack_choice")
+    if not stack_choice:
+        raise HTTPException(status_code=422, detail="stack_choice is required")
+    return await AppScaffoldService(brain, LiveDomainRepository(db)).generate_scaffold(
         user_context=user,
-        project_id=body.get("project_id", user.project_id or "proj_001"),
-        stack_choice=body.get("stack_choice", "nextjs_supabase"),
+        project_id=str(project_id),
+        stack_choice=str(stack_choice),
         venture_data=body.get("venture_data"),
         arch_data=body.get("arch_data"),
     )
@@ -859,16 +940,18 @@ async def deploy_scaffold(
     scaffold_id: str,
     body: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
     """
     Trigger 1-click Vercel deployment of a generated scaffold.
     3 execution budget units. Founder Pro+
     Returns: deploy_status, live_url, build_logs_url, estimated_ready_seconds
     """
-    return await AppScaffoldService(brain).deploy_scaffold(
+    return await AppScaffoldService(brain, LiveDomainRepository(db)).deploy_scaffold(
         user_context=user,
         scaffold_id=scaffold_id,
         deploy_target=body.get("deploy_target", "vercel"),
+        human_approved=body.get("human_approved") is True,
     )
 
 
@@ -876,18 +959,20 @@ async def deploy_scaffold(
 async def scaffold_status(
     scaffold_id: str,
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
     """Poll deployment status. 0 execution budget units, Free+"""
-    return AppScaffoldService(brain).get_deploy_status(scaffold_id)
+    return AppScaffoldService(brain, LiveDomainRepository(db)).get_deploy_status(user.user_id, scaffold_id)
 
 
 @app.get("/api/v1/scaffold/{scaffold_id}/live-url", tags=["Prompt -> Live App"])
 async def scaffold_live_url(
     scaffold_id: str,
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
     """Get live URL after deployment. 0 execution budget units, Free+"""
-    return AppScaffoldService(brain).get_live_url(scaffold_id)
+    return AppScaffoldService(brain, LiveDomainRepository(db)).get_live_url(user.user_id, scaffold_id)
 
 
 @app.get("/api/v1/scaffold/{project_id}", tags=["Prompt -> Live App"])
@@ -933,6 +1018,186 @@ async def compute_gsis(
 ):
     """Compute GSIS from component scores. 1 execution budget unit, Free+"""
     return await GSISService(brain).compute_with_narrative(user, scores)
+
+
+def _gsis_projection_role(user: UserContext) -> str:
+    role = user.role.value if isinstance(user.role, UserRole) else str(user.role)
+    if role == UserRole.INVESTOR.value:
+        return "investor"
+    if role == UserRole.ADMIN.value:
+        return "admin"
+    return "founder"
+
+
+@app.post("/api/v2/gsis/scorecard", tags=["Dashboard"])
+async def compute_gsis_v2(
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Compute one deterministic, stage-aware GSIS v2 role projection."""
+    scorecard = ScoringEngine.compute_gsis_v2(payload)
+    return project_scorecard(scorecard, _gsis_projection_role(user))
+
+
+@app.post("/api/v2/gsis/scorecards", tags=["Dashboard"])
+async def compute_gsis_v2_batch(
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Compute up to 100 deterministic GSIS v2 role projections."""
+    startups = payload.get("startups")
+    if not isinstance(startups, list):
+        raise HTTPException(status_code=422, detail="startups must be a list")
+    if len(startups) > 100:
+        raise HTTPException(status_code=422, detail="a maximum of 100 startups is supported")
+    role = _gsis_projection_role(user)
+    return {
+        "scorecards": [
+            project_scorecard(ScoringEngine.compute_gsis_v2(startup), role)
+            for startup in startups
+            if isinstance(startup, dict)
+        ],
+        "model_version": SCORING_POLICY["gsis_v2"]["model_version"],
+    }
+
+
+def _project_row(db: Any, project_id: str) -> Any:
+    try:
+        from uuid import UUID
+        project_uuid = UUID(project_id)
+    except (TypeError, ValueError):
+        project_uuid = project_id
+    return db.query(Project).filter(Project.id == project_uuid).first()
+
+
+def _require_project_owner(user: UserContext, db: Any, project_id: str) -> Any:
+    project = _project_row(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if user.role != UserRole.ADMIN and str(project.owner_id) != str(user.user_id):
+        raise HTTPException(status_code=403, detail="project access denied")
+    return project
+
+
+@app.post("/api/v2/gsis/projects/{project_id}/refresh", tags=["GSIS v2"])
+async def refresh_persisted_gsis_v2(
+    project_id: str,
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    """Compute, persist, and snapshot a project scorecard without rewriting legacy scores."""
+    project = _require_project_owner(user, db, project_id)
+    scorecard = score_and_persist(db, project_id, payload, owner_id=project.owner_id, trigger="api")
+    return project_scorecard(scorecard, _gsis_projection_role(user))
+
+
+@app.get("/api/v2/gsis/projects/{project_id}/history", tags=["GSIS v2"])
+async def persisted_gsis_v2_history(
+    project_id: str,
+    limit: int = 90,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    _require_project_owner(user, db, project_id)
+    return {"project_id": project_id, "snapshots": scorecard_history(db, project_id, limit)}
+
+
+@app.get("/api/v2/gsis/projects/{project_id}/recommendations", tags=["GSIS v2"])
+async def persisted_gsis_v2_recommendations(
+    project_id: str,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    _require_project_owner(user, db, project_id)
+    return {"project_id": project_id, "recommendations": list_recommendations(db, project_id)}
+
+
+@app.post("/api/v2/gsis/recommendations/{recommendation_id}/outcome", tags=["GSIS v2"])
+async def gsis_v2_recommendation_outcome(
+    recommendation_id: str,
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    try:
+        from uuid import UUID
+        recommendation_uuid = UUID(recommendation_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="invalid recommendation id")
+    recommendation = db.query(GsisV2Recommendation).filter(GsisV2Recommendation.id == recommendation_uuid).first()
+    if recommendation is None:
+        raise HTTPException(status_code=404, detail="recommendation not found")
+    if user.role != UserRole.ADMIN and str(recommendation.owner_id) != str(user.user_id):
+        raise HTTPException(status_code=403, detail="recommendation access denied")
+    try:
+        return record_recommendation_outcome(db, recommendation_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v2/gsis/benchmarks", tags=["GSIS v2"])
+async def gsis_v2_benchmarks(
+    stage: Optional[str] = None,
+    metric: Optional[str] = None,
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    return {"benchmarks": list_benchmarks(db, stage=stage, metric=metric)}
+
+
+@app.get("/api/v2/admin/gsis/config", tags=["Admin"])
+async def gsis_v2_config(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    audits = db.query(GsisV2ConfigAudit).order_by(GsisV2ConfigAudit.created_at.desc()).limit(20).all()
+    return {
+        "active_model_version": SCORING_POLICY["gsis_v2"]["model_version"],
+        "policy": SCORING_POLICY["gsis_v2"],
+        "audit": [{"version": row.version, "reason": row.reason, "created_at": row.created_at.isoformat() if row.created_at else None} for row in audits],
+    }
+
+
+@app.post("/api/v2/admin/gsis/config", tags=["Admin"])
+async def gsis_v2_config_update(
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    try:
+        return audit_config(db, payload, changed_by=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/admin/gsis/benchmarks", tags=["Admin"])
+async def gsis_v2_benchmark_create(
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    try:
+        return save_benchmark(db, payload, changed_by=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v2/admin/gsis/calibration", tags=["Admin"])
+async def gsis_v2_calibration(
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="admin role required")
+    report = production_report(db, "techit-scoring-2026-08-14-v1")
+    return {"model_version": SCORING_POLICY["gsis_v2"]["model_version"], "prediction_policy": "probabilities remain disabled until calibration is approved", "report": report}
 
 
 # ============================================================================
@@ -1190,9 +1455,22 @@ async def update_progress(
 async def find_collaborators(
     criteria: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
-    """Find compatible collaborators via vector + rules + LLM. 1 execution budget unit, Builder+"""
-    return await MatchingEngineService(brain).find_collaborators(user, criteria)
+    """Find collaborators from persisted match evidence. 1 execution budget unit, Builder+"""
+    return await MatchingEngineService(
+        brain,
+        LiveDomainRepository(db),
+    ).find_collaborators(user, criteria)
+
+
+@app.post("/api/v1/matching/find-investors", tags=["Matching"])
+async def find_investors(
+    startup_profile: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
+):
+    return await MatchingEngineService(brain, LiveDomainRepository(db)).find_investors(user, startup_profile)
 
 
 # ============================================================================
@@ -1760,6 +2038,8 @@ async def admin_monitor_scan(
     user: UserContext = Depends(get_user_context),
 ):
     """Anomaly scan over signals. 0 execution budget units, Admin only. Body: { signals: [...] }"""
+    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
+        raise HTTPException(status_code=403, detail="Admin access required")
     return await AdminMonitorService(brain).run_anomaly_scan(user, body.get("signals", []))
 
 
@@ -1769,6 +2049,8 @@ async def admin_stagnation_roster(
     user: UserContext = Depends(get_user_context),
 ):
     """Stagnating-project roster (decay-based). 0 execution budget units. Body: { projects: [...] }"""
+    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
+        raise HTTPException(status_code=403, detail="Admin access required")
     return await AdminMonitorService(brain).check_stagnation_roster(user, body.get("projects", []))
 
 
@@ -2223,7 +2505,14 @@ async def general_error_handler(request: Request, exc: Exception):
 # FILE UPLOAD ENDPOINTS
 # ============================================================================
 
-from file_storage import file_storage
+from file_storage import FileValidationError, MAX_UPLOAD_BYTES, file_storage
+
+
+async def _read_bounded_upload(file: UploadFile) -> bytes:
+    contents = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File exceeds the {MAX_UPLOAD_BYTES} byte upload limit")
+    return contents
 
 
 @app.post("/api/v1/files/upload", tags=["File Storage"])
@@ -2232,7 +2521,11 @@ async def upload_file(
     ctx=Depends(get_user_context),
 ):
     """Upload a file to storage. Returns URL, key, size, content_type."""
-    contents = await file.read()
+    contents = await _read_bounded_upload(file)
+    try:
+        file_storage.validate_upload(contents, file.filename or "untitled", file.content_type or "application/octet-stream")
+    except FileValidationError as exc:
+        raise HTTPException(status_code=413 if "exceeds" in str(exc) else 415, detail=str(exc)) from exc
     result = file_storage.upload_file(
         contents,
         file.filename or "untitled",
@@ -2247,7 +2540,11 @@ async def incubation_document_upload(
     ctx=Depends(get_user_context),
 ):
     """Upload a document, extract text, and run idea diagnosis."""
-    contents = await file.read()
+    contents = await _read_bounded_upload(file)
+    try:
+        file_storage.validate_upload(contents, file.filename or "document", file.content_type or "application/octet-stream", document_only=True)
+    except FileValidationError as exc:
+        raise HTTPException(status_code=413 if "exceeds" in str(exc) else 415, detail=str(exc)) from exc
     text = file_storage.extract_text(contents, file.filename or "document")
     if not text.strip():
         raise HTTPException(400, "Could not extract text from the uploaded document")

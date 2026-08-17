@@ -199,6 +199,14 @@ class ModelRouter:
         objective = profile if profile in {
             "quality", "economy", "latency", "balanced", "profitability"
         } else policy.routing_objective
+        if objective in {"economy", "profitability"}:
+            candidates = [
+                config for config in candidates
+                if config.input_cost_per_million is not None
+                and config.output_cost_per_million is not None
+            ]
+            if not candidates:
+                raise RegistryError("no cost-complete model is available for cost-based routing")
 
         preferred_index = {model_id: index for index, model_id in enumerate(policy.preferred_models)}
 

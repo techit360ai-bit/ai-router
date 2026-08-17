@@ -46,6 +46,8 @@ async def test_429_gets_one_retry_and_every_attempt_is_recorded(monkeypatch) -> 
     assert calls == 2
     assert [event["status"] for event in attempts] == ["failed", "success"]
     assert response.tokens_used == 3
+    assert response.metadata["routing_registry"]["registry_version"] == "2026-08-10.1"
+    assert response.metadata["routing_registry"]["task_policy_version"] == "2026-08-10.1"
 
 
 @pytest.mark.asyncio
