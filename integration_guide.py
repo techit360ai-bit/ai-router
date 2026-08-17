@@ -36,7 +36,7 @@ from uuid import uuid4
 from ai_router_core import (
     AICommandLayer, ModelRouter, PromptEngine, SafetyEngine,
     AIRequest, UserContext, TaskType, UserRole,
-    ScoringEngine,
+    ScoringEngine, IncubationContext,
 )
 from policy_registry import SCORING_POLICY, calibration_metadata
 from decision_audit import DecisionAuditRecorder, build_ranking_audit
@@ -65,6 +65,10 @@ from trust_team_notifications import (
     TrustTeamVerificationService as TrustTeamContract,
 )
 from live_domain_repository import LiveDomainRepository
+
+import structlog
+
+logger = structlog.get_logger()
 
 
 # ============================================================================
@@ -567,12 +571,32 @@ class WorkspaceAIService:
         self.brain = brain
         self.repo = LiveDomainRepository()
 
+    def _incubation_context(
+        self, user_context: UserContext, workspace_id: Optional[str], project_id: Optional[str] = None
+    ) -> Optional[IncubationContext]:
+        """
+        Best-effort load of the workspace's incubation context for prompt
+        injection. Never raises and never blocks the AI call: any failure (no
+        workspace_id, no bound venture, DB down) yields None so the agent runs
+        exactly as before (no regression).
+        """
+        if not workspace_id:
+            return None
+        try:
+            wc = self.repo.workspace_context(user_context.user_id, workspace_id, project_id)
+            ctx = IncubationContext.from_workspace_context(wc)
+            return None if ctx.is_empty() else ctx
+        except Exception as exc:  # noqa: BLE001 — context is an enhancement, not a hard dep
+            logger.warning("incubation_context_unavailable", error=str(exc))
+            return None
+
     def _context_pack(self, user_context: UserContext, payload: Dict[str, Any]) -> Dict[str, Any]:
         workspace_id = payload.get("workspace_id") or payload.get("workspaceId") or user_context.workspace_id
         if not workspace_id:
             return {}
         pack = self.repo.latest_workspace_context_pack(user_context.user_id, str(workspace_id))
         return pack.get("contextData") or pack.get("context_data") or {}
+
 
     async def suggest_tasks(
         self,
@@ -588,6 +612,8 @@ class WorkspaceAIService:
         Without a token, the agent runs without that context (no regression).
         """
         available_tools = await self._safe_list_tools(user_token)
+        workspace_id = workspace_data.get("workspaceId") or workspace_data.get("workspace_id")
+        incubation = self._incubation_context(user_context, workspace_id)
         context_pack = self._context_pack(user_context, workspace_data)
         ctx = AgentContext(
             user_context=user_context,
@@ -595,6 +621,7 @@ class WorkspaceAIService:
                 "workspace_data": workspace_data,
                 "workspace_context_pack": context_pack,
                 "available_tools": available_tools,
+                "incubation_context": incubation.to_prompt_context() if incubation else "",
             },
             shared_memory={"workspace_context_pack": context_pack},
         )
@@ -608,13 +635,23 @@ class WorkspaceAIService:
         }
 
     async def review_code(self, user_context: UserContext, code_payload: Dict) -> Dict:
-        """POST /api/v1/workspace/code/review -- 1 execution budget unit, Founder Pro+"""
+        """POST /api/v1/workspace/code/review -- 1 execution budget unit, Founder Pro+
+
+        The review is scoped to the startup's incubation context (stage, GSIS,
+        weakest area, milestone, next goal) when the payload names a workspace,
+        so feedback advances the venture's current objective rather than being
+        generic. Falls back to a context-free review when none is available.
+        """
+        workspace_id = code_payload.get("workspaceId") or code_payload.get("workspace_id")
+        project_id = code_payload.get("projectId") or code_payload.get("project_id")
+        incubation = self._incubation_context(user_context, workspace_id, project_id)
         context_pack = self._context_pack(user_context, code_payload)
         resp = await self.brain.process(AIRequest(
             TaskType.CODE_REVIEW, user_context,
             {**code_payload, "workspace_context_pack": context_pack},
             requested_model=code_payload.get("model_id") or code_payload.get("requested_model"),
             execution_profile=str(code_payload.get("execution_profile") or "balanced"),
+            incubation=incubation,
         ))
         return {"review": resp.output, "provider_cost_usd": resp.provider_cost_usd}
 
