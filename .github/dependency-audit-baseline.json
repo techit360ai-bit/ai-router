@@ -1,0 +1,9 @@
+{
+  "expires": "2026-09-30",
+  "knownPackages": {
+    "sentry-sdk": "Upgrade the telemetry SDK with release smoke tests.",
+    "pytest": "Development-only finding; upgrade with test-suite review.",
+    "starlette": "Upgrade with FastAPI and API contract validation.",
+    "ecdsa": "Transitive cryptography advisory; monitor python-jose dependency resolution."
+  }
+}
