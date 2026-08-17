@@ -4,6 +4,7 @@
     "sentry-sdk": "Upgrade the telemetry SDK with release smoke tests.",
     "pytest": "Development-only finding; upgrade with test-suite review.",
     "starlette": "Upgrade with FastAPI and API contract validation.",
-    "ecdsa": "Transitive cryptography advisory; monitor python-jose dependency resolution."
+    "ecdsa": "Transitive cryptography advisory; monitor python-jose dependency resolution.",
+    "pyasn1": "Transitive ASN.1 advisory; upgrade with authentication compatibility tests."
   }
 }
