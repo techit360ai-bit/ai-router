@@ -20,7 +20,7 @@ anthropic==0.29.0
 cohere==5.5.8
 tiktoken==0.7.0
 # Vector
-pinecone-client==3.2.2
+pinecone-client==6.0.0
 # Storage
 boto3==1.34.144
 # Voice
