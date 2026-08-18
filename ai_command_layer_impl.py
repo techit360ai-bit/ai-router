@@ -57,6 +57,10 @@ class ExecutionCommandLayer:
 
     async def process_request(self, request: Any) -> Any:
         started = time.perf_counter()
+        if os.getenv("AI_ROUTER_MODE", "llm").strip().lower() == "deterministic":
+            raise ProviderConfigError(
+                "AI provider execution is disabled in deterministic mode; use a deterministic endpoint or switch to hybrid/llm mode"
+            )
         policy = self.model_router.policy_for(request)
         grant = getattr(request.user_context, "execution_grant", None)
         request_id = grant.request_id if grant is not None else str(uuid4())
