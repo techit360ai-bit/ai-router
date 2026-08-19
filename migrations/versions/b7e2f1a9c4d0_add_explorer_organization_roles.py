@@ -7,7 +7,7 @@ Revises: 323a1fc13be9
 from alembic import op
 
 revision = "b7e2f1a9c4d0"
-down_revision = "323a1fc13be9"
+down_revision = "cd34ef56a7b9"
 branch_labels = None
 depends_on = None
 
