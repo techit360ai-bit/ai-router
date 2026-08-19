@@ -1369,7 +1369,7 @@ class AdminMonitorService:
         self, admin_context: UserContext, signals: List[Dict]
     ) -> Dict:
         """POST /api/v1/admin/monitor/scan -- 0 execution budget units, Enterprise only"""
-        if admin_context.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
+        if admin_context.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR, UserRole.ORGANIZATION):
             return {"error": "Admin access required."}
         ctx = AgentContext(user_context=admin_context, trigger_event={"anomaly_signals": signals})
         r   = await self.brain.trigger_agent(AgentType.ADMIN_MONITOR, ctx)
