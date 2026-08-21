@@ -56,7 +56,7 @@ from integration_guide import (
     WorkspaceService,
     HackathonService,
 )
-from ai_router_core import ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
+from ai_router_core import AIRequest, ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
 from gsis_v2 import project_scorecard
 from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationError
 from model_registry import ModelRegistry, RegistryError
