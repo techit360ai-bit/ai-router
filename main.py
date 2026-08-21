@@ -1569,6 +1569,45 @@ async def investor_evi(
     return await InvestorSectionService(brain).get_investor_evi(user, startup_data)
 
 
+@app.post("/api/v1/investor/intelligence/advisory", tags=["Investor"])
+async def investor_intelligence_advisory(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Advisory-only reasoning over a Backend-authorized investor evidence packet.
+
+    The backend remains authoritative for scope, authorization, deterministic
+    metrics, risk bands, and actions. This endpoint may only explain observed
+    patterns and suggest review questions; it never grants access or mutates
+    investor/startup state.
+    """
+    _require_investor_role(user)
+    evidence = body.get("evidence") if isinstance(body, dict) else None
+    if not isinstance(evidence, dict):
+        raise HTTPException(status_code=422, detail="evidence_required")
+    evidence = {
+        "scope": str(evidence.get("scope") or "portfolio")[:120],
+        "startups": evidence.get("startups") if isinstance(evidence.get("startups"), list) else [],
+        "instructions": str(evidence.get("instructions") or "Explain observed changes without changing authorization or canonical metrics.")[:600],
+    }
+    response = await brain.process(AIRequest(
+        task_type=TaskType.INVESTOR_SIGNAL,
+        user_context=user,
+        input_data={"authorized_evidence": evidence, "advisory_only": True},
+        max_tokens=2200,
+        require_structured_output=False,
+        execution_profile="balanced",
+    ))
+    return {
+        "advisory": response.output,
+        "model_used": response.model_used,
+        "provider": response.provider,
+        "confidence_score": response.confidence_score,
+        "advisory_only": True,
+        "authorization_source": "backend",
+    }
+
+
 @app.get("/api/v1/investor/capital-pools", tags=["Investor"])
 async def investor_capital_pools(user: UserContext = Depends(get_user_context)):
     """Investor micro-fund capital pools with deployment + milestone release. 0 execution budget units."""
