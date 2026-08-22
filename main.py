@@ -61,7 +61,7 @@ from gsis_v2 import project_scorecard
 from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationError
 from model_registry import ModelRegistry, RegistryError
 from policy_registry import SCORING_POLICY
-from database_schema import Project, GsisV2ConfigAudit, GsisV2Recommendation
+from database_schema import Base, Project, GsisV2ConfigAudit, GsisV2Recommendation
 from gsis_v2_persistence import (
     audit_config,
     list_benchmarks,
@@ -114,10 +114,10 @@ async def lifespan(app: FastAPI):
     await brain.command_layer.settlement.start()
     logger.info(
         "techit_ai_brain_ready",
-        agents=34,
-        task_types=51,
-        scoring_models=20,
-        db_tables=42,
+        agents=len(getattr(brain.orchestrator, "agents", {}) or {}),
+        task_types=len(TaskType),
+        scoring_models=len(SCORING_POLICY),
+        db_tables=len(Base.registry.mappers),
         version="3.0.0",
     )
     yield
@@ -209,6 +209,7 @@ _ROLE_ALIASES = {
     "organization": UserRole.ORGANIZATION,
     "accelerator_manager": UserRole.ACCELERATOR_MGR,
     "admin": UserRole.ADMIN,
+    "super_admin": UserRole.ADMIN,
 }
 
 
@@ -423,14 +424,17 @@ def get_db():
 @app.get("/health", tags=["Status"])
 async def health():
     """Liveness check. Does not prove dependencies are ready."""
+    registry = brain.model_router.registry if brain else ModelRegistry()
     return {
         "status":         "healthy",
         "ai_brain":       "operational",
         "version":        "3.0.0",
-        "agents":         34,
+        "agents":         len(getattr(brain.orchestrator, "agents", {}) or {}) if brain else 0,
         "task_types":     len(TaskType),
-        "scoring_models": 20,
-        "db_tables":      42,
+        "scoring_models": len(SCORING_POLICY),
+        "registered_models": len(registry.models),
+        "db_tables":      len(Base.registry.mappers),
+        "generated_at":   __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     }
 
 
