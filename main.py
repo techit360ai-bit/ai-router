@@ -481,10 +481,30 @@ async def ready():
 
 
 @app.get("/api/v1/admin/hardening-metrics", tags=["Admin"])
-async def hardening_metrics(user: UserContext = Depends(get_user_context)):
+async def hardening_metrics(user: UserContext = Depends(get_user_context), db=Depends(get_db)):
     if user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="admin role required")
-    return METRICS.snapshot()
+    snapshot = METRICS.snapshot()
+    try:
+        row = db.execute(text("""
+            SELECT COUNT(*) AS attempts,
+                   COUNT(*) FILTER (WHERE status = 'failed') AS failures,
+                   AVG(latency_ms) AS avg_latency_ms,
+                   COALESCE(SUM(provider_cost_usd), 0) AS provider_cost_usd,
+                   COUNT(*) FILTER (WHERE cache_hit = TRUE) AS cache_hits
+            FROM ai_usage_ledger
+        """)).mappings().one()
+        snapshot["durable"] = {
+            "attempts": int(row["attempts"] or 0),
+            "failures": int(row["failures"] or 0),
+            "failure_rate": round((int(row["failures"] or 0) / int(row["attempts"] or 1)), 6),
+            "average_latency_ms": round(float(row["avg_latency_ms"] or 0), 2),
+            "provider_cost_usd": round(float(row["provider_cost_usd"] or 0), 6),
+            "cache_hits": int(row["cache_hits"] or 0),
+        }
+    except Exception as exc:  # telemetry must remain non-blocking
+        snapshot["durable"] = {"available": False, "error": str(exc)[:200]}
+    return snapshot
 
 
 @app.post("/api/v1/admin/calibration/outcomes", tags=["Admin"])
