@@ -84,6 +84,7 @@ from sandbox_build_service import SandboxBuildError, SandboxBuildService
 from live_domain_repository import LiveDomainRepository
 from hardening_metrics import METRICS
 from production_calibration import ProductionCalibrationError, production_report, record_outcome
+from admin_service_auth import require_admin_telemetry_service
 
 logger = structlog.get_logger()
 
@@ -209,7 +210,6 @@ _ROLE_ALIASES = {
     "organization": UserRole.ORGANIZATION,
     "accelerator_manager": UserRole.ACCELERATOR_MGR,
     "admin": UserRole.ADMIN,
-    "super_admin": UserRole.ADMIN,
 }
 
 
@@ -480,10 +480,7 @@ async def ready():
     return body
 
 
-@app.get("/api/v1/admin/hardening-metrics", tags=["Admin"])
-async def hardening_metrics(user: UserContext = Depends(get_user_context), db=Depends(get_db)):
-    if user.role != UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="admin role required")
+def _hardening_metrics_snapshot(db):
     snapshot = METRICS.snapshot()
     try:
         row = db.execute(text("""
@@ -505,6 +502,19 @@ async def hardening_metrics(user: UserContext = Depends(get_user_context), db=De
     except Exception as exc:  # telemetry must remain non-blocking
         snapshot["durable"] = {"available": False, "error": str(exc)[:200]}
     return snapshot
+
+
+@app.get("/internal/admin/telemetry", tags=["Internal"])
+async def internal_admin_telemetry(
+    _service_id: str = Depends(require_admin_telemetry_service),
+    db=Depends(get_db),
+):
+    return _hardening_metrics_snapshot(db)
+
+
+@app.get("/api/v1/admin/hardening-metrics", tags=["Admin"], include_in_schema=False)
+async def hardening_metrics_deprecated():
+    raise HTTPException(status_code=404, detail="Use the backend-authorized admin telemetry proxy")
 
 
 @app.post("/api/v1/admin/calibration/outcomes", tags=["Admin"])

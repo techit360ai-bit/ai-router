@@ -149,6 +149,12 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
             len(settlement_secret) >= 32 and not _is_placeholder(settlement_secret),
             "AI_ROUTER_SETTLEMENT_SECRET must be set, strong, and non-placeholder",
         ))
+        admin_telemetry_secret = values.get("ADMIN_AI_ROUTER_TELEMETRY_SECRET", "")
+        checks.append(RuntimeCheck(
+            "admin_telemetry.hmac_secret",
+            len(admin_telemetry_secret) >= 32 and not _is_placeholder(admin_telemetry_secret),
+            "ADMIN_AI_ROUTER_TELEMETRY_SECRET must be set, strong, and non-placeholder",
+        ))
         checks.append(RuntimeCheck(
             "execution_grant.required",
             bool_env(values.get("REQUIRE_AI_EXECUTION_GRANT"), default=False),
