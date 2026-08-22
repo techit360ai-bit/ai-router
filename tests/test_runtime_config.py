@@ -36,6 +36,7 @@ BASE_PROD_ENV = {
     "ANTHROPIC_API_KEY": "sk-ant-live",
     "BACKEND_USAGE_SETTLEMENT_URL": "https://api.techit.example/internal/usage-settlement",
     "AI_ROUTER_SETTLEMENT_SECRET": "0123456789abcdef0123456789abcdef",
+    "ADMIN_AI_ROUTER_TELEMETRY_SECRET": "abcdef0123456789abcdef0123456789",
     "REQUIRE_AI_EXECUTION_GRANT": "true",
     "AWS_ACCESS_KEY_ID": "AKIAEXAMPLESECURE",
     "AWS_SECRET_ACCESS_KEY": "secure-object-storage-secret-value",

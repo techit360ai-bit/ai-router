@@ -56,12 +56,12 @@ from integration_guide import (
     WorkspaceService,
     HackathonService,
 )
-from ai_router_core import ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
+from ai_router_core import AIRequest, ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
 from gsis_v2 import project_scorecard
 from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationError
 from model_registry import ModelRegistry, RegistryError
 from policy_registry import SCORING_POLICY
-from database_schema import Project, GsisV2ConfigAudit, GsisV2Recommendation
+from database_schema import Base, Project, GsisV2ConfigAudit, GsisV2Recommendation
 from gsis_v2_persistence import (
     audit_config,
     list_benchmarks,
@@ -84,6 +84,7 @@ from sandbox_build_service import SandboxBuildError, SandboxBuildService
 from live_domain_repository import LiveDomainRepository
 from hardening_metrics import METRICS
 from production_calibration import ProductionCalibrationError, production_report, record_outcome
+from admin_service_auth import require_admin_telemetry_service
 
 logger = structlog.get_logger()
 
@@ -114,10 +115,10 @@ async def lifespan(app: FastAPI):
     await brain.command_layer.settlement.start()
     logger.info(
         "techit_ai_brain_ready",
-        agents=34,
-        task_types=51,
-        scoring_models=20,
-        db_tables=42,
+        agents=len(getattr(brain.orchestrator, "agents", {}) or {}),
+        task_types=len(TaskType),
+        scoring_models=len(SCORING_POLICY),
+        db_tables=len(Base.registry.mappers),
         version="3.0.0",
     )
     yield
@@ -199,12 +200,14 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
 
 # Tolerant aliases so tokens minted by the Node backend map onto our enums.
 _ROLE_ALIASES = {
+    "explorer": UserRole.EXPLORER,
+    "user": UserRole.EXPLORER,
     "founder": UserRole.FOUNDER,
     "collaborator": UserRole.BUILDER,
     "builder": UserRole.BUILDER,
     "investor": UserRole.INVESTOR,
-    "organisation": UserRole.ACCELERATOR_MGR,
-    "organization": UserRole.ACCELERATOR_MGR,
+    "organisation": UserRole.ORGANIZATION,
+    "organization": UserRole.ORGANIZATION,
     "accelerator_manager": UserRole.ACCELERATOR_MGR,
     "admin": UserRole.ADMIN,
 }
@@ -212,15 +215,15 @@ _ROLE_ALIASES = {
 
 def _role_from_claim(value: Any) -> UserRole:
     if isinstance(value, str):
-        return _ROLE_ALIASES.get(value.strip().lower(), UserRole.FOUNDER)
-    return UserRole.FOUNDER
+        return _ROLE_ALIASES.get(value.strip().lower(), UserRole.EXPLORER)
+    return UserRole.EXPLORER
 
 
 def _demo_user_context() -> UserContext:
     """Demo context for local development only (ALLOW_DEMO_AUTH)."""
     return UserContext(
         user_id="demo_user_001",
-        role=UserRole.FOUNDER,
+        role=UserRole.EXPLORER,
         project_id=None,
         project_stage="idea",
         industry="edtech",
@@ -261,6 +264,11 @@ def _context_from_claim(user_id: str, payload: Dict[str, Any]) -> UserContext:
         team_size=_int("team_size", 1),
         has_revenue=bool(payload.get("has_revenue", False)),
         beta_users_count=_int("beta_users_count", 0),
+        active_role=payload.get("active_role") or payload.get("activeRole"),
+        organization_id=payload.get("organization_id") or payload.get("organizationId"),
+        resource_type=payload.get("resource_type") or payload.get("resourceType"),
+        resource_id=payload.get("resource_id") or payload.get("resourceId"),
+        permissions=payload.get("permissions") or [],
     )
 
 
@@ -416,14 +424,17 @@ def get_db():
 @app.get("/health", tags=["Status"])
 async def health():
     """Liveness check. Does not prove dependencies are ready."""
+    registry = brain.model_router.registry if brain else ModelRegistry()
     return {
         "status":         "healthy",
         "ai_brain":       "operational",
         "version":        "3.0.0",
-        "agents":         34,
+        "agents":         len(getattr(brain.orchestrator, "agents", {}) or {}) if brain else 0,
         "task_types":     len(TaskType),
-        "scoring_models": 20,
-        "db_tables":      42,
+        "scoring_models": len(SCORING_POLICY),
+        "registered_models": len(registry.models),
+        "db_tables":      len(Base.registry.mappers),
+        "generated_at":   __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     }
 
 
@@ -469,11 +480,41 @@ async def ready():
     return body
 
 
-@app.get("/api/v1/admin/hardening-metrics", tags=["Admin"])
-async def hardening_metrics(user: UserContext = Depends(get_user_context)):
-    if user.role != UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="admin role required")
-    return METRICS.snapshot()
+def _hardening_metrics_snapshot(db):
+    snapshot = METRICS.snapshot()
+    try:
+        row = db.execute(text("""
+            SELECT COUNT(*) AS attempts,
+                   COUNT(*) FILTER (WHERE status = 'failed') AS failures,
+                   AVG(latency_ms) AS avg_latency_ms,
+                   COALESCE(SUM(provider_cost_usd), 0) AS provider_cost_usd,
+                   COUNT(*) FILTER (WHERE cache_hit = TRUE) AS cache_hits
+            FROM ai_usage_ledger
+        """)).mappings().one()
+        snapshot["durable"] = {
+            "attempts": int(row["attempts"] or 0),
+            "failures": int(row["failures"] or 0),
+            "failure_rate": round((int(row["failures"] or 0) / int(row["attempts"] or 1)), 6),
+            "average_latency_ms": round(float(row["avg_latency_ms"] or 0), 2),
+            "provider_cost_usd": round(float(row["provider_cost_usd"] or 0), 6),
+            "cache_hits": int(row["cache_hits"] or 0),
+        }
+    except Exception as exc:  # telemetry must remain non-blocking
+        snapshot["durable"] = {"available": False, "error": str(exc)[:200]}
+    return snapshot
+
+
+@app.get("/internal/admin/telemetry", tags=["Internal"])
+async def internal_admin_telemetry(
+    _service_id: str = Depends(require_admin_telemetry_service),
+    db=Depends(get_db),
+):
+    return _hardening_metrics_snapshot(db)
+
+
+@app.get("/api/v1/admin/hardening-metrics", tags=["Admin"], include_in_schema=False)
+async def hardening_metrics_deprecated():
+    raise HTTPException(status_code=404, detail="Use the backend-authorized admin telemetry proxy")
 
 
 @app.post("/api/v1/admin/calibration/outcomes", tags=["Admin"])
@@ -1562,6 +1603,45 @@ async def investor_evi(
     return await InvestorSectionService(brain).get_investor_evi(user, startup_data)
 
 
+@app.post("/api/v1/investor/intelligence/advisory", tags=["Investor"])
+async def investor_intelligence_advisory(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Advisory-only reasoning over a Backend-authorized investor evidence packet.
+
+    The backend remains authoritative for scope, authorization, deterministic
+    metrics, risk bands, and actions. This endpoint may only explain observed
+    patterns and suggest review questions; it never grants access or mutates
+    investor/startup state.
+    """
+    _require_investor_role(user)
+    evidence = body.get("evidence") if isinstance(body, dict) else None
+    if not isinstance(evidence, dict):
+        raise HTTPException(status_code=422, detail="evidence_required")
+    evidence = {
+        "scope": str(evidence.get("scope") or "portfolio")[:120],
+        "startups": evidence.get("startups") if isinstance(evidence.get("startups"), list) else [],
+        "instructions": str(evidence.get("instructions") or "Explain observed changes without changing authorization or canonical metrics.")[:600],
+    }
+    response = await brain.process(AIRequest(
+        task_type=TaskType.INVESTOR_SIGNAL,
+        user_context=user,
+        input_data={"authorized_evidence": evidence, "advisory_only": True},
+        max_tokens=2200,
+        require_structured_output=False,
+        execution_profile="balanced",
+    ))
+    return {
+        "advisory": response.output,
+        "model_used": response.model_used,
+        "provider": response.provider,
+        "confidence_score": response.confidence_score,
+        "advisory_only": True,
+        "authorization_source": "backend",
+    }
+
+
 @app.get("/api/v1/investor/capital-pools", tags=["Investor"])
 async def investor_capital_pools(user: UserContext = Depends(get_user_context)):
     """Investor micro-fund capital pools with deployment + milestone release. 0 execution budget units."""
@@ -2038,7 +2118,7 @@ async def admin_monitor_scan(
     user: UserContext = Depends(get_user_context),
 ):
     """Anomaly scan over signals. 0 execution budget units, Admin only. Body: { signals: [...] }"""
-    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
+    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR, UserRole.ORGANIZATION):
         raise HTTPException(status_code=403, detail="Admin access required")
     return await AdminMonitorService(brain).run_anomaly_scan(user, body.get("signals", []))
 
@@ -2049,7 +2129,7 @@ async def admin_stagnation_roster(
     user: UserContext = Depends(get_user_context),
 ):
     """Stagnating-project roster (decay-based). 0 execution budget units. Body: { projects: [...] }"""
-    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
+    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR, UserRole.ORGANIZATION):
         raise HTTPException(status_code=403, detail="Admin access required")
     return await AdminMonitorService(brain).check_stagnation_roster(user, body.get("projects", []))
 
