@@ -109,6 +109,8 @@ celery.conf.update(
         "workers.validation_recommendation_update": {"queue": "ai_light"},
         "workers.validation_evidence_reconciliation": {"queue": "scheduled"},
         "workers.validation_expiry_check": {"queue": "scheduled"},
+        "workers.support_maintenance": {"queue": "scheduled"},
+        "workers.support_ai_reconciliation": {"queue": "ai_light"},
     },
 )
 
@@ -180,6 +182,7 @@ celery.conf.beat_schedule = {
     },
     "validation-expiry-check": {"task": "workers.validation_expiry_check", "schedule": crontab(minute="*/10")},
     "validation-evidence-reconciliation": {"task": "workers.validation_evidence_reconciliation", "schedule": crontab(minute=15, hour="*/6")},
+    "support-maintenance": {"task": "workers.support_maintenance", "schedule": crontab(minute="*/5")},
 }
 
 
@@ -1926,3 +1929,26 @@ def validation_evidence_reconciliation(self, limit: int = 500):
     except Exception as exc:
         logger.error("validation_reconciliation_task_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120)
+
+
+@celery.task(name="workers.support_maintenance", bind=True, max_retries=3)
+def support_maintenance(self):
+    """Ask the authoritative BACKEND to run SLA/retention/incident maintenance."""
+    import urllib.request
+    try:
+        url = os.getenv("BACKEND_SUPPORT_MAINTENANCE_URL")
+        secret = os.getenv("BACKEND_SUPPORT_MAINTENANCE_SECRET")
+        if not url or not secret:
+            return {"skipped": True, "reason": "backend_support_maintenance_not_configured"}
+        request = urllib.request.Request(url, method="POST", headers={"X-TechIT-Internal-Secret": secret, "Content-Type": "application/json"}, data=b"{}")
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        logger.error("support_maintenance_task_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery.task(name="workers.support_ai_reconciliation", bind=True, max_retries=2)
+def support_ai_reconciliation(self, case_id: str):
+    """Queue-only hook; BACKEND remains the source of truth for case state."""
+    return {"case_id": case_id, "status": "queued", "authoritative_service": "backend"}
