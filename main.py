@@ -62,6 +62,7 @@ from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationErr
 from model_registry import ModelRegistry, RegistryError
 from policy_registry import SCORING_POLICY
 from database_schema import Project, GsisV2ConfigAudit, GsisV2Recommendation
+from customer_validation_service import CustomerValidationError, CustomerValidationService
 from gsis_v2_persistence import (
     audit_config,
     list_benchmarks,
@@ -712,6 +713,82 @@ async def company_building_analyze(venture_data: Dict[str, Any], user: UserConte
 @app.post("/api/v1/incubation/validation/start", tags=["Incubation Hub"])
 async def validation_start(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
     return await IncubationHubService(brain).start_validation(user, body, workspace_id=body.get("workspace_id") or body.get("workspaceId"))
+
+
+@app.post("/api/v1/incubation/validate/sessions", tags=["Customer Validation"])
+async def customer_validation_create(body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        return CustomerValidationService.create(db, user.user_id, body)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions", tags=["Customer Validation"])
+async def customer_validation_list(limit: int = 20, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        return {"sessions": CustomerValidationService.list(db, user.user_id, limit)}
+    except (CustomerValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}", tags=["Customer Validation"])
+async def customer_validation_get(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        return CustomerValidationService.get(db, user.user_id, session_id)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/sessions/{session_id}/{action}", tags=["Customer Validation"])
+async def customer_validation_transition(session_id: str, action: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        return CustomerValidationService.transition(db, user.user_id, session_id, action)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.patch("/api/v1/incubation/validate/sessions/{session_id}", tags=["Customer Validation"])
+async def customer_validation_update(session_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        return CustomerValidationService.update_draft(db, user.user_id, session_id, body)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/responses", tags=["Customer Validation"])
+async def customer_validation_responses(session_id: str, limit: int = 100, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.responses(db, user.user_id, session_id, limit)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/events", tags=["Customer Validation"])
+async def customer_validation_events(session_id: str, limit: int = 100, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.events(db, user.user_id, session_id, limit)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/insights", tags=["Customer Validation"])
+async def customer_validation_insights(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.insights(db, user.user_id, session_id)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/validate/{token}", tags=["Public Customer Validation"])
+async def public_customer_validation(token: str, db=Depends(get_db)):
+    try:
+        return CustomerValidationService.public_get(db, token)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/validate/{token}", tags=["Public Customer Validation"])
+async def public_customer_validation_submit(token: str, body: Dict[str, Any], request: Request, db=Depends(get_db)):
+    try:
+        answers = body.get("answers") if isinstance(body.get("answers"), dict) else body
+        anonymous_id = request.headers.get("X-Validation-Anonymous-Id")
+        return CustomerValidationService.submit(db, token, answers, source=str(body.get("source") or "direct"), anonymous_id=anonymous_id)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/v1/incubation/validation/{session_id}/answers", tags=["Incubation Hub"])
