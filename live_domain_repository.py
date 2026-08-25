@@ -834,6 +834,31 @@ class LiveDomainRepository:
             row = db.query(IncubationSession).filter(IncubationSession.id == sid, IncubationSession.owner_id == uid).first()
             return self._incubation_session_dict(row) if row else None
 
+    def list_incubation_sessions(self, user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        requested_limit = max(1, min(int(limit or 20), 100))
+        if not self.database_backed:
+            rows = [
+                deepcopy(row)
+                for row in _MEMORY["incubationSessions"]
+                if row.get("ownerId") == user_id
+            ]
+            return _sort_newest(rows)[:requested_limit]
+        uid = _uuid(user_id)
+        if uid is None:
+            return []
+        with self._session() as db:
+            rows = (
+                db.query(IncubationSession)
+                .filter(IncubationSession.owner_id == uid)
+                .order_by(
+                    IncubationSession.updated_at.desc().nullslast(),
+                    IncubationSession.created_at.desc().nullslast(),
+                )
+                .limit(requested_limit)
+                .all()
+            )
+            return [self._incubation_session_dict(row) for row in rows]
+
     def update_incubation_session(self, user_id: str, session_id: str, *, state_patch: Optional[Dict[str, Any]] = None, status: Optional[str] = None, current_phase: Optional[int] = None) -> Optional[Dict[str, Any]]:
         if not self.database_backed:
             row = next((r for r in reversed(_MEMORY["incubationSessions"]) if r.get("ownerId") == user_id and r.get("id") == session_id), None)

@@ -714,6 +714,19 @@ async def validation_start(body: Dict[str, Any], user: UserContext = Depends(get
     return await IncubationHubService(brain).start_validation(user, body, workspace_id=body.get("workspace_id") or body.get("workspaceId"))
 
 
+@app.get("/api/v1/incubation/validation/sessions", tags=["Incubation Hub"])
+async def validation_sessions(limit: int = 20, user: UserContext = Depends(get_user_context)):
+    return IncubationHubService(brain).list_validation_sessions(user, limit)
+
+
+@app.get("/api/v1/incubation/validation/sessions/{session_id}", tags=["Incubation Hub"])
+async def validation_session(session_id: str, user: UserContext = Depends(get_user_context)):
+    try:
+        return IncubationHubService(brain).get_validation_session(user, session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/v1/incubation/validation/{session_id}/answers", tags=["Incubation Hub"])
 async def validation_answers(session_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
     try:

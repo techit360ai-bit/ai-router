@@ -123,6 +123,21 @@ def test_validation_sessions_context_packs_and_decisions_are_versioned() -> None
     assert context["contextPack"]["decisions"]
 
 
+def test_validation_sessions_are_owner_scoped_and_newest_first() -> None:
+    reset_memory_store_for_tests()
+    repo = LiveDomainRepository()
+    first = repo.create_incubation_session("u1", {"startup_name": "First"})
+    second = repo.create_incubation_session("u1", {"startup_name": "Second"})
+    repo.create_incubation_session("u2", {"startup_name": "Private"})
+    repo.update_incubation_session("u1", first["id"], state_patch={"founder_answers": {"customer": "SMBs"}})
+
+    sessions = repo.list_incubation_sessions("u1")
+
+    assert [row["id"] for row in sessions] == [first["id"], second["id"]]
+    assert all(row["ownerId"] == "u1" for row in sessions)
+    assert repo.list_incubation_sessions("u1", limit=1)[0]["id"] == first["id"]
+
+
 def test_sandbox_builds_are_private_and_versioned() -> None:
     reset_memory_store_for_tests()
     repo = LiveDomainRepository()
@@ -140,6 +155,7 @@ def main() -> int:
         test_investor_and_collaborator_mutations_are_persisted,
         test_production_requires_database_url,
         test_validation_sessions_context_packs_and_decisions_are_versioned,
+        test_validation_sessions_are_owner_scoped_and_newest_first,
         test_sandbox_builds_are_private_and_versioned,
     ]
     for test in tests:

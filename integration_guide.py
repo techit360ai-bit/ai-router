@@ -227,10 +227,66 @@ class IncubationHubService:
             "geography": geography.output,
             "company_building": company.output,
             "founder_answers": {},
+            "workspace_id": workspace_id,
             "human_approval_required": True,
         }
         session = self.repo.update_incubation_session(user_context.user_id, session["id"], state_patch=state_patch, status="questions_pending", current_phase=2) or session
         return {"session": session, "founder_questions": founder.output.get("questions", []), "evidence": evidence.output, "geography": geography.output, "company_building": company.output, "workspace_id": workspace_id}
+
+    def list_validation_sessions(self, user_context: UserContext, limit: int = 20) -> Dict[str, Any]:
+        sessions = self.repo.list_incubation_sessions(user_context.user_id, limit)
+        summaries = []
+        for session in sessions:
+            state = session.get("state") or {}
+            venture = state.get("venture_data") or {}
+            interrogation = state.get("founder_interrogation") or {}
+            questions = interrogation.get("questions") or []
+            answers = state.get("founder_answers") or {}
+            summaries.append({
+                "id": session.get("id"),
+                "projectId": session.get("projectId"),
+                "status": session.get("status"),
+                "currentPhase": session.get("currentPhase"),
+                "version": session.get("version"),
+                "ventureName": venture.get("startup_name") or venture.get("venture_name") or venture.get("name") or "Untitled venture",
+                "summary": venture.get("solution") or venture.get("problem") or venture.get("one_liner") or "",
+                "workspaceId": state.get("workspace_id"),
+                "questionCount": len(questions) if isinstance(questions, list) else 0,
+                "answeredCount": len([value for value in answers.values() if str(value).strip()]) if isinstance(answers, dict) else 0,
+                "createdAt": session.get("createdAt"),
+                "updatedAt": session.get("updatedAt"),
+            })
+        return {"sessions": summaries}
+
+    def get_validation_session(self, user_context: UserContext, session_id: str) -> Dict[str, Any]:
+        session = self.repo.get_incubation_session(user_context.user_id, session_id)
+        if session is None:
+            raise ValueError("incubation_session_not_found")
+        state = session.get("state") or {}
+        venture = state.get("venture_data") or {}
+        interrogation = state.get("founder_interrogation") or {}
+        project_id = session.get("projectId")
+        workspace_id = state.get("workspace_id")
+        if not workspace_id and project_id:
+            workspace = next(
+                (row for row in self.repo.list_workspaces(user_context.user_id) if row.get("projectId") == project_id),
+                None,
+            )
+            workspace_id = workspace.get("id") if workspace else None
+        analysis = self.repo.latest_project_analysis(user_context.user_id, project_id) if project_id else None
+        return {
+            "session": session,
+            "founder_questions": interrogation.get("questions") or [],
+            "founder_answers": state.get("founder_answers") or {},
+            "evidence": state.get("evidence") or {},
+            "geography": state.get("geography") or {},
+            "company_building": state.get("company_building") or {},
+            "pmf_validation": state.get("pmf_validation") or {},
+            "mvp_plan": state.get("roadmap") or {},
+            "workspace_id": workspace_id,
+            "venture_data": venture,
+            "blueprint": (analysis or {}).get("blueprint") or {},
+        }
 
     async def run_company_building_validation(self, user_context: UserContext, venture_data: Dict[str, Any]) -> Dict[str, Any]:
         ctx = AgentContext(user_context=user_context, trigger_event=venture_data, shared_memory={"venture_profile": venture_data})
