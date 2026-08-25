@@ -11,14 +11,28 @@ import hashlib
 import hmac
 import json
 import os
+import re
+import secrets
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
+from sqlalchemy import func
+
 from database_schema import (
     CustomerValidationEvent,
+    CustomerValidationBssSnapshot,
+    CustomerValidationHypothesis,
+    CustomerValidationRecommendation,
     CustomerValidationResponse,
+    CustomerValidationShare,
     CustomerValidationSession,
+    CustomerValidationSynthesis,
+    EventLog,
+    TrustTimelineEvent,
+    VerificationSourceEnum,
+    WorkspaceContextPack,
     Project,
 )
 
@@ -35,6 +49,7 @@ STAGES = {"idea", "validation", "mvp", "beta", "launch", "growth"}
 ACTIVE_STATES = {"active"}
 TERMINAL_STATES = {"completed", "expired"}
 QUESTION_TYPES = {"short_text", "long_text", "yes_no", "multiple_choice", "multiple_select", "rating", "likert", "nps", "numeric", "willingness_to_pay", "ranking"}
+_RATE_WINDOWS: Dict[str, deque] = defaultdict(deque)
 
 
 def _canonical(value: Any) -> str:
@@ -131,6 +146,7 @@ def _session_dict(row: CustomerValidationSession, *, include_token: bool = False
         "id": str(row.id),
         "projectId": str(row.project_id),
         "incubationSessionId": str(row.incubation_session_id) if row.incubation_session_id else None,
+        "hypothesisId": str(row.hypothesis_id) if row.hypothesis_id else None,
         "title": row.title,
         "description": row.description,
         "objective": row.objective,
@@ -172,6 +188,68 @@ def _event_dict(row: CustomerValidationEvent) -> Dict[str, Any]:
     return {"id": str(row.id), "eventType": row.event_type, "metadata": row.metadata_json or {},
             "previousHash": row.previous_hash, "eventHash": row.event_hash,
             "createdAt": row.created_at.isoformat() if row.created_at else None}
+
+
+def _theme_findings(responses: List[CustomerValidationResponse]) -> Dict[str, Any]:
+    terms = {
+        "manual_workflow": ("manual", "spreadsheet", "paper", "workaround"),
+        "cost": ("cost", "expensive", "price", "pay", "budget"),
+        "time": ("time", "slow", "hours", "delay"),
+        "automation": ("automate", "automation", "integrat"),
+    }
+    counts = {key: 0 for key in terms}; quotes: Dict[str, List[str]] = {key: [] for key in terms}
+    for response in responses:
+        text = " ".join(str(value) for value in (response.answers or {}).values()).lower()
+        for key, needles in terms.items():
+            if any(needle in text for needle in needles):
+                counts[key] += 1
+                if len(quotes[key]) < 3:
+                    actual = next((str(value).strip() for value in (response.answers or {}).values() if any(needle in str(value).lower() for needle in needles)), "")
+                    if actual: quotes[key].append(actual[:280])
+    total = len(responses)
+    recurring = [{"theme": key, "count": count, "share": round(count / total, 3) if total else 0, "quotes": quotes[key]} for key, count in counts.items() if count]
+    segment_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for response in responses:
+        for key, value in (response.answers or {}).items():
+            if str(key).startswith("segment_") and str(value).strip(): segment_counts[str(key)][str(value).strip()] += 1
+    segmentation = {key.removeprefix("segment_"): [{"value": value, "count": count} for value, count in values.items() if count >= 3] for key, values in segment_counts.items()}
+    segmentation = {key: values for key, values in segmentation.items() if values}
+    contradictions = []
+    if counts["manual_workflow"] and counts["automation"] and abs(counts["manual_workflow"] - counts["automation"]) <= max(1, total // 3):
+        contradictions.append("Respondents describe manual workflows while expressing mixed appetite for automation.")
+    return {"recurringPainPoints": sorted(recurring, key=lambda item: item["count"], reverse=True), "qualifiedResponseCount": total, "contradictions": contradictions, "segmentation": segmentation}
+
+
+def _project_workspace_context(db: Any, row: CustomerValidationSession) -> None:
+    pack = db.query(WorkspaceContextPack).filter(WorkspaceContextPack.project_id == row.project_id).order_by(WorkspaceContextPack.version.desc()).first()
+    if pack is not None:
+        data = dict(pack.context_data or {})
+        data["customer_evidence"] = {"source_type": "CUSTOMER_EVIDENCE", "active_sessions": 1 if row.status == "active" else 0, "qualified_responses": row.qualified_response_count, "total_responses": row.total_response_count, "confidence": row.confidence_level, "objective": row.objective, "session_id": str(row.id), "evidence_gaps": ["More qualified responses needed"] if row.qualified_response_count < 10 else []}
+        pack.context_data = data
+
+
+def _project_event(db: Any, row: CustomerValidationSession, event_type: str, metadata: Dict[str, Any]) -> None:
+    db.add(EventLog(event_type=f"customer_validation_{event_type}", event_data=metadata, user_id=row.owner_id, project_id=row.project_id))
+    if event_type in {"threshold_reached", "synthesis_completed"}:
+        db.add(TrustTimelineEvent(user_id=row.owner_id, project_id=row.project_id, event_type=f"customer_validation_{event_type}", reference_id=str(row.id), visibility="private", source=VerificationSourceEnum.MILESTONE, content_hash=_hash(metadata), created_at=_now()))
+
+
+def _bss_snapshot(db: Any, row: CustomerValidationSession, synthesis: CustomerValidationSynthesis) -> None:
+    if row.objective not in {"nps", "ux_feedback", "willingness_to_pay", "pricing_validation", "product_feedback"}:
+        return
+    responses = db.query(CustomerValidationResponse).filter(CustomerValidationResponse.session_id == row.id, CustomerValidationResponse.evidence_status == "qualified").all()
+    values = [value for response in responses for value in (response.answers or {}).values()]
+    score = None
+    if row.objective == "nps":
+        values = [int(value) for value in values if str(value).isdigit() and 0 <= int(value) <= 10]
+        score = round(((sum(1 for value in values if value >= 9) - sum(1 for value in values if value <= 6)) / len(values) * 100 + 100) / 2, 2) if values else None
+    elif row.objective in {"willingness_to_pay", "pricing_validation"}:
+        values = [float(value) for value in values if isinstance(value, (int, float)) or (isinstance(value, str) and value.replace('.', '', 1).isdigit())]
+        score = round(min(100, len([value for value in values if value > 0]) / len(values) * 100), 2) if values else None
+    if score is None: return
+    previous = db.query(CustomerValidationBssSnapshot).filter(CustomerValidationBssSnapshot.project_id == row.project_id, CustomerValidationBssSnapshot.evidence_type == row.objective).order_by(CustomerValidationBssSnapshot.created_at.desc()).first()
+    db.add(CustomerValidationBssSnapshot(id=uuid.uuid4(), session_id=row.id, project_id=row.project_id, evidence_type=row.objective, previous_score=previous.new_score if previous else None, new_score=score, delta=score - previous.new_score if previous else None, confidence=row.confidence_level, response_count=len(responses), synthesis_hash=_hash(synthesis.findings), calculation_version="customer-validation-bss-v1"))
+    db.add(EventLog(event_type="gsis_recompute_requested", event_data={"source": "CUSTOMER_EVIDENCE", "session_id": str(row.id), "evidence_type": row.objective, "bss_score": score}, user_id=row.owner_id, project_id=row.project_id))
 
 
 class CustomerValidationError(ValueError):
@@ -262,6 +340,7 @@ class CustomerValidationService:
         row = CustomerValidationSession(
             id=uuid.uuid4(), owner_id=oid, project_id=pid,
             incubation_session_id=uuid.UUID(str(body["incubation_session_id"])) if body.get("incubation_session_id") else None,
+            hypothesis_id=uuid.UUID(str(body["hypothesis_id"] or body["hypothesisId"])) if body.get("hypothesis_id") or body.get("hypothesisId") else None,
             title=str(body.get("title") or "Customer Validation").strip()[:255],
             description=str(body.get("description") or "").strip()[:2000], objective=objective, mode=mode,
             stage=project_stage, questions=questions,
@@ -312,6 +391,123 @@ class CustomerValidationService:
         return {"sessionId": str(row.id), "responseProgress": {"total": row.total_response_count, "qualified": row.qualified_response_count}, "confidence": row.confidence_level, "evidenceStatement": finding, "synthesisStatus": row.synthesis_status}
 
     @staticmethod
+    def findings(db: Any, owner_id: str, session_id: str) -> Dict[str, Any]:
+        row = CustomerValidationService._owned(db, owner_id, session_id)
+        responses = db.query(CustomerValidationResponse).filter(CustomerValidationResponse.session_id == row.id, CustomerValidationResponse.evidence_status == "qualified").all()
+        findings = _theme_findings(responses)
+        findings["whatWeLearned"] = [f"{item['theme'].replace('_', ' ').title()} appeared in {item['count']} qualified responses." for item in findings["recurringPainPoints"]]
+        findings["whatRemainsUncertain"] = ["Evidence accumulating — insufficient sample for synthesis."] if len(responses) < 3 else ["Segment differences and causality require additional evidence."]
+        return findings
+
+    @staticmethod
+    def create_synthesis(db: Any, owner_id: str, session_id: str, *, generated_by: str = "deterministic") -> Dict[str, Any]:
+        row = CustomerValidationService._owned(db, owner_id, session_id)
+        responses = db.query(CustomerValidationResponse).filter(CustomerValidationResponse.session_id == row.id, CustomerValidationResponse.evidence_status == "qualified").order_by(CustomerValidationResponse.received_at.asc()).all()
+        findings = CustomerValidationService.findings(db, owner_id, session_id)
+        input_hash = _hash([response.response_hash for response in responses] + [row.configuration_hash])
+        existing = db.query(CustomerValidationSynthesis).filter(CustomerValidationSynthesis.session_id == row.id, CustomerValidationSynthesis.input_hash == input_hash).first()
+        if existing: return {"synthesis": existing, "cached": True}
+        verdict = "Insufficient Evidence" if len(responses) < 3 else "Mixed Signal" if len(findings.get("recurringPainPoints", [])) == 0 else "Partially Validated"
+        limitations = ["Founder-generated sample; not statistically significant."]
+        version = int(db.query(func.max(CustomerValidationSynthesis.version)).filter(CustomerValidationSynthesis.session_id == row.id).scalar() or 0) + 1
+        synthesis = CustomerValidationSynthesis(id=uuid.uuid4(), session_id=row.id, project_id=row.project_id, version=version, input_hash=input_hash, findings=findings, verdict=verdict, confidence=row.confidence_level, limitations=limitations, generated_by=generated_by)
+        db.add(synthesis); row.latest_synthesis_id = synthesis.id; row.synthesis_status = "ready"; CustomerValidationService._event(db, row, "synthesis_completed", {"version": version, "verdict": verdict}); _project_event(db, row, "synthesis_completed", {"version": version, "verdict": verdict}); _project_workspace_context(db, row); db.flush(); _bss_snapshot(db, row, synthesis); db.commit()
+        if row.hypothesis_id:
+            hypothesis = db.query(CustomerValidationHypothesis).filter(CustomerValidationHypothesis.id == row.hypothesis_id).first()
+            if hypothesis:
+                hypothesis.status = "supported" if verdict == "Validated" else "not_supported" if verdict == "Not Validated" else "testing"
+                hypothesis.evidence_summary = {"sessionId": str(row.id), "qualifiedResponses": row.qualified_response_count, "verdict": verdict, "confidence": row.confidence_level}
+                db.commit()
+        return {"synthesis": synthesis, "cached": False}
+
+    @staticmethod
+    def store_ai_synthesis(db: Any, owner_id: str, session_id: str, ai_findings: Dict[str, Any]) -> Dict[str, Any]:
+        row = CustomerValidationService._owned(db, owner_id, session_id)
+        responses = db.query(CustomerValidationResponse).filter(CustomerValidationResponse.session_id == row.id, CustomerValidationResponse.evidence_status == "qualified").order_by(CustomerValidationResponse.received_at.asc()).all()
+        input_hash = _hash([response.response_hash for response in responses] + [row.configuration_hash])
+        existing = db.query(CustomerValidationSynthesis).filter(CustomerValidationSynthesis.session_id == row.id, CustomerValidationSynthesis.input_hash == input_hash).first()
+        if existing and existing.generated_by == "ai_router": return {"synthesis": existing, "cached": True}
+        deterministic = CustomerValidationService.findings(db, owner_id, session_id)
+        merged = {**deterministic, **{key: value for key, value in ai_findings.items() if key in {"what_we_learned", "what_customers_currently_do", "what_customers_want", "recurring_pain_points", "objections", "contradictions", "surprises", "evidence_gaps", "limitations"}}}
+        verdict = "Insufficient Evidence" if len(responses) < 3 else "Mixed Signal" if merged.get("contradictions") and len(responses) < 10 else "Partially Validated"
+        version = int(db.query(func.max(CustomerValidationSynthesis.version)).filter(CustomerValidationSynthesis.session_id == row.id).scalar() or 0) + 1
+        synthesis = CustomerValidationSynthesis(id=uuid.uuid4(), session_id=row.id, project_id=row.project_id, version=version, input_hash=input_hash, findings=merged, verdict=verdict, confidence=row.confidence_level, limitations=list(merged.get("limitations") or ["Founder-generated sample; not statistically significant."]), generated_by="ai_router")
+        db.add(synthesis); row.latest_synthesis_id = synthesis.id; row.synthesis_status = "ready"; CustomerValidationService._event(db, row, "synthesis_completed", {"version": version, "verdict": verdict, "generated_by": "ai_router"}); _project_event(db, row, "synthesis_completed", {"version": version, "verdict": verdict}); _project_workspace_context(db, row); db.flush(); _bss_snapshot(db, row, synthesis); db.commit()
+        return {"synthesis": synthesis, "cached": False}
+
+    @staticmethod
+    def recommendations(db: Any, owner_id: str, session_id: str) -> Dict[str, Any]:
+        row = CustomerValidationService._owned(db, owner_id, session_id)
+        findings = CustomerValidationService.findings(db, owner_id, session_id)
+        theme_names = {item["theme"] for item in findings.get("recurringPainPoints", [])}
+        recs: List[Dict[str, Any]] = []
+        if row.qualified_response_count < 10:
+            recs.append({"title": "Collect more qualified responses", "reason": "The current sample is below the stronger evidence threshold.", "key": "collect_qualified_responses", "urgency": "HIGH"})
+        if row.objective in {"willingness_to_pay", "pricing_validation"} or "cost" not in theme_names:
+            recs.append({"title": "Validate willingness to pay", "reason": "Current customer evidence does not establish current spending behaviour.", "key": "validate_willingness_to_pay", "urgency": "HIGH"})
+        result = []
+        for item in recs:
+            key = item.pop("key")
+            existing = db.query(CustomerValidationRecommendation).filter(CustomerValidationRecommendation.session_id == row.id, CustomerValidationRecommendation.deduplication_key == key).first()
+            if existing is None:
+                existing = CustomerValidationRecommendation(id=uuid.uuid4(), session_id=row.id, project_id=row.project_id, deduplication_key=key, title=item["title"], reason=item["reason"], evidence={"qualifiedResponses": row.qualified_response_count}, urgency=item["urgency"], expected_impact="HIGH", estimated_effort="MEDIUM", confidence=row.confidence_level, source_engines=["Customer Validation"], status="recommended")
+                db.add(existing)
+            result.append(existing)
+        db.commit()
+        return {"recommendations": [{"id": str(item.id), "title": item.title, "reason": item.reason, "urgency": item.urgency, "confidence": item.confidence, "sourceEngines": item.source_engines, "status": item.status} for item in result]}
+
+    @staticmethod
+    def aggregate_recommendations(db: Any, owner_id: str, session_id: str) -> Dict[str, Any]:
+        row = CustomerValidationService._owned(db, owner_id, session_id)
+        customer = CustomerValidationService.recommendations(db, owner_id, session_id)["recommendations"]
+        from database_schema import GsisV2Recommendation
+        existing = db.query(GsisV2Recommendation).filter(GsisV2Recommendation.project_id == row.project_id, GsisV2Recommendation.status == "recommended").order_by(GsisV2Recommendation.created_at.desc()).limit(20).all()
+        merged: Dict[str, Dict[str, Any]] = {}
+        for item in customer:
+            key = re.sub(r"[^a-z0-9]+", " ", item["title"].lower()).strip()
+            merged[key] = {**item, "sourceEngines": list(dict.fromkeys(item.get("sourceEngines", []) + ["Customer Validation"]))}
+        for item in existing:
+            key = re.sub(r"[^a-z0-9]+", " ", item.action.lower()).strip()
+            match = next((candidate for candidate in merged if key in candidate or candidate in key), None)
+            if match:
+                merged[match]["sourceEngines"] = list(dict.fromkeys(merged[match]["sourceEngines"] + ["GSIS"]))
+            else:
+                merged[key] = {"id": str(item.id), "title": item.action, "reason": "Existing GSIS recommendation.", "urgency": item.expected_impact or "MEDIUM", "confidence": str(item.confidence or "unknown"), "sourceEngines": ["GSIS"], "status": item.status}
+        return {"recommendations": sorted(merged.values(), key=lambda item: (item.get("urgency") != "HIGH", item["title"]))}
+
+    @staticmethod
+    def update_recommendation(db: Any, owner_id: str, session_id: str, recommendation_id: str, status: str) -> Dict[str, Any]:
+        row = CustomerValidationService._owned(db, owner_id, session_id)
+        if status not in {"accepted", "in_progress", "completed", "dismissed"}: raise CustomerValidationError("invalid_recommendation_status")
+        try: rid = uuid.UUID(str(recommendation_id))
+        except ValueError: raise CustomerValidationError("recommendation_not_found")
+        recommendation = db.query(CustomerValidationRecommendation).filter(CustomerValidationRecommendation.id == rid, CustomerValidationRecommendation.session_id == row.id).first()
+        if recommendation is None: raise CustomerValidationError("recommendation_not_found")
+        recommendation.status = status; recommendation.updated_at = _now(); CustomerValidationService._event(db, row, "recommendation_updated", {"recommendation_id": str(rid), "status": status}); db.commit()
+        return {"id": str(recommendation.id), "status": recommendation.status}
+
+    @staticmethod
+    def create_share(db: Any, owner_id: str, session_id: str, scope: str = "private") -> Dict[str, Any]:
+        row = CustomerValidationService._owned(db, owner_id, session_id)
+        if scope not in {"private", "team", "mentor", "accelerator", "investor", "public"}: raise CustomerValidationError("invalid_share_scope")
+        findings = CustomerValidationService.findings(db, owner_id, session_id)
+        if scope == "public":
+            findings = {**findings, "recurringPainPoints": [{key: value for key, value in item.items() if key != "quotes"} for item in findings.get("recurringPainPoints", [])]}
+        report = {"title": row.title, "objective": row.objective, "stage": row.stage, "totalResponses": row.total_response_count, "qualifiedResponses": row.qualified_response_count, "confidence": row.confidence_level, "findings": findings, "methodology": "Immutable TechIT-recorded customer evidence; raw responses excluded."}
+        token = secrets.token_urlsafe(32); share = CustomerValidationShare(id=uuid.uuid4(), session_id=row.id, project_id=row.project_id, owner_id=row.owner_id, scope=scope, share_token_hash=_hash(token), report_hash=_hash(report), report=report)
+        db.add(share); CustomerValidationService._event(db, row, "share_created", {"scope": scope}); db.commit()
+        return {"shareToken": token, "report": report}
+
+    @staticmethod
+    def investor_evidence(db: Any, owner_id: str, project_id: str) -> Dict[str, Any]:
+        oid, pid = uuid.UUID(str(owner_id)), uuid.UUID(str(project_id))
+        project = db.query(Project).filter(Project.id == pid, Project.owner_id == oid).first()
+        if not project: raise CustomerValidationError("project_not_found")
+        sessions = db.query(CustomerValidationSession).filter(CustomerValidationSession.project_id == pid).all()
+        latest = db.query(CustomerValidationSynthesis).filter(CustomerValidationSynthesis.project_id == pid).order_by(CustomerValidationSynthesis.created_at.desc()).first()
+        return {"projectId": project_id, "validationRounds": len(sessions), "totalResponses": sum(row.total_response_count for row in sessions), "qualifiedResponses": sum(row.qualified_response_count for row in sessions), "objectives": sorted({row.objective for row in sessions}), "latestVerdict": latest.verdict if latest else "Insufficient Evidence", "confidence": latest.confidence if latest else "insufficient", "lastUpdated": max((row.updated_at for row in sessions), default=None).isoformat() if sessions else None, "rawResponsesShared": False, "source": "TechIT Customer Evidence"}
+
+    @staticmethod
     def transition(db: Any, owner_id: str, session_id: str, action: str) -> Dict[str, Any]:
         row = CustomerValidationService._owned(db, owner_id, session_id)
         if action == "activate":
@@ -351,6 +547,10 @@ class CustomerValidationService:
         if row is None: raise CustomerValidationError("validation_not_found")
         CustomerValidationService._expire_if_needed(db, row)
         if row.status not in ACTIVE_STATES: raise CustomerValidationError("validation_not_accepting_responses")
+        rate_key = f"{row.id}:{_hash(anonymous_id or 'anonymous')}"; window = _RATE_WINDOWS[rate_key]; cutoff = _now() - timedelta(minutes=10)
+        while window and window[0] < cutoff: window.popleft()
+        if len(window) >= 5: raise CustomerValidationError("rate_limit_exceeded")
+        window.append(_now())
         questions = row.questions or []; clean: Dict[str, Any] = {}
         for question in questions:
             qid = question["id"]; value = answers.get(qid)
@@ -397,5 +597,34 @@ class CustomerValidationService:
         CustomerValidationService._event(db, row, "response_classified", {"quality": quality, "evidence_status": evidence_status})
         if row.qualified_response_count in {3, 5, 10, 25, 50}:
             CustomerValidationService._event(db, row, "threshold_reached", {"qualified_count": row.qualified_response_count})
+            _project_event(db, row, "threshold_reached", {"qualified_count": row.qualified_response_count})
+        _project_workspace_context(db, row)
         db.commit()
+        if row.qualified_response_count >= 3 and row.qualified_response_count in {3, 5, 10, 25, 50}:
+            try:
+                from workers.workers import validation_synthesis_generate, validation_recommendation_update
+                validation_synthesis_generate.delay(str(row.id), str(row.owner_id))
+                validation_recommendation_update.delay(str(row.id), str(row.owner_id))
+            except Exception:
+                pass
         return {"message": "Thank you. Your response has been recorded."}
+
+    @staticmethod
+    def history(db: Any, owner_id: str, project_id: str) -> Dict[str, Any]:
+        oid, pid = uuid.UUID(str(owner_id)), uuid.UUID(str(project_id))
+        rows = db.query(CustomerValidationSession).filter(CustomerValidationSession.owner_id == oid, CustomerValidationSession.project_id == pid).order_by(CustomerValidationSession.created_at.asc()).all()
+        timeline = [{"id": str(row.id), "title": row.title, "objective": row.objective, "qualifiedResponses": row.qualified_response_count, "confidence": row.confidence_level, "status": row.status, "createdAt": row.created_at.isoformat()} for row in rows]
+        changes = []
+        for previous, current in zip(rows, rows[1:]):
+            changes.append({"from": str(previous.id), "to": str(current.id), "qualifiedDelta": current.qualified_response_count - previous.qualified_response_count, "confidenceChanged": previous.confidence_level != current.confidence_level})
+        return {"timeline": timeline, "changes": changes}
+
+    @staticmethod
+    def create_hypothesis(db: Any, owner_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        oid, pid = uuid.UUID(str(owner_id)), uuid.UUID(str(body.get("project_id") or body.get("projectId")))
+        project = db.query(Project).filter(Project.id == pid, Project.owner_id == oid).first()
+        if not project: raise CustomerValidationError("project_not_found")
+        statement = str(body.get("statement") or "").strip()
+        if len(statement) < 10: raise CustomerValidationError("hypothesis_statement_required")
+        row = CustomerValidationHypothesis(id=uuid.uuid4(), project_id=pid, owner_id=oid, statement=statement, status="untested", evidence_summary={})
+        db.add(row); db.commit(); return {"id": str(row.id), "statement": row.statement, "status": row.status}

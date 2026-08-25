@@ -17,10 +17,12 @@ Start (production, via Docker):
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, Body, UploadFile, File as FastAPIFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 import os
+import asyncio
+import json
 import structlog
 from sqlalchemy import text
 
@@ -56,7 +58,7 @@ from integration_guide import (
     WorkspaceService,
     HackathonService,
 )
-from ai_router_core import ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
+from ai_router_core import AIRequest, ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
 from gsis_v2 import project_scorecard
 from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationError
 from model_registry import ModelRegistry, RegistryError
@@ -723,6 +725,28 @@ async def customer_validation_create(body: Dict[str, Any], user: UserContext = D
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.post("/api/v1/incubation/validate/questions", tags=["Customer Validation"])
+async def customer_validation_questions(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    """Draft questions with the existing AI Router; backend validates before use."""
+    response = await brain.process(AIRequest(
+        task_type=TaskType.CUSTOMER_VALIDATION_QUESTION_GENERATION,
+        user_context=user,
+        input_data={"validation_context": {key: body.get(key) for key in ("objective", "mode", "stage", "venture_context", "history")}},
+        max_tokens=4000, ip_protected=True, require_structured_output=True,
+    ))
+    import json
+    try:
+        parsed = json.loads(response.output) if isinstance(response.output, str) else response.output
+    except json.JSONDecodeError:
+        parsed = {"questions": []}
+    try:
+        from customer_validation_service import CustomerValidationService
+        questions = CustomerValidationService._validate_questions((parsed or {}).get("questions") or [])
+    except CustomerValidationError:
+        questions = []
+    return {"questions": questions, "modelUsed": response.model_used, "confidence": response.confidence_score}
+
+
 @app.get("/api/v1/incubation/validate/sessions", tags=["Customer Validation"])
 async def customer_validation_list(limit: int = 20, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
     try:
@@ -773,6 +797,79 @@ async def customer_validation_insights(session_id: str, user: UserContext = Depe
     except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/findings", tags=["Customer Validation"])
+async def customer_validation_findings(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.findings(db, user.user_id, session_id)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/sessions/{session_id}/synthesis", tags=["Customer Validation"])
+async def customer_validation_synthesis(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        deterministic = CustomerValidationService.create_synthesis(db, user.user_id, session_id)
+        if deterministic.get("synthesis") and deterministic["synthesis"].confidence in {"medium", "high"}:
+            import json
+            row = CustomerValidationService._owned(db, user.user_id, session_id)
+            responses = CustomerValidationService.responses(db, user.user_id, session_id, 200).get("responses", [])
+            ai = await brain.process(AIRequest(task_type=TaskType.CUSTOMER_VALIDATION_ANALYSIS, user_context=user, input_data={"objective": row.objective, "stage": row.stage, "responses": [{"label": f"R{index + 1}", "answers": response["answers"]} for index, response in enumerate(responses) if response["evidenceStatus"] == "qualified"]}, max_tokens=7000, ip_protected=True, require_structured_output=True))
+            parsed = json.loads(ai.output) if isinstance(ai.output, str) else ai.output
+            deterministic = CustomerValidationService.store_ai_synthesis(db, user.user_id, session_id, parsed or {})
+        return deterministic
+    except CustomerValidationError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/recommendations", tags=["Customer Validation"])
+async def customer_validation_recommendations(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.aggregate_recommendations(db, user.user_id, session_id)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/sessions/{session_id}/recommendations/{recommendation_id}", tags=["Customer Validation"])
+async def customer_validation_recommendation_status(session_id: str, recommendation_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.update_recommendation(db, user.user_id, session_id, recommendation_id, str(body.get("status") or "accepted"))
+    except CustomerValidationError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/sessions/{session_id}/share", tags=["Customer Validation"])
+async def customer_validation_share(session_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.create_share(db, user.user_id, session_id, str(body.get("scope") or "private"))
+    except CustomerValidationError as exc: raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/projects/{project_id}/history", tags=["Customer Validation"])
+async def customer_validation_history(project_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.history(db, user.user_id, project_id)
+    except (CustomerValidationError, ValueError) as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/hypotheses", tags=["Customer Validation"])
+async def customer_validation_hypothesis(body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.create_hypothesis(db, user.user_id, body)
+    except CustomerValidationError as exc: raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/projects/{project_id}/investor-evidence", tags=["Customer Validation"])
+async def customer_validation_investor_evidence(project_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.investor_evidence(db, user.user_id, project_id)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/stream", tags=["Customer Validation"])
+async def customer_validation_stream(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    CustomerValidationService.get(db, user.user_id, session_id)
+    async def events():
+        previous = None
+        for _ in range(120):
+            snapshot = CustomerValidationService.get(db, user.user_id, session_id)
+            payload = {"event": "validation_snapshot", "session_id": session_id, "response_count": snapshot["totalResponseCount"], "qualified_count": snapshot["qualifiedResponseCount"], "confidence": snapshot["confidenceLevel"], "synthesis_status": snapshot["synthesisStatus"]}
+            encoded = json.dumps(payload)
+            if encoded != previous:
+                yield f"event: validation_snapshot\ndata: {encoded}\n\n"; previous = encoded
+            else: yield ": keepalive\n\n"
+            await asyncio.sleep(5)
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.get("/api/v1/validate/{token}", tags=["Public Customer Validation"])
 async def public_customer_validation(token: str, db=Depends(get_db)):
     try:
@@ -789,6 +886,16 @@ async def public_customer_validation_submit(token: str, body: Dict[str, Any], re
         return CustomerValidationService.submit(db, token, answers, source=str(body.get("source") or "direct"), anonymous_id=anonymous_id)
     except CustomerValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/validate/evidence/{token}", tags=["Public Customer Validation"])
+async def public_customer_validation_evidence(token: str, db=Depends(get_db)):
+    from customer_validation_service import _hash
+    from database_schema import CustomerValidationShare
+    share = db.query(CustomerValidationShare).filter(CustomerValidationShare.share_token_hash == _hash(token)).first()
+    if share is None: raise HTTPException(status_code=404, detail="evidence_summary_not_found")
+    if share.scope != "public": raise HTTPException(status_code=403, detail="evidence_summary_private")
+    return share.report
 
 
 @app.post("/api/v1/incubation/validation/{session_id}/answers", tags=["Incubation Hub"])
