@@ -126,6 +126,7 @@ class TaskType(Enum):
     CUSTOMER_VALIDATION_QUESTION_GENERATION = "customer_validation_question_generation"
     CUSTOMER_VALIDATION_ANALYSIS = "customer_validation_analysis"
     CUSTOMER_VALIDATION_RECOMMENDATION = "customer_validation_recommendation"
+    CUSTOMER_SUPPORT_INTELLIGENCE = "customer_support_intelligence"
     ADMIN_MONITOR            = "admin_monitor"
     WORKSPACE_ASSISTANT      = "workspace_assistant"
     WORKSPACE_CONVERSATION   = "workspace_conversation"
@@ -981,6 +982,12 @@ class PromptEngine:
         TaskType.CUSTOMER_VALIDATION_QUESTION_GENERATION: AP.CUSTOMER_VALIDATION_QUESTION_GENERATION,
         TaskType.CUSTOMER_VALIDATION_ANALYSIS: AP.CUSTOMER_VALIDATION_ANALYSIS,
         TaskType.CUSTOMER_VALIDATION_RECOMMENDATION: AP.CUSTOMER_VALIDATION_RECOMMENDATION,
+        TaskType.CUSTOMER_SUPPORT_INTELLIGENCE: (
+            "You are TechIT Customer Support Intelligence. Work only from redacted case evidence, "
+            "messages, and approved knowledge-base text. Return JSON with classification, priority_recommendation, "
+            "summary, draft_response, escalation_recommendation, and confidence. Never authorize refunds, credits, "
+            "account changes, security changes, or disclose private information."
+        ),
 
         # ── Prompt -> Live App Engine ───────────────────────────────────────
         TaskType.APP_SCAFFOLD_GENERATION: (

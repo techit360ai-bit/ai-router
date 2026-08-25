@@ -760,6 +760,17 @@ async def evidence_research(body: Dict[str, Any], user: UserContext = Depends(ge
     )
 
 
+@app.post("/api/v1/support/intelligence", tags=["Customer Support"])
+async def support_intelligence(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    """Bounded support drafting/classification. Backend remains authoritative for actions and policy."""
+    safe = {"mode": body.get("mode", "draft_response"), "case": body.get("case") or {}, "messages": body.get("messages") or [], "knowledge": body.get("knowledge") or []}
+    response = await brain.process(AIRequest(task_type=TaskType.CUSTOMER_SUPPORT_INTELLIGENCE, user_context=user, input_data=safe, max_tokens=2500, ip_protected=True, require_structured_output=True))
+    try:
+        return json.loads(response.output) if isinstance(response.output, str) else response.output
+    except (json.JSONDecodeError, TypeError):
+        return {"summary": str(response.output or ""), "confidence": response.confidence_score, "modelUsed": response.model_used}
+
+
 @app.get("/api/v1/incubation/validate/sessions", tags=["Customer Validation"])
 async def customer_validation_list(limit: int = 20, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
     try:
