@@ -747,6 +747,19 @@ async def customer_validation_questions(body: Dict[str, Any], user: UserContext 
     return {"questions": questions, "modelUsed": response.model_used, "confidence": response.confidence_score}
 
 
+@app.post("/api/v1/incubation/evidence/research", tags=["Incubation Hub"])
+async def evidence_research(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    """Non-authoritative evidence advisory; deterministic Trust decisions stay in BACKEND."""
+    return await IncubationHubService(brain).run_task_analysis(
+        user,
+        {"evidence": body, "project_id": body.get("project_id")},
+        TaskType.EVIDENCE_RESEARCH,
+        "evidence_research",
+        max_tokens=4000,
+        ip_protected=True,
+    )
+
+
 @app.get("/api/v1/incubation/validate/sessions", tags=["Customer Validation"])
 async def customer_validation_list(limit: int = 20, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
     try:
