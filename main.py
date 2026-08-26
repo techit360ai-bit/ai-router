@@ -1655,6 +1655,170 @@ async def update_progress(
     )
 
 
+@app.post("/api/v1/training/modules/enrich", tags=["Training"])
+async def enrich_training_modules(
+    data: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Optional project-specific coaching using the registered zero-cost model.
+    Canonical module content, citations, ordering, and completion remain backend-owned.
+    """
+    safe_modules = [
+        {"id": str(item.get("id", ""))[:100], "title": str(item.get("title", ""))[:300], "objective": str(item.get("objective", ""))[:1000], "phase": str(item.get("phase", ""))[:50]}
+        for item in (data.get("modules") or [])[:12] if isinstance(item, dict)
+    ]
+    response = await brain.process(AIRequest(
+        task_type=TaskType.TRAINING_GENERATION,
+        user_context=user,
+        input_data={
+            "mode": "project_module_enrichment",
+            "project": data.get("project") or {},
+            "role": data.get("role"),
+            "modules": safe_modules,
+            "rules": [
+                "Return only project application guidance and coaching notes.",
+                "Do not invent company stories, citations, metrics, or project facts.",
+                "Do not decide unlocks, completion, scores, badges, or authorization.",
+            ],
+        },
+        max_tokens=3000,
+        require_structured_output=True,
+        ip_protected=True,
+        requested_model="openrouter-llama-free",
+        output_schema={"type": "object", "required": ["modules"]}
+    ))
+    try:
+        parsed = json.loads(response.output) if isinstance(response.output, str) else response.output
+    except (json.JSONDecodeError, TypeError):
+        parsed = {"modules": []}
+    allowed = {item["id"] for item in safe_modules}
+    modules = []
+    for item in (parsed or {}).get("modules", []):
+        if not isinstance(item, dict) or item.get("moduleId") not in allowed:
+            continue
+        modules.append({
+            "moduleId": item["moduleId"],
+            "projectApplication": str(item.get("projectApplication", ""))[:2000],
+            "coachNotes": [str(note)[:500] for note in (item.get("coachNotes") or [])[:5]],
+        })
+    return {"modules": modules, "modelUsed": response.model_used, "authoritative": False}
+
+
+@app.post("/api/v1/training/modules/generate", tags=["Training"])
+async def generate_training_modules(
+    data: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Generate bounded lesson prose with the registered zero-cost model.
+
+    The platform backend supplies and retains authority over the module
+    blueprint, verified case-study citations, prerequisites, assessments,
+    progression, completion, and badges. This endpoint may only draft the
+    explanatory lesson fields enumerated below.
+    """
+    safe_modules = []
+    for item in (data.get("modules") or [])[:12]:
+        if not isinstance(item, dict):
+            continue
+        safe_modules.append({
+            "id": str(item.get("id", ""))[:100],
+            "title": str(item.get("title", ""))[:300],
+            "description": str(item.get("description", ""))[:1000],
+            "objective": str(item.get("objective", ""))[:1000],
+            "phase": str(item.get("phase", ""))[:50],
+            "tags": [str(tag)[:80] for tag in (item.get("tags") or [])[:10]],
+            "verified_cases": [
+                {
+                    "company": str(case.get("company", ""))[:200],
+                    "outcome": str(case.get("outcome", ""))[:30],
+                    "lesson": str(case.get("lesson", ""))[:1000],
+                }
+                for case in (item.get("verifiedCases") or [])[:4]
+                if isinstance(case, dict)
+            ],
+        })
+    if not safe_modules:
+        return {"modules": [], "modelUsed": None, "authoritative": False}
+    try:
+        response = await brain.process(AIRequest(
+            task_type=TaskType.TRAINING_GENERATION,
+            user_context=user,
+            input_data={
+                "mode": "bounded_lesson_generation",
+            "project": data.get("project") or {},
+            "role": str(data.get("role", ""))[:50],
+            "modules": safe_modules,
+            "rules": [
+                "Draft practical, modern, project-applicable lesson prose only.",
+                "Use the supplied verified company cases as teaching context but do not add or alter citations, companies, claims, or metrics.",
+                "Do not create module IDs, prerequisites, assessments, unlocks, scores, completion decisions, or badges.",
+                "Do not claim the course is equivalent to a named accelerator.",
+                "Prefer concrete execution guidance suitable for African and global startup realities.",
+            ],
+            },
+            max_tokens=5000,
+            require_structured_output=True,
+            ip_protected=True,
+            requested_model="openrouter-llama-free",
+            output_schema={"type": "object", "required": ["modules"]}
+        ))
+    except Exception:
+        return {"modules": [], "modelUsed": None, "authoritative": False}
+    try:
+        parsed = json.loads(response.output) if isinstance(response.output, str) else response.output
+    except (json.JSONDecodeError, TypeError):
+        parsed = {"modules": []}
+    allowed = {item["id"] for item in safe_modules}
+    modules = []
+    for item in (parsed or {}).get("modules", []):
+        if not isinstance(item, dict) or item.get("moduleId") not in allowed:
+            continue
+        modules.append({
+            "moduleId": item["moduleId"],
+            "whyNow": str(item.get("whyNow", ""))[:2000],
+            "overview": str(item.get("overview", ""))[:5000],
+            "keyConcepts": [str(value)[:300] for value in (item.get("keyConcepts") or [])[:8]],
+            "steps": [str(value)[:700] for value in (item.get("steps") or [])[:10]],
+            "commonMistakes": [str(value)[:500] for value in (item.get("commonMistakes") or [])[:8]],
+            "reflection": str(item.get("reflection", ""))[:1000],
+            "exerciseInstructions": str(item.get("exerciseInstructions", ""))[:2000],
+            "projectApplication": str(item.get("projectApplication", ""))[:2000],
+        })
+    return {"modules": modules, "modelUsed": response.model_used, "authoritative": False}
+
+
+@app.post("/api/v1/training/exercises/review", tags=["Training"])
+async def review_training_exercise(
+    data: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Bounded open-ended exercise review. Backend applies the deterministic pass gate."""
+    safe = {
+        "project_id": str(data.get("projectId", ""))[:100],
+        "module_id": str(data.get("moduleId", ""))[:100],
+        "title": str(data.get("title", ""))[:300],
+        "objective": str(data.get("objective", ""))[:1000],
+        "instructions": str(data.get("instructions", ""))[:2000],
+        "submission": str(data.get("submission", ""))[:10000],
+    }
+    response = await brain.process(AIRequest(
+        task_type=TaskType.TRAINING_GENERATION,
+        user_context=user,
+        input_data={"mode": "exercise_review", "exercise": safe, "rules": ["Score only alignment to the stated objective and instructions.", "Do not authorize completion or badges.", "Return actionable feedback and a 0-100 score."]},
+        max_tokens=1800,
+        require_structured_output=True,
+        ip_protected=True,
+        requested_model="openrouter-llama-free",
+        output_schema={"type": "object", "required": ["score", "passed", "feedback"], "properties": {"score": {"type": "number"}, "passed": {"type": "boolean"}, "feedback": {"type": "string"}}},
+    ))
+    try:
+        parsed = json.loads(response.output) if isinstance(response.output, str) else response.output
+    except (json.JSONDecodeError, TypeError):
+        parsed = {}
+    score = max(0.0, min(100.0, float((parsed or {}).get("score", 0) or 0)))
+    return {"score": score, "passed": bool((parsed or {}).get("passed")) and score >= 70, "feedback": str((parsed or {}).get("feedback", ""))[:3000], "modelUsed": response.model_used, "authoritative": False}
+
+
 # ============================================================================
 # MATCHING
 # ============================================================================

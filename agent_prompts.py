@@ -416,7 +416,10 @@ ADAPTIVE_TRAINING = (
     "8. Execution Preparedness Assessment\n"
     "9. Adaptive Learning Recommendations\n"
     "10. Milestone-Based Learning Progression\n\n"
-    "Training must adapt dynamically to user progress and stage transitions."
+    "Training must adapt dynamically to user progress and stage transitions.\n"
+    "When asked to enrich an existing module, add only project-specific application guidance and coaching notes. "
+    "Never invent citations, company stories, customer evidence, project metrics, unlocks, scores, completion, or badges. "
+    "Canonical lesson content and real-company case studies are supplied and versioned by the backend."
 )
 
 # 13. MatchingAgent → TaskType.MATCHING
