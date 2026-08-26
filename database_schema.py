@@ -2547,6 +2547,178 @@ class IncubationSession(Base):
     )
 
 
+class CustomerValidationSession(Base):
+    """Founder-controlled experiment configuration linked to immutable customer evidence."""
+    __tablename__ = "customer_validation_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    incubation_session_id = Column(UUID(as_uuid=True), ForeignKey("incubation_sessions.id"))
+    hypothesis_id = Column(UUID(as_uuid=True), ForeignKey("customer_validation_hypotheses.id"))
+    title = Column(String(255), nullable=False)
+    description = Column(Text)
+    objective = Column(String(80), nullable=False)
+    mode = Column(String(30), nullable=False)
+    stage = Column(String(30), nullable=False)
+    questions = Column(JSON, default=lambda: [], nullable=False)
+    respondent_profile = Column(JSON, default=lambda: {}, nullable=False)
+    source_configuration = Column(JSON, default=lambda: {}, nullable=False)
+    target_respondents = Column(Integer, default=10, nullable=False)
+    status = Column(String(20), default="draft", nullable=False)
+    public_token_hash = Column(String(64), nullable=False, unique=True)
+    configuration_hash = Column(String(64), nullable=False)
+    configuration_locked = Column(Boolean, default=False, nullable=False)
+    total_response_count = Column(Integer, default=0, nullable=False)
+    qualified_response_count = Column(Integer, default=0, nullable=False)
+    quality_counts = Column(JSON, default=lambda: {"high": 0, "medium": 0, "low": 0, "invalid": 0}, nullable=False)
+    confidence_level = Column(String(30), default="insufficient", nullable=False)
+    synthesis_status = Column(String(30), default="not_ready", nullable=False)
+    latest_synthesis_id = Column(UUID(as_uuid=True))
+    expires_at = Column(TIMESTAMP, nullable=False)
+    activated_at = Column(TIMESTAMP)
+    completed_at = Column(TIMESTAMP)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_customer_validation_owner", "owner_id", "updated_at"),
+        Index("idx_customer_validation_project", "project_id", "created_at"),
+        Index("idx_customer_validation_status_expiry", "status", "expires_at"),
+    )
+
+
+class CustomerValidationResponse(Base):
+    """Append-only public or interviewer-recorded customer evidence."""
+    __tablename__ = "customer_validation_responses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("customer_validation_sessions.id"), nullable=False)
+    answers = Column(JSON, nullable=False)
+    answer_hash = Column(String(64), nullable=False)
+    response_hash = Column(String(64), nullable=False, unique=True)
+    anonymous_browser_hash = Column(String(64))
+    source = Column(String(40), default="direct", nullable=False)
+    submission_kind = Column(String(40), default="public_self_submitted", nullable=False)
+    quality_classification = Column(String(20), nullable=False)
+    evidence_status = Column(String(20), nullable=False)
+    quality_reasons = Column(JSON, default=lambda: [], nullable=False)
+    completion_percentage = Column(Float, nullable=False)
+    completion_seconds = Column(Integer)
+    received_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    classified_at = Column(TIMESTAMP, nullable=False)
+
+    __table_args__ = (
+        Index("idx_customer_validation_response_session", "session_id", "received_at"),
+        Index("idx_customer_validation_response_quality", "session_id", "quality_classification"),
+        Index("idx_customer_validation_response_answer_hash", "session_id", "answer_hash"),
+    )
+
+
+class CustomerValidationEvent(Base):
+    """Append-only, hash-chained evidence history for one validation round."""
+    __tablename__ = "customer_validation_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("customer_validation_sessions.id"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    event_type = Column(String(80), nullable=False)
+    system_actor = Column(String(80), default="techit_validation_system", nullable=False)
+    metadata_json = Column(JSON, default=lambda: {}, nullable=False)
+    previous_hash = Column(String(64))
+    event_hash = Column(String(64), nullable=False, unique=True)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_customer_validation_event_session", "session_id", "created_at"),
+        Index("idx_customer_validation_event_project", "project_id", "created_at"),
+    )
+
+
+class CustomerValidationSynthesis(Base):
+    """Immutable, versioned findings produced from a qualified evidence snapshot."""
+    __tablename__ = "customer_validation_syntheses"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("customer_validation_sessions.id"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    version = Column(Integer, nullable=False)
+    input_hash = Column(String(64), nullable=False)
+    findings = Column(JSON, nullable=False)
+    verdict = Column(String(40), nullable=False)
+    confidence = Column(String(30), nullable=False)
+    limitations = Column(JSON, default=lambda: [], nullable=False)
+    generated_by = Column(String(40), default="deterministic_pending", nullable=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    __table_args__ = (Index("idx_customer_validation_synthesis_session", "session_id", "version", unique=True),)
+
+
+class CustomerValidationRecommendation(Base):
+    """Normalized validation recommendation; aggregation remains deterministic."""
+    __tablename__ = "customer_validation_recommendations"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("customer_validation_sessions.id"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    deduplication_key = Column(String(160), nullable=False)
+    title = Column(Text, nullable=False)
+    reason = Column(Text, nullable=False)
+    evidence = Column(JSON, default=lambda: {}, nullable=False)
+    urgency = Column(String(20), nullable=False)
+    expected_impact = Column(String(20))
+    estimated_effort = Column(String(20))
+    confidence = Column(String(30), nullable=False)
+    source_engines = Column(JSON, default=lambda: ["Customer Validation"], nullable=False)
+    status = Column(String(20), default="recommended", nullable=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    __table_args__ = (Index("idx_customer_validation_recommendation_project", "project_id", "created_at"),)
+
+
+class CustomerValidationHypothesis(Base):
+    """Longitudinal hypothesis state derived from evidence, never founder-selected."""
+    __tablename__ = "customer_validation_hypotheses"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    statement = Column(Text, nullable=False)
+    status = Column(String(30), default="untested", nullable=False)
+    evidence_summary = Column(JSON, default=lambda: {}, nullable=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    __table_args__ = (Index("idx_customer_validation_hypothesis_project", "project_id", "updated_at"),)
+
+
+class CustomerValidationBssSnapshot(Base):
+    """Immutable objective-scoped BSS evidence snapshot."""
+    __tablename__ = "customer_validation_bss_snapshots"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("customer_validation_sessions.id"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    evidence_type = Column(String(60), nullable=False)
+    previous_score = Column(Float)
+    new_score = Column(Float)
+    delta = Column(Float)
+    confidence = Column(String(30), nullable=False)
+    response_count = Column(Integer, nullable=False)
+    synthesis_hash = Column(String(64), nullable=False)
+    calculation_version = Column(String(40), nullable=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+
+
+class CustomerValidationShare(Base):
+    """Scope-controlled derived evidence share; underlying records remain private."""
+    __tablename__ = "customer_validation_shares"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("customer_validation_sessions.id"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    scope = Column(String(30), nullable=False, default="private")
+    share_token_hash = Column(String(64), nullable=False, unique=True)
+    report_hash = Column(String(64), nullable=False)
+    report = Column(JSON, nullable=False)
+    expires_at = Column(TIMESTAMP)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+
+
 class WorkspaceContextPack(Base):
     """Immutable version of the context automatically injected into workspace AI calls."""
     __tablename__ = "workspace_context_packs"

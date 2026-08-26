@@ -17,10 +17,12 @@ Start (production, via Docker):
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, Body, UploadFile, File as FastAPIFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 import os
+import asyncio
+import json
 import structlog
 from sqlalchemy import text
 
@@ -56,12 +58,13 @@ from integration_guide import (
     WorkspaceService,
     HackathonService,
 )
-from ai_router_core import ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
+from ai_router_core import AIRequest, ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
 from gsis_v2 import project_scorecard
 from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationError
 from model_registry import ModelRegistry, RegistryError
 from policy_registry import SCORING_POLICY
 from database_schema import Project, GsisV2ConfigAudit, GsisV2Recommendation
+from customer_validation_service import CustomerValidationError, CustomerValidationService
 from gsis_v2_persistence import (
     audit_config,
     list_benchmarks,
@@ -712,6 +715,211 @@ async def company_building_analyze(venture_data: Dict[str, Any], user: UserConte
 @app.post("/api/v1/incubation/validation/start", tags=["Incubation Hub"])
 async def validation_start(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
     return await IncubationHubService(brain).start_validation(user, body, workspace_id=body.get("workspace_id") or body.get("workspaceId"))
+
+
+@app.post("/api/v1/incubation/validate/sessions", tags=["Customer Validation"])
+async def customer_validation_create(body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        return CustomerValidationService.create(db, user.user_id, body)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/questions", tags=["Customer Validation"])
+async def customer_validation_questions(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    """Draft questions with the existing AI Router; backend validates before use."""
+    response = await brain.process(AIRequest(
+        task_type=TaskType.CUSTOMER_VALIDATION_QUESTION_GENERATION,
+        user_context=user,
+        input_data={"validation_context": {key: body.get(key) for key in ("objective", "mode", "stage", "venture_context", "history")}},
+        max_tokens=4000, ip_protected=True, require_structured_output=True,
+    ))
+    import json
+    try:
+        parsed = json.loads(response.output) if isinstance(response.output, str) else response.output
+    except json.JSONDecodeError:
+        parsed = {"questions": []}
+    try:
+        from customer_validation_service import CustomerValidationService
+        questions = CustomerValidationService._validate_questions((parsed or {}).get("questions") or [])
+    except CustomerValidationError:
+        questions = []
+    return {"questions": questions, "modelUsed": response.model_used, "confidence": response.confidence_score}
+
+
+@app.post("/api/v1/incubation/evidence/research", tags=["Incubation Hub"])
+async def evidence_research(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    """Non-authoritative evidence advisory; deterministic Trust decisions stay in BACKEND."""
+    return await IncubationHubService(brain).run_task_analysis(
+        user,
+        {"evidence": body, "project_id": body.get("project_id")},
+        TaskType.EVIDENCE_RESEARCH,
+        "evidence_research",
+        max_tokens=4000,
+        ip_protected=True,
+    )
+
+
+@app.post("/api/v1/support/intelligence", tags=["Customer Support"])
+async def support_intelligence(body: Dict[str, Any], user: UserContext = Depends(get_user_context)):
+    """Bounded support drafting/classification. Backend remains authoritative for actions and policy."""
+    safe = {"mode": body.get("mode", "draft_response"), "case": body.get("case") or {}, "messages": body.get("messages") or [], "knowledge": body.get("knowledge") or []}
+    response = await brain.process(AIRequest(task_type=TaskType.CUSTOMER_SUPPORT_INTELLIGENCE, user_context=user, input_data=safe, max_tokens=2500, ip_protected=True, require_structured_output=True))
+    try:
+        return json.loads(response.output) if isinstance(response.output, str) else response.output
+    except (json.JSONDecodeError, TypeError):
+        return {"summary": str(response.output or ""), "confidence": response.confidence_score, "modelUsed": response.model_used}
+
+
+@app.get("/api/v1/incubation/validate/sessions", tags=["Customer Validation"])
+async def customer_validation_list(limit: int = 20, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        return {"sessions": CustomerValidationService.list(db, user.user_id, limit)}
+    except (CustomerValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}", tags=["Customer Validation"])
+async def customer_validation_get(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        return CustomerValidationService.get(db, user.user_id, session_id)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/sessions/{session_id}/{action}", tags=["Customer Validation"])
+async def customer_validation_transition(session_id: str, action: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        return CustomerValidationService.transition(db, user.user_id, session_id, action)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.patch("/api/v1/incubation/validate/sessions/{session_id}", tags=["Customer Validation"])
+async def customer_validation_update(session_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        return CustomerValidationService.update_draft(db, user.user_id, session_id, body)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/responses", tags=["Customer Validation"])
+async def customer_validation_responses(session_id: str, limit: int = 100, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.responses(db, user.user_id, session_id, limit)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/events", tags=["Customer Validation"])
+async def customer_validation_events(session_id: str, limit: int = 100, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.events(db, user.user_id, session_id, limit)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/insights", tags=["Customer Validation"])
+async def customer_validation_insights(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.insights(db, user.user_id, session_id)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/findings", tags=["Customer Validation"])
+async def customer_validation_findings(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.findings(db, user.user_id, session_id)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/sessions/{session_id}/synthesis", tags=["Customer Validation"])
+async def customer_validation_synthesis(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try:
+        deterministic = CustomerValidationService.create_synthesis(db, user.user_id, session_id)
+        if deterministic.get("synthesis") and deterministic["synthesis"].confidence in {"medium", "high"}:
+            import json
+            row = CustomerValidationService._owned(db, user.user_id, session_id)
+            responses = CustomerValidationService.responses(db, user.user_id, session_id, 200).get("responses", [])
+            ai = await brain.process(AIRequest(task_type=TaskType.CUSTOMER_VALIDATION_ANALYSIS, user_context=user, input_data={"objective": row.objective, "stage": row.stage, "responses": [{"label": f"R{index + 1}", "answers": response["answers"]} for index, response in enumerate(responses) if response["evidenceStatus"] == "qualified"]}, max_tokens=7000, ip_protected=True, require_structured_output=True))
+            parsed = json.loads(ai.output) if isinstance(ai.output, str) else ai.output
+            deterministic = CustomerValidationService.store_ai_synthesis(db, user.user_id, session_id, parsed or {})
+        return deterministic
+    except CustomerValidationError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/recommendations", tags=["Customer Validation"])
+async def customer_validation_recommendations(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.aggregate_recommendations(db, user.user_id, session_id)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/sessions/{session_id}/recommendations/{recommendation_id}", tags=["Customer Validation"])
+async def customer_validation_recommendation_status(session_id: str, recommendation_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.update_recommendation(db, user.user_id, session_id, recommendation_id, str(body.get("status") or "accepted"))
+    except CustomerValidationError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/sessions/{session_id}/share", tags=["Customer Validation"])
+async def customer_validation_share(session_id: str, body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.create_share(db, user.user_id, session_id, str(body.get("scope") or "private"))
+    except CustomerValidationError as exc: raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/projects/{project_id}/history", tags=["Customer Validation"])
+async def customer_validation_history(project_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.history(db, user.user_id, project_id)
+    except (CustomerValidationError, ValueError) as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/incubation/validate/hypotheses", tags=["Customer Validation"])
+async def customer_validation_hypothesis(body: Dict[str, Any], user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.create_hypothesis(db, user.user_id, body)
+    except CustomerValidationError as exc: raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/projects/{project_id}/investor-evidence", tags=["Customer Validation"])
+async def customer_validation_investor_evidence(project_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    try: return CustomerValidationService.investor_evidence(db, user.user_id, project_id)
+    except CustomerValidationError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/incubation/validate/sessions/{session_id}/stream", tags=["Customer Validation"])
+async def customer_validation_stream(session_id: str, user: UserContext = Depends(get_user_context), db=Depends(get_db)):
+    CustomerValidationService.get(db, user.user_id, session_id)
+    async def events():
+        previous = None
+        for _ in range(120):
+            snapshot = CustomerValidationService.get(db, user.user_id, session_id)
+            payload = {"event": "validation_snapshot", "session_id": session_id, "response_count": snapshot["totalResponseCount"], "qualified_count": snapshot["qualifiedResponseCount"], "confidence": snapshot["confidenceLevel"], "synthesis_status": snapshot["synthesisStatus"]}
+            encoded = json.dumps(payload)
+            if encoded != previous:
+                yield f"event: validation_snapshot\ndata: {encoded}\n\n"; previous = encoded
+            else: yield ": keepalive\n\n"
+            await asyncio.sleep(5)
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/v1/validate/{token}", tags=["Public Customer Validation"])
+async def public_customer_validation(token: str, db=Depends(get_db)):
+    try:
+        return CustomerValidationService.public_get(db, token)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/validate/{token}", tags=["Public Customer Validation"])
+async def public_customer_validation_submit(token: str, body: Dict[str, Any], request: Request, db=Depends(get_db)):
+    try:
+        answers = body.get("answers") if isinstance(body.get("answers"), dict) else body
+        anonymous_id = request.headers.get("X-Validation-Anonymous-Id")
+        return CustomerValidationService.submit(db, token, answers, source=str(body.get("source") or "direct"), anonymous_id=anonymous_id)
+    except CustomerValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/validate/evidence/{token}", tags=["Public Customer Validation"])
+async def public_customer_validation_evidence(token: str, db=Depends(get_db)):
+    from customer_validation_service import _hash
+    from database_schema import CustomerValidationShare
+    share = db.query(CustomerValidationShare).filter(CustomerValidationShare.share_token_hash == _hash(token)).first()
+    if share is None: raise HTTPException(status_code=404, detail="evidence_summary_not_found")
+    if share.scope != "public": raise HTTPException(status_code=403, detail="evidence_summary_private")
+    return share.report
 
 
 @app.post("/api/v1/incubation/validation/{session_id}/answers", tags=["Incubation Hub"])
@@ -1445,6 +1653,170 @@ async def update_progress(
         data.get("module_id", ""),
         data.get("quiz_score"),
     )
+
+
+@app.post("/api/v1/training/modules/enrich", tags=["Training"])
+async def enrich_training_modules(
+    data: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Optional project-specific coaching using the registered zero-cost model.
+    Canonical module content, citations, ordering, and completion remain backend-owned.
+    """
+    safe_modules = [
+        {"id": str(item.get("id", ""))[:100], "title": str(item.get("title", ""))[:300], "objective": str(item.get("objective", ""))[:1000], "phase": str(item.get("phase", ""))[:50]}
+        for item in (data.get("modules") or [])[:12] if isinstance(item, dict)
+    ]
+    response = await brain.process(AIRequest(
+        task_type=TaskType.TRAINING_GENERATION,
+        user_context=user,
+        input_data={
+            "mode": "project_module_enrichment",
+            "project": data.get("project") or {},
+            "role": data.get("role"),
+            "modules": safe_modules,
+            "rules": [
+                "Return only project application guidance and coaching notes.",
+                "Do not invent company stories, citations, metrics, or project facts.",
+                "Do not decide unlocks, completion, scores, badges, or authorization.",
+            ],
+        },
+        max_tokens=3000,
+        require_structured_output=True,
+        ip_protected=True,
+        requested_model="openrouter-llama-free",
+        output_schema={"type": "object", "required": ["modules"]}
+    ))
+    try:
+        parsed = json.loads(response.output) if isinstance(response.output, str) else response.output
+    except (json.JSONDecodeError, TypeError):
+        parsed = {"modules": []}
+    allowed = {item["id"] for item in safe_modules}
+    modules = []
+    for item in (parsed or {}).get("modules", []):
+        if not isinstance(item, dict) or item.get("moduleId") not in allowed:
+            continue
+        modules.append({
+            "moduleId": item["moduleId"],
+            "projectApplication": str(item.get("projectApplication", ""))[:2000],
+            "coachNotes": [str(note)[:500] for note in (item.get("coachNotes") or [])[:5]],
+        })
+    return {"modules": modules, "modelUsed": response.model_used, "authoritative": False}
+
+
+@app.post("/api/v1/training/modules/generate", tags=["Training"])
+async def generate_training_modules(
+    data: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Generate bounded lesson prose with the registered zero-cost model.
+
+    The platform backend supplies and retains authority over the module
+    blueprint, verified case-study citations, prerequisites, assessments,
+    progression, completion, and badges. This endpoint may only draft the
+    explanatory lesson fields enumerated below.
+    """
+    safe_modules = []
+    for item in (data.get("modules") or [])[:12]:
+        if not isinstance(item, dict):
+            continue
+        safe_modules.append({
+            "id": str(item.get("id", ""))[:100],
+            "title": str(item.get("title", ""))[:300],
+            "description": str(item.get("description", ""))[:1000],
+            "objective": str(item.get("objective", ""))[:1000],
+            "phase": str(item.get("phase", ""))[:50],
+            "tags": [str(tag)[:80] for tag in (item.get("tags") or [])[:10]],
+            "verified_cases": [
+                {
+                    "company": str(case.get("company", ""))[:200],
+                    "outcome": str(case.get("outcome", ""))[:30],
+                    "lesson": str(case.get("lesson", ""))[:1000],
+                }
+                for case in (item.get("verifiedCases") or [])[:4]
+                if isinstance(case, dict)
+            ],
+        })
+    if not safe_modules:
+        return {"modules": [], "modelUsed": None, "authoritative": False}
+    try:
+        response = await brain.process(AIRequest(
+            task_type=TaskType.TRAINING_GENERATION,
+            user_context=user,
+            input_data={
+                "mode": "bounded_lesson_generation",
+            "project": data.get("project") or {},
+            "role": str(data.get("role", ""))[:50],
+            "modules": safe_modules,
+            "rules": [
+                "Draft practical, modern, project-applicable lesson prose only.",
+                "Use the supplied verified company cases as teaching context but do not add or alter citations, companies, claims, or metrics.",
+                "Do not create module IDs, prerequisites, assessments, unlocks, scores, completion decisions, or badges.",
+                "Do not claim the course is equivalent to a named accelerator.",
+                "Prefer concrete execution guidance suitable for African and global startup realities.",
+            ],
+            },
+            max_tokens=5000,
+            require_structured_output=True,
+            ip_protected=True,
+            requested_model="openrouter-llama-free",
+            output_schema={"type": "object", "required": ["modules"]}
+        ))
+    except Exception:
+        return {"modules": [], "modelUsed": None, "authoritative": False}
+    try:
+        parsed = json.loads(response.output) if isinstance(response.output, str) else response.output
+    except (json.JSONDecodeError, TypeError):
+        parsed = {"modules": []}
+    allowed = {item["id"] for item in safe_modules}
+    modules = []
+    for item in (parsed or {}).get("modules", []):
+        if not isinstance(item, dict) or item.get("moduleId") not in allowed:
+            continue
+        modules.append({
+            "moduleId": item["moduleId"],
+            "whyNow": str(item.get("whyNow", ""))[:2000],
+            "overview": str(item.get("overview", ""))[:5000],
+            "keyConcepts": [str(value)[:300] for value in (item.get("keyConcepts") or [])[:8]],
+            "steps": [str(value)[:700] for value in (item.get("steps") or [])[:10]],
+            "commonMistakes": [str(value)[:500] for value in (item.get("commonMistakes") or [])[:8]],
+            "reflection": str(item.get("reflection", ""))[:1000],
+            "exerciseInstructions": str(item.get("exerciseInstructions", ""))[:2000],
+            "projectApplication": str(item.get("projectApplication", ""))[:2000],
+        })
+    return {"modules": modules, "modelUsed": response.model_used, "authoritative": False}
+
+
+@app.post("/api/v1/training/exercises/review", tags=["Training"])
+async def review_training_exercise(
+    data: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Bounded open-ended exercise review. Backend applies the deterministic pass gate."""
+    safe = {
+        "project_id": str(data.get("projectId", ""))[:100],
+        "module_id": str(data.get("moduleId", ""))[:100],
+        "title": str(data.get("title", ""))[:300],
+        "objective": str(data.get("objective", ""))[:1000],
+        "instructions": str(data.get("instructions", ""))[:2000],
+        "submission": str(data.get("submission", ""))[:10000],
+    }
+    response = await brain.process(AIRequest(
+        task_type=TaskType.TRAINING_GENERATION,
+        user_context=user,
+        input_data={"mode": "exercise_review", "exercise": safe, "rules": ["Score only alignment to the stated objective and instructions.", "Do not authorize completion or badges.", "Return actionable feedback and a 0-100 score."]},
+        max_tokens=1800,
+        require_structured_output=True,
+        ip_protected=True,
+        requested_model="openrouter-llama-free",
+        output_schema={"type": "object", "required": ["score", "passed", "feedback"], "properties": {"score": {"type": "number"}, "passed": {"type": "boolean"}, "feedback": {"type": "string"}}},
+    ))
+    try:
+        parsed = json.loads(response.output) if isinstance(response.output, str) else response.output
+    except (json.JSONDecodeError, TypeError):
+        parsed = {}
+    score = max(0.0, min(100.0, float((parsed or {}).get("score", 0) or 0)))
+    return {"score": score, "passed": bool((parsed or {}).get("passed")) and score >= 70, "feedback": str((parsed or {}).get("feedback", ""))[:3000], "modelUsed": response.model_used, "authoritative": False}
 
 
 # ============================================================================
