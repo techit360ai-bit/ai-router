@@ -764,6 +764,31 @@ class TourGuideService:
     def __init__(self, brain: TechITAIBrain) -> None:
         self.brain = brain
 
+    @staticmethod
+    def _platform_introduction(role: str) -> Dict[str, Any]:
+        """Deterministic first-landing orientation; links to existing product surfaces."""
+        if role == "collaborator":
+            return {
+                "title": "Welcome to TechIT Network",
+                "summary": "TechIT connects your skills to real startup work, tracks execution, and keeps your contribution history visible.",
+                "capabilities": [
+                    {"title": "Tasks", "description": "See assigned work and execution status.", "path": "/collaborator/tasks"},
+                    {"title": "Opportunities", "description": "Find projects where your skills are needed.", "path": "/collaborator/opportunities"},
+                    {"title": "Academy", "description": "Learn the next capability your current work requires.", "path": "/collaborator/academy"},
+                    {"title": "Messages", "description": "Coordinate with founders and your team.", "path": "/collaborator/messages"},
+                ],
+            }
+        return {
+            "title": "Welcome to TechIT Network",
+            "summary": "TechIT helps you turn an idea into evidence, a focused MVP, and accountable execution.",
+            "capabilities": [
+                {"title": "Incubation Hub", "description": "Validate the riskiest assumptions and choose the next decision.", "path": "/incubation-hub"},
+                {"title": "Workspace", "description": "Plan, build, and track project execution in one place.", "path": "/workspaces"},
+                {"title": "Academy", "description": "Follow stage-specific lessons tied to your project.", "path": "/incubation-hub?panel=learn"},
+                {"title": "Messages", "description": "Work with collaborators and keep decisions connected to the project.", "path": "/founder/messages"},
+            ],
+        }
+
     async def daily_check_in(
         self, user_context: UserContext, activity_data: Optional[Dict] = None
     ) -> Dict:
@@ -777,6 +802,48 @@ class TourGuideService:
             "ai_insights":    r.output.get("ai_insights"),
             "alerts":         r.recommendations,
             "stagnation_risk": r.output.get("decay_factor", 1.0) < 0.70,
+            "introduction": self._platform_introduction(str((activity_data or {}).get("role") or user_context.role.value))
+                if bool((activity_data or {}).get("firstLanding") or (activity_data or {}).get("first_landing")) else None,
+        }
+
+    async def converse(
+        self, user_context: UserContext, conversation_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Context-aware Havi conversation. Reasoning remains in the AI Router."""
+        role = str(conversation_data.get("role") or user_context.role.value)
+        if role not in {"founder", "collaborator"}:
+            raise ValueError("unsupported_havi_role")
+        message = str(conversation_data.get("message") or "").strip()
+        if not message:
+            raise ValueError("message_required")
+        history = conversation_data.get("conversation")
+        if not isinstance(history, list):
+            history = []
+        history = [
+            item for item in history[-12:]
+            if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
+            and isinstance(item.get("content"), str)
+        ]
+        response = await self.brain.process(AIRequest(
+            TaskType.TOUR_GUIDE,
+            user_context,
+            {
+                "mode": "conversation",
+                "role": role,
+                "route": conversation_data.get("route"),
+                "profile": conversation_data.get("profile") if isinstance(conversation_data.get("profile"), dict) else {},
+                "conversation": history,
+                "message": message,
+                "platform_introduction": self._platform_introduction(role),
+            },
+            max_tokens=1200,
+            ip_protected=True,
+        ))
+        return {
+            "message": response.output,
+            "model_used": response.model_used,
+            "provider": response.provider,
+            "context_injected": True,
         }
 
     async def weekly_summary(self, user_context: UserContext, week_data: Dict) -> Dict:

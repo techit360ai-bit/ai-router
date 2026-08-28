@@ -135,7 +135,8 @@ class ModelRouter:
 
     def _to_config(self, model: ModelDefinition) -> ModelConfig:
         provider = self.registry.provider_for(model)
-        base_url = os.path.expandvars(provider.base_url)
+        base_url = os.getenv(provider.base_url_env, provider.base_url) if provider.base_url_env else provider.base_url
+        base_url = os.path.expandvars(base_url)
         return ModelConfig(
             id=model.id,
             provider=model.provider,

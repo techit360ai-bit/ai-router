@@ -77,6 +77,20 @@ def test_production_requires_provider_keys() -> None:
     assert "provider.anthropic" in failed
 
 
+def test_optional_agentrouter_requires_secure_configuration_only_when_enabled() -> None:
+    assert "provider.agentrouter" not in _failed_names(BASE_PROD_ENV)
+    enabled_without_key = {**BASE_PROD_ENV, "AGENTROUTER_ENABLED": "true"}
+    assert "provider.agentrouter" in _failed_names(enabled_without_key)
+    configured = {
+        **BASE_PROD_ENV,
+        "AGENTROUTER_ENABLED": "true",
+        "AGENTROUTER_API_KEY": "ak-live-agentrouter",
+        "AGENTROUTER_BASE_URL": "https://agentrouter.org/v1",
+    }
+    assert "provider.agentrouter" not in _failed_names(configured)
+    assert "provider.agentrouter_base_url" not in _failed_names(configured)
+
+
 def test_production_requires_execution_grants_and_private_storage() -> None:
     env = {
         **BASE_PROD_ENV,

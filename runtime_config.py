@@ -129,6 +129,20 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
                 f"{env_key} is required and must not be a placeholder",
             ))
 
+        if bool_env(values.get("AGENTROUTER_ENABLED"), default=False):
+            agentrouter_key = values.get("AGENTROUTER_API_KEY", "")
+            checks.append(RuntimeCheck(
+                "provider.agentrouter",
+                bool(agentrouter_key) and not _is_placeholder(agentrouter_key),
+                "AGENTROUTER_API_KEY is required when AgentRouter is enabled",
+            ))
+            checks.append(_check_url(
+                "provider.agentrouter_base_url",
+                values.get("AGENTROUTER_BASE_URL") or "https://agentrouter.org/v1",
+                {"https"},
+                env_name,
+            ))
+
         if bool_env(values.get("REQUIRE_AI_EXECUTION_GRANT"), default=False):
             grant_secret = values.get("AI_EXECUTION_GRANT_SECRET") or secret
             checks.append(RuntimeCheck(

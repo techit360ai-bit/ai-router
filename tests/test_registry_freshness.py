@@ -39,7 +39,7 @@ def _request() -> AIRequest:
 def test_registry_exposes_versioned_routing_metadata() -> None:
     metadata = ModelRegistry().routing_metadata()
 
-    assert metadata["registry_version"] == "2026-08-10.1"
+    assert metadata["registry_version"] == "2026-08-28.1"
     assert metadata["task_policy_version"] == "2026-08-10.1"
     assert metadata["registry_updated_at"]
     assert metadata["owner"] == "platform-routing"

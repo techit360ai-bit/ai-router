@@ -1400,6 +1400,18 @@ async def daily_check_in(
     return await TourGuideService(brain).daily_check_in(user, body or {})
 
 
+@app.post("/api/v1/tour-guide/conversation", tags=["Tour Guide"])
+async def tour_guide_conversation(
+    body: Optional[Dict[str, Any]] = Body(default=None),
+    user: UserContext = Depends(get_user_context),
+):
+    """Live Havi conversation using the existing AI Router and user context."""
+    try:
+        return await TourGuideService(brain).converse(user, body or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 # ============================================================================
 # ADAPTIVE TRAINING
 # ============================================================================
