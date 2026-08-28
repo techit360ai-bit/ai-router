@@ -1741,6 +1741,18 @@ async def workspace_propose_code_changes(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.post("/api/v1/workspace/code/orchestrate", tags=["Workspace"])
+async def workspace_orchestrate_code_task(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Return bounded multi-stage coding reasoning; never execute project mutations."""
+    try:
+        return await WorkspaceAIService(brain).orchestrate_code_task(user, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.post("/api/v1/workspace/sprint/plan", tags=["Workspace"])
 async def workspace_plan_sprint(
     body: Dict[str, Any],

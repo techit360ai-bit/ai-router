@@ -772,6 +772,81 @@ class WorkspaceAIService:
             changes.append({"path": item["path"], "content": content, "reason": str(item.get("reason", ""))[:1000]})
         return {"proposal": {"summary": str((parsed or {}).get("summary", ""))[:3000], "changes": changes, "tests": [str(value)[:500] for value in (parsed or {}).get("tests", [])[:20]], "securityNotes": [str(value)[:500] for value in (parsed or {}).get("securityNotes", [])[:20]]}, "authoritative": False, "applied": False, "model_used": response.model_used}
 
+    async def orchestrate_code_task(self, user_context: UserContext, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Reason across the existing coding-agent roles without executing tools.
+
+        BACKEND owns the execution run, allowed paths, budgets, runtime evidence,
+        deterministic security scan, review decisions, writes and deployment.
+        """
+        workspace_id = payload.get("workspace_id") or payload.get("workspaceId") or user_context.workspace_id
+        requirement = str(payload.get("requirement") or "").strip()
+        if not workspace_id or not requirement:
+            raise ValueError("workspace_id_and_requirement_required")
+        allowed_paths = []
+        for value in (payload.get("allowed_paths") or payload.get("allowedPaths") or [])[:100]:
+            candidate = str(value)[:500]
+            if candidate and not candidate.startswith("/") and ".." not in candidate.split("/"):
+                allowed_paths.append(candidate)
+        context_pack = self._context_pack(user_context, {**payload, "workspace_id": workspace_id})
+        stage_names = ["execution_intelligence", "mvp_builder", "product_architect", "code", "test", "debugger", "security", "review", "deployment"]
+        response = await self.brain.process(AIRequest(
+            TaskType.CODE_REVIEW,
+            replace(user_context, workspace_id=str(workspace_id)),
+            {
+                "mode": "bounded_code_orchestration",
+                "requirement": requirement[:10000],
+                "allowed_paths": allowed_paths,
+                "allowed_commands": [str(value)[:300] for value in (payload.get("allowed_commands") or payload.get("allowedCommands") or [])[:10]],
+                "project_adapter": payload.get("adapter") or {},
+                "files": (payload.get("files") or [])[:100],
+                "workspace_context_pack": context_pack,
+                "stages": stage_names,
+                "rules": [
+                    "Return one advisory output for every named stage in the exact order.",
+                    "Reuse existing systems and stay inside allowed_paths.",
+                    "The code stage may recommend file changes but must not claim they were written.",
+                    "The test and deployment stages describe commands/checks only; they do not claim execution.",
+                    "The security stage identifies review rules and risks without authorizing sensitive operations.",
+                    "Never claim MCP calls, commands, commits, pushes, deployments, secret access, or database mutations occurred.",
+                ],
+            },
+            max_tokens=7000,
+            ip_protected=True,
+            require_structured_output=True,
+            output_schema={
+                "type": "object",
+                "required": ["summary", "stages"],
+                "properties": {
+                    "summary": {"type": "string"},
+                    "stages": {"type": "array", "items": {"type": "object"}},
+                },
+            },
+        ))
+        try:
+            parsed = json.loads(response.output) if isinstance(response.output, str) else response.output
+        except (json.JSONDecodeError, TypeError):
+            parsed = {}
+        supplied = {}
+        for item in (parsed or {}).get("stages", [])[:20]:
+            if not isinstance(item, dict) or item.get("stage") not in stage_names:
+                continue
+            supplied[item["stage"]] = {
+                "stage": item["stage"],
+                "agent": str(item.get("agent") or item["stage"])[:100],
+                "summary": str(item.get("summary") or "")[:4000],
+                "actions": [str(value)[:500] for value in (item.get("actions") or [])[:30]],
+                "risks": [str(value)[:500] for value in (item.get("risks") or [])[:20]],
+                "requiresEvidence": [str(value)[:200] for value in (item.get("requiresEvidence") or [])[:20]],
+            }
+        stages = [supplied.get(stage, {"stage": stage, "agent": stage, "summary": "No model output was returned for this stage.", "actions": [], "risks": [], "requiresEvidence": []}) for stage in stage_names]
+        return {
+            "orchestration": {"summary": str((parsed or {}).get("summary") or "")[:4000], "stages": stages},
+            "context_injected": bool(context_pack),
+            "model_used": response.model_used,
+            "authoritative": False,
+            "execution": {"performed": False, "requires_backend_run": True, "requires_mcp": True, "mutation_free": True},
+        }
+
     async def plan_sprint(self, user_context: UserContext, sprint_data: Dict) -> Dict:
         """POST /api/v1/workspace/sprint/plan -- 0 execution budget units"""
         context_pack = self._context_pack(user_context, sprint_data)

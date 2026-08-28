@@ -110,3 +110,26 @@ async def test_code_proposal_is_limited_to_supplied_safe_paths_and_not_applied()
         "content": "export const ready = false",
         "language": "typescript",
     }]
+
+
+@pytest.mark.asyncio
+async def test_bounded_orchestration_returns_every_stage_without_execution_authority():
+    instance = service({
+        "summary": "Build through existing workspace controls.",
+        "stages": [
+            {"stage": "execution_intelligence", "agent": "ExecutionIntelligenceAgent", "summary": "Prioritize onboarding."},
+            {"stage": "code", "agent": "CodeAgent", "summary": "Propose a scoped edit.", "actions": ["Modify src/app.ts"]},
+        ],
+    })
+    result = await instance.orchestrate_code_task(user(), {
+        "workspace_id": "workspace-1",
+        "requirement": "Build onboarding",
+        "allowed_paths": ["src/app.ts", "../secret"],
+        "allowed_commands": ["npm test"],
+    })
+    assert result["authoritative"] is False
+    assert result["execution"] == {"performed": False, "requires_backend_run": True, "requires_mcp": True, "mutation_free": True}
+    assert [stage["stage"] for stage in result["orchestration"]["stages"]] == [
+        "execution_intelligence", "mvp_builder", "product_architect", "code", "test", "debugger", "security", "review", "deployment",
+    ]
+    assert instance.brain.requests[0].input_data["allowed_paths"] == ["src/app.ts"]
