@@ -28,6 +28,7 @@ Services
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -654,6 +655,122 @@ class WorkspaceAIService:
             incubation=incubation,
         ))
         return {"review": resp.output, "provider_cost_usd": resp.provider_cost_usd}
+
+    async def plan_code_task(self, user_context: UserContext, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare a coding plan inside the existing Workspace authority model.
+
+        The output is advisory. File mutation, commands, synchronization and
+        deployment remain backend/MCP operations with deterministic gates.
+        """
+        workspace_id = payload.get("workspace_id") or payload.get("workspaceId") or user_context.workspace_id
+        project_id = payload.get("project_id") or payload.get("projectId")
+        if not workspace_id:
+            raise ValueError("workspace_id_required")
+        requirement = str(payload.get("requirement") or "").strip()
+        if not requirement:
+            raise ValueError("requirement_required")
+        context_pack = self._context_pack(user_context, {**payload, "workspace_id": workspace_id})
+        incubation = self._incubation_context(user_context, str(workspace_id), str(project_id) if project_id else None)
+        files = [
+            {"path": str(item.get("path", ""))[:500], "language": str(item.get("language", ""))[:50]}
+            for item in (payload.get("files") or [])[:500] if isinstance(item, dict)
+        ]
+        response = await self.brain.process(AIRequest(
+            TaskType.WORKSPACE_ASSISTANT,
+            replace(user_context, workspace_id=str(workspace_id)),
+            {
+                "mode": "code_task_plan",
+                "requirement": requirement[:10000],
+                "active_file": str(payload.get("active_file") or "")[:500],
+                "files": files,
+                "diff": (payload.get("diff") or [])[:200],
+                "project_adapter": payload.get("adapter") or {},
+                "workspace_context_pack": context_pack,
+                "rules": [
+                    "Inspect and reuse existing systems before proposing new files.",
+                    "Do not claim a change has been executed.",
+                    "Do not authorize file writes, commands, commits, pushes, deployments, secrets, or database changes.",
+                    "Separate implementation, tests, security checks, and deployment readiness.",
+                    "Keep the plan bounded to the named workspace and project.",
+                ],
+            },
+            max_tokens=4000,
+            ip_protected=True,
+            require_structured_output=True,
+            output_schema={
+                "type": "object",
+                "required": ["summary", "existingSystems", "changes", "tests", "securityChecks"],
+                "properties": {
+                    "summary": {"type": "string"},
+                    "existingSystems": {"type": "array", "items": {"type": "string"}},
+                    "changes": {"type": "array", "items": {"type": "object"}},
+                    "tests": {"type": "array", "items": {"type": "string"}},
+                    "securityChecks": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            incubation=incubation,
+        ))
+        try:
+            plan = json.loads(response.output) if isinstance(response.output, str) else response.output
+        except (json.JSONDecodeError, TypeError):
+            plan = {"summary": str(response.output)[:4000], "existingSystems": [], "changes": [], "tests": [], "securityChecks": []}
+        safe_changes = []
+        for item in (plan or {}).get("changes", [])[:100]:
+            if not isinstance(item, dict):
+                continue
+            safe_changes.append({"path": str(item.get("path", ""))[:500], "action": str(item.get("action", "modify"))[:50], "reason": str(item.get("reason", ""))[:1000]})
+        return {
+            "plan": {
+                "summary": str((plan or {}).get("summary", ""))[:4000],
+                "existingSystems": [str(value)[:500] for value in (plan or {}).get("existingSystems", [])[:30]],
+                "changes": safe_changes,
+                "tests": [str(value)[:500] for value in (plan or {}).get("tests", [])[:30]],
+                "securityChecks": [str(value)[:500] for value in (plan or {}).get("securityChecks", [])[:30]],
+                "recommendedAgentFlow": ["ExecutionIntelligenceAgent", "MVPBuilderAgent", "ProductArchitectAgent", "CodeAgent", "TestAgent", "DebuggerAgent", "SecurityAgent", "CodeReviewAgent", "DeploymentAgent"],
+            },
+            "context_injected": bool(context_pack),
+            "model_used": response.model_used,
+            "authoritative": False,
+            "execution": {"performed": False, "requires_mcp": True, "approval_boundaries": ["push", "deployment", "destructive_command", "secret_access"]},
+        }
+
+    async def propose_code_changes(self, user_context: UserContext, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate reviewable file proposals; never writes files itself."""
+        workspace_id = payload.get("workspace_id") or payload.get("workspaceId") or user_context.workspace_id
+        requirement = str(payload.get("requirement") or "").strip()
+        if not workspace_id or not requirement:
+            raise ValueError("workspace_id_and_requirement_required")
+        supplied = []
+        allowed = set()
+        for item in (payload.get("files") or [])[:80]:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path", ""))[:500]
+            if not path or path.startswith("/") or ".." in path.split("/"):
+                continue
+            allowed.add(path)
+            supplied.append({"path": path, "content": str(item.get("content", ""))[:30000], "language": str(item.get("language", ""))[:50]})
+        context_pack = self._context_pack(user_context, {**payload, "workspace_id": workspace_id})
+        response = await self.brain.process(AIRequest(
+            TaskType.CODE_REVIEW,
+            replace(user_context, workspace_id=str(workspace_id)),
+            {"mode": "propose_code_changes", "requirement": requirement[:10000], "files": supplied, "workspace_context_pack": context_pack, "rules": ["Return complete replacement content only for supplied file paths.", "Do not introduce secrets, credentials, destructive commands, dependency changes, deployments, or repository operations.", "Keep changes minimal and aligned to existing architecture.", "The result is a proposal requiring human review."]},
+            max_tokens=7000,
+            ip_protected=True,
+            require_structured_output=True,
+            output_schema={"type": "object", "required": ["summary", "changes", "tests", "securityNotes"], "properties": {"summary": {"type": "string"}, "changes": {"type": "array", "items": {"type": "object"}}, "tests": {"type": "array", "items": {"type": "string"}}, "securityNotes": {"type": "array", "items": {"type": "string"}}}},
+        ))
+        try:
+            parsed = json.loads(response.output) if isinstance(response.output, str) else response.output
+        except (json.JSONDecodeError, TypeError):
+            parsed = {}
+        changes = []
+        for item in (parsed or {}).get("changes", [])[:30]:
+            if not isinstance(item, dict) or item.get("path") not in allowed:
+                continue
+            content = str(item.get("content", ""))[:50000]
+            changes.append({"path": item["path"], "content": content, "reason": str(item.get("reason", ""))[:1000]})
+        return {"proposal": {"summary": str((parsed or {}).get("summary", ""))[:3000], "changes": changes, "tests": [str(value)[:500] for value in (parsed or {}).get("tests", [])[:20]], "securityNotes": [str(value)[:500] for value in (parsed or {}).get("securityNotes", [])[:20]]}, "authoritative": False, "applied": False, "model_used": response.model_used}
 
     async def plan_sprint(self, user_context: UserContext, sprint_data: Dict) -> Dict:
         """POST /api/v1/workspace/sprint/plan -- 0 execution budget units"""

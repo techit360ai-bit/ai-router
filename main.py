@@ -1717,6 +1717,30 @@ async def workspace_review_code(
     return await WorkspaceAIService(brain).review_code(user, body)
 
 
+@app.post("/api/v1/workspace/code/plan", tags=["Workspace"])
+async def workspace_plan_code_task(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Context-aware code plan. Advisory only; execution remains backend/MCP-owned."""
+    try:
+        return await WorkspaceAIService(brain).plan_code_task(user, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/workspace/code/propose", tags=["Workspace"])
+async def workspace_propose_code_changes(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Return reviewable code proposals. This endpoint never mutates project state."""
+    try:
+        return await WorkspaceAIService(brain).propose_code_changes(user, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.post("/api/v1/workspace/sprint/plan", tags=["Workspace"])
 async def workspace_plan_sprint(
     body: Dict[str, Any],
