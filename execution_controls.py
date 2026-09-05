@@ -223,6 +223,104 @@ class ProviderCircuitBreaker:
                 self._state[key]["opened_until"] = time.time() + self.cooldown_seconds
 
 
+@dataclass(frozen=True)
+class SpendReservation:
+    """A short-lived provider spend reservation for one execution attempt."""
+
+    key: str
+    provider: str
+    minute: int
+    reserved_usd: float
+
+
+class ProviderSpendBudget:
+    """Dynamic per-minute provider spend guard.
+
+    The budget starts at ``AI_PROVIDER_SPEND_BASE_USD_PER_MINUTE`` for
+    ``AI_PROVIDER_SPEND_BASE_DEMAND_UNITS`` users/calls and scales linearly
+    with observed demand. Redis is used when shared state is enabled; the
+    process-local path remains useful for development and single instances.
+    """
+
+    def __init__(self) -> None:
+        self.base_budget_usd = max(0.0, float(os.getenv("AI_PROVIDER_SPEND_BASE_USD_PER_MINUTE", "100")))
+        self.base_demand_units = max(1, int(os.getenv("AI_PROVIDER_SPEND_BASE_DEMAND_UNITS", "10")))
+        self.growth_multiplier = max(0.0, float(os.getenv("AI_PROVIDER_SPEND_GROWTH_MULTIPLIER", "1")))
+        configured_cap = float(os.getenv("AI_PROVIDER_SPEND_MAX_USD_PER_MINUTE", "0"))
+        self.max_budget_usd = configured_cap if configured_cap > 0 else None
+        self.enabled = os.getenv("AI_PROVIDER_SPEND_GUARD_ENABLED", "true").lower() not in {"0", "false", "no"}
+        self._redis = _redis_client()
+        self._local_spend: Dict[str, float] = defaultdict(float)
+        self._local_calls: Dict[int, int] = defaultdict(int)
+        self._local_users: Dict[int, set[str]] = defaultdict(set)
+        self._lock = threading.Lock()
+
+    def budget_for(self, demand_units: int) -> float:
+        demand = max(self.base_demand_units, int(demand_units or 0))
+        budget = self.base_budget_usd * (demand / self.base_demand_units) * self.growth_multiplier
+        if self.max_budget_usd is not None:
+            budget = min(budget, self.max_budget_usd)
+        return round(max(0.0, budget), 8)
+
+    def _demand(self, minute: int, user_id: str, explicit_units: Optional[int]) -> int:
+        if self._redis is not None:
+            calls_key = f"techit:ai:demand:calls:{minute}"
+            users_key = f"techit:ai:demand:users:{minute}"
+            self._redis.incr(calls_key)
+            self._redis.expire(calls_key, 120)
+            self._redis.sadd(users_key, user_id or "anonymous")
+            self._redis.expire(users_key, 120)
+            calls = int(self._redis.get(f"techit:ai:demand:calls:{minute}") or 0)
+            users = int(self._redis.scard(f"techit:ai:demand:users:{minute}") or 0)
+            return max(self.base_demand_units, calls, users, int(explicit_units or 0))
+        with self._lock:
+            self._local_calls[minute] += 1
+            self._local_users[minute].add(user_id or "anonymous")
+            return max(self.base_demand_units, self._local_calls[minute], len(self._local_users[minute]), int(explicit_units or 0))
+
+    def reserve(
+        self,
+        *,
+        provider: str,
+        estimated_cost_usd: float,
+        user_id: str,
+        demand_units: Optional[int] = None,
+    ) -> SpendReservation:
+        minute = int(time.time() // 60)
+        key = f"techit:ai:spend:{provider}:{minute}"
+        estimated = max(0.0, float(estimated_cost_usd or 0.0))
+        demand = self._demand(minute, user_id, demand_units)
+        budget = self.budget_for(demand)
+        if self.enabled and estimated > 0:
+            if self._redis is not None:
+                current = float(self._redis.incrbyfloat(key, estimated))
+                self._redis.expire(key, 120)
+                if current > budget:
+                    self._redis.incrbyfloat(key, -estimated)
+                    raise ExecutionAuthorizationError(
+                        f"provider spend budget exceeded for {provider}: {current:.6f} > {budget:.6f} USD/min"
+                    )
+            else:
+                with self._lock:
+                    current = self._local_spend[key] + estimated
+                    if current > budget:
+                        raise ExecutionAuthorizationError(
+                            f"provider spend budget exceeded for {provider}: {current:.6f} > {budget:.6f} USD/min"
+                        )
+                    self._local_spend[key] = current
+        return SpendReservation(key=key, provider=provider, minute=minute, reserved_usd=estimated)
+
+    def settle(self, reservation: Optional[SpendReservation], actual_cost_usd: float = 0.0) -> None:
+        if reservation is None or not self.enabled or reservation.reserved_usd <= 0:
+            return
+        delta = float(actual_cost_usd or 0.0) - reservation.reserved_usd
+        if self._redis is not None:
+            self._redis.incrbyfloat(reservation.key, delta)
+            return
+        with self._lock:
+            self._local_spend[reservation.key] = max(0.0, self._local_spend[reservation.key] + delta)
+
+
 class ResponseCache:
     """Tenant-scoped cache. IP-protected requests remain uncached by caller policy."""
 

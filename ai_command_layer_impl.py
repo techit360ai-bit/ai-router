@@ -21,6 +21,7 @@ from execution_controls import (
     ExecutionGrantReplayGuard,
     ExecutionGrantVerifier,
     ExecutionRateLimiter,
+    ProviderSpendBudget,
     ResponseCache,
 )
 from output_validation import OutputValidationError, validate_output
@@ -50,6 +51,7 @@ class ExecutionCommandLayer:
             "1", "true", "yes"
         }
         self.rate_limiter = ExecutionRateLimiter()
+        self.spend_budget = ProviderSpendBudget()
         self.cache = ResponseCache()
         self.grant_replay_guard = ExecutionGrantReplayGuard()
         self.telemetry = ExecutionTelemetryRecorder()
@@ -174,7 +176,24 @@ class ExecutionCommandLayer:
             for retry_number in range(retries + 1):
                 attempt_number += 1
                 attempt_started = time.perf_counter()
+                reservation = None
                 try:
+                    estimated_input_tokens = max(1, len(prompt.encode("utf-8")) // 4)
+                    estimated_cost = self._provider_cost_estimate(
+                        config,
+                        estimated_input_tokens,
+                        int(getattr(request, "max_tokens", 0) or 0),
+                    )
+                    grant = getattr(request.user_context, "execution_grant", None)
+                    demand_units = None
+                    if grant is not None:
+                        demand_units = grant.claims.get("platform_demand_units")
+                    reservation = self.spend_budget.reserve(
+                        provider=config.provider,
+                        estimated_cost_usd=estimated_cost,
+                        user_id=request.user_context.user_id,
+                        demand_units=demand_units,
+                    )
                     output = await asyncio.wait_for(
                         self._call_llm(config, prompt, request),
                         timeout=max(1.0, float(policy.timeout_seconds)),
@@ -188,6 +207,8 @@ class ExecutionCommandLayer:
                     output["provider"] = config.provider
                     output["model"] = config.model_name
                     output["provider_cost_usd"] = self._provider_cost(config, output)
+                    self.spend_budget.settle(reservation, output["provider_cost_usd"] or 0.0)
+                    reservation = None
                     output["request_id"] = request_id
                     output["attempt_latency_ms"] = int((time.perf_counter() - attempt_started) * 1000)
                     await self._record_successful_attempt(
@@ -201,11 +222,17 @@ class ExecutionCommandLayer:
                     )
                     return self._build_response(request, output, request_id, time.perf_counter())
                 except Exception as exc:  # noqa: BLE001 - fallback boundary
+                    self.spend_budget.settle(reservation, 0.0)
+                    reservation = None
                     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
                         exc = ProviderTimeoutError(
                             f"{config.provider} exceeded task timeout of {policy.timeout_seconds}s"
                         )
                     last_exc = exc
+                    if isinstance(exc, ExecutionAuthorizationError):
+                        # Capacity policy is not provider health. Try the next
+                        # eligible provider without opening its circuit.
+                        break
                     self.model_router.circuit_breaker.record_failure(circuit_key)
                     await self._record_failed_attempt(request, config, request_id, attempt_number, exc, attempt_started)
                     self.model_router.record_feedback(
@@ -224,6 +251,15 @@ class ExecutionCommandLayer:
     @staticmethod
     def _retryable(exc: Exception) -> bool:
         return isinstance(exc, (ProviderRateLimitError, ProviderTimeoutError))
+
+    @staticmethod
+    def _provider_cost_estimate(config: Any, input_tokens: int, output_tokens: int) -> float:
+        if config.input_cost_per_million is None or config.output_cost_per_million is None:
+            return 0.0
+        return max(0.0, (
+            input_tokens / 1_000_000 * config.input_cost_per_million
+            + output_tokens / 1_000_000 * config.output_cost_per_million
+        ))
 
     @staticmethod
     def _provider_cost(config: Any, output: Dict[str, Any]) -> Optional[float]:
