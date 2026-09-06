@@ -354,12 +354,39 @@ class ProviderCredentialPool:
         self.max_in_flight = max(0, int(os.getenv("AI_PROVIDER_KEY_MAX_IN_FLIGHT", "0")))
         self._state: Dict[str, Dict[str, float]] = defaultdict(dict)
         self._lock = threading.Lock()
+        self._redis = _redis_client()
+
+    @staticmethod
+    def _redis_key(provider: str, key_env: str) -> str:
+        return f"techit:ai:credential:{provider}:{key_env}"
 
     def acquire(self, provider: str, key_envs: Iterable[str]) -> Optional[str]:
         candidates = [str(item) for item in key_envs if item and os.environ.get(str(item))]
         if not candidates:
             return None
         now = time.time()
+        if self._redis is not None:
+            lock = self._redis.lock(f"techit:ai:credential-lock:{provider}", timeout=2, blocking_timeout=1)
+            acquired = lock.acquire()
+            if not acquired:
+                raise ExecutionAuthorizationError(f"provider credential coordination unavailable for {provider}")
+            try:
+                healthy = []
+                for item in candidates:
+                    state = self._redis.hgetall(self._redis_key(provider, item))
+                    cooldown = float(state.get("cooldown_until", 0) or 0)
+                    in_flight = int(state.get("in_flight", 0) or 0)
+                    if cooldown <= now and not state.get("quarantined") and (self.max_in_flight <= 0 or in_flight < self.max_in_flight):
+                        healthy.append((item, in_flight))
+                if not healthy:
+                    raise ExecutionAuthorizationError(f"all configured credentials are unavailable for {provider}")
+                selected = min(healthy, key=lambda item: item[1])[0]
+                redis_key = self._redis_key(provider, selected)
+                self._redis.hincrby(redis_key, "in_flight", 1)
+                self._redis.expire(redis_key, self.cooldown_seconds * 2)
+                return selected
+            finally:
+                lock.release()
         with self._lock:
             healthy = [item for item in candidates if float(self._state[f"{provider}:{item}"].get("cooldown_until", 0)) <= now and not self._state[f"{provider}:{item}"].get("quarantined") and (self.max_in_flight <= 0 or self._state[f"{provider}:{item}"].get("in_flight", 0) < self.max_in_flight)]
             if not healthy:
@@ -376,6 +403,16 @@ class ProviderCredentialPool:
 
     def release(self, provider: str, key_env: Optional[str], error: Optional[Exception] = None) -> None:
         if not key_env:
+            return
+        if self._redis is not None:
+            redis_key = self._redis_key(provider, key_env)
+            current = max(0, int(self._redis.hincrby(redis_key, "in_flight", -1)))
+            self._redis.hset(redis_key, "in_flight", current)
+            if error.__class__.__name__ == "ProviderRateLimitError":
+                self._redis.hset(redis_key, "cooldown_until", time.time() + self.cooldown_seconds)
+            elif error.__class__.__name__ == "ProviderAuthError":
+                self._redis.hset(redis_key, "quarantined", 1)
+            self._redis.expire(redis_key, self.cooldown_seconds * 2)
             return
         with self._lock:
             state = self._state[f"{provider}:{key_env}"]
@@ -396,6 +433,8 @@ class ProviderCredentialPool:
                     pass
 
     def status(self) -> Dict[str, Dict[str, float]]:
+        if self._redis is not None:
+            return {key: {str(name): float(value) for name, value in self._redis.hgetall(key).items()} for key in self._redis.scan_iter("techit:ai:credential:*") if not key.endswith("-lock")}
         with self._lock:
             return {key: dict(value) for key, value in self._state.items()}
 
