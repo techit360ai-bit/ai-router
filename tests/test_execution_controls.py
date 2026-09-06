@@ -7,6 +7,7 @@ from execution_controls import (
     ExecutionAuthorizationError,
     ExecutionRateLimiter,
     ProviderCredentialPool,
+    AIAdmissionController,
     ProviderSpendBudget,
     ProviderCircuitBreaker,
 )
@@ -77,3 +78,14 @@ def test_provider_credential_pool_cools_down_rate_limited_key(monkeypatch) -> No
     next_key = pool.acquire("openai", ["OPENAI_API_KEY", "OPENAI_API_KEY_2"])
     assert next_key != selected
     pool.release("openai", next_key)
+
+
+@pytest.mark.asyncio
+async def test_ai_admission_controller_rejects_when_queue_is_full(monkeypatch) -> None:
+    monkeypatch.setenv("AI_MAX_IN_FLIGHT", "1")
+    monkeypatch.setenv("AI_MAX_QUEUE", "0")
+    controller = AIAdmissionController()
+    first = await controller.acquire()
+    with pytest.raises(ExecutionAuthorizationError):
+        await controller.acquire()
+    first.release()

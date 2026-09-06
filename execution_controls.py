@@ -351,6 +351,7 @@ class ProviderCredentialPool:
 
     def __init__(self) -> None:
         self.cooldown_seconds = max(1, int(os.getenv("AI_PROVIDER_KEY_COOLDOWN_SECONDS", "60")))
+        self.max_in_flight = max(0, int(os.getenv("AI_PROVIDER_KEY_MAX_IN_FLIGHT", "0")))
         self._state: Dict[str, Dict[str, float]] = defaultdict(dict)
         self._lock = threading.Lock()
 
@@ -360,7 +361,7 @@ class ProviderCredentialPool:
             return None
         now = time.time()
         with self._lock:
-            healthy = [item for item in candidates if float(self._state[f"{provider}:{item}"].get("cooldown_until", 0)) <= now and not self._state[f"{provider}:{item}"].get("quarantined")]
+            healthy = [item for item in candidates if float(self._state[f"{provider}:{item}"].get("cooldown_until", 0)) <= now and not self._state[f"{provider}:{item}"].get("quarantined") and (self.max_in_flight <= 0 or self._state[f"{provider}:{item}"].get("in_flight", 0) < self.max_in_flight)]
             if not healthy:
                 raise ExecutionAuthorizationError(f"all configured credentials are unavailable for {provider}")
             selected = min(healthy, key=lambda item: self._state[f"{provider}:{item}"].get("in_flight", 0))
@@ -397,6 +398,59 @@ class ProviderCredentialPool:
     def status(self) -> Dict[str, Dict[str, float]]:
         with self._lock:
             return {key: dict(value) for key, value in self._state.items()}
+
+
+class AdmissionLease:
+    def __init__(self, controller: "AIAdmissionController") -> None:
+        self._controller = controller
+        self._released = False
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._controller.release()
+
+
+class AIAdmissionController:
+    """Bound total in-flight AI work before provider calls are attempted."""
+
+    def __init__(self) -> None:
+        self.max_in_flight = max(0, int(os.getenv("AI_MAX_IN_FLIGHT", "0")))
+        self.max_queue = max(0, int(os.getenv("AI_MAX_QUEUE", "0")))
+        self._in_flight = 0
+        self._queued = 0
+        self._condition = asyncio.Condition()
+
+    async def acquire(self) -> AdmissionLease:
+        if self.max_in_flight <= 0:
+            return AdmissionLease(self)
+        async with self._condition:
+            if self._in_flight >= self.max_in_flight and self._queued >= self.max_queue:
+                raise ExecutionAuthorizationError("AI admission capacity exhausted")
+            if self._in_flight >= self.max_in_flight:
+                self._queued += 1
+                try:
+                    await self._condition.wait_for(lambda: self._in_flight < self.max_in_flight)
+                finally:
+                    self._queued = max(0, self._queued - 1)
+            self._in_flight += 1
+            return AdmissionLease(self)
+
+    def release(self) -> None:
+        if self.max_in_flight <= 0:
+            return
+        async def notify() -> None:
+            async with self._condition:
+                self._in_flight = max(0, self._in_flight - 1)
+                self._condition.notify(1)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(notify())
+        except RuntimeError:
+            self._in_flight = max(0, self._in_flight - 1)
+
+    def snapshot(self) -> Dict[str, int]:
+        return {"max_in_flight": self.max_in_flight, "max_queue": self.max_queue, "in_flight": self._in_flight, "queued": self._queued}
 
 
 class ResponseCache:

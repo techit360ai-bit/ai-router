@@ -24,6 +24,7 @@ from execution_controls import (
     ExecutionRateLimiter,
     ProviderSpendBudget,
     ProviderCredentialPool,
+    AIAdmissionController,
     ResponseCache,
 )
 from output_validation import OutputValidationError, validate_output
@@ -55,6 +56,7 @@ class ExecutionCommandLayer:
         self.rate_limiter = ExecutionRateLimiter()
         self.spend_budget = ProviderSpendBudget()
         self.credential_pool = ProviderCredentialPool()
+        self.admission = AIAdmissionController()
         self.cache = ResponseCache()
         self.grant_replay_guard = ExecutionGrantReplayGuard()
         self.telemetry = ExecutionTelemetryRecorder()
@@ -150,7 +152,11 @@ class ExecutionCommandLayer:
                     return response
 
             chain = self.model_router.select_chain(request)
-            response = await self._execute_with_fallback(chain, prompt, request, policy, request_id)
+            lease = await self.admission.acquire()
+            try:
+                response = await self._execute_with_fallback(chain, prompt, request, policy, request_id)
+            finally:
+                lease.release()
             if cache_allowed:
                 await self.cache.set(cache_key, {
                     "text": response.output,

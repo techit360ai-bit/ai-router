@@ -477,6 +477,7 @@ async def hardening_metrics(user: UserContext = Depends(get_user_context)):
     snapshot = METRICS.snapshot()
     if brain is not None:
         snapshot["provider_credentials"] = brain.command_layer.credential_pool.status()
+        snapshot["admission"] = brain.command_layer.admission.snapshot()
         snapshot["spend_budget"] = {
             "enabled": brain.command_layer.spend_budget.enabled,
             "base_budget_usd_per_minute": brain.command_layer.spend_budget.base_budget_usd,
