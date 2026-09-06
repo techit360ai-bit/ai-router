@@ -4,9 +4,9 @@
   "updated_at": "2026-08-28T00:00:00Z",
   "owner": "platform-routing",
   "providers": [
-    {"id": "openai", "adapter": "openai_responses", "api_key_env": "OPENAI_API_KEY"},
+    {"id": "openai", "adapter": "openai_responses", "api_key_env": "OPENAI_API_KEY", "api_key_envs": ["OPENAI_API_KEY", "OPENAI_API_KEY_2", "OPENAI_API_KEY_3", "OPENAI_API_KEY_4"]},
     {"id": "agentrouter", "adapter": "openai_responses", "api_key_env": "AGENTROUTER_API_KEY", "base_url": "https://agentrouter.org/v1", "base_url_env": "AGENTROUTER_BASE_URL", "enabled_env": "AGENTROUTER_ENABLED"},
-    {"id": "anthropic", "adapter": "anthropic_messages", "api_key_env": "ANTHROPIC_API_KEY"},
+    {"id": "anthropic", "adapter": "anthropic_messages", "api_key_env": "ANTHROPIC_API_KEY", "api_key_envs": ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_2", "ANTHROPIC_API_KEY_3", "ANTHROPIC_API_KEY_4"]},
     {"id": "google", "adapter": "gemini_generate", "api_key_env": "GEMINI_API_KEY"},
     {"id": "cohere", "adapter": "cohere_embed", "api_key_env": "COHERE_API_KEY"},
     {"id": "openrouter", "adapter": "openai_compatible", "api_key_env": "OPENROUTER_API_KEY", "base_url": "https://openrouter.ai/api/v1/chat/completions"},

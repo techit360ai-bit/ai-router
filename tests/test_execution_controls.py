@@ -6,6 +6,7 @@ import execution_controls
 from execution_controls import (
     ExecutionAuthorizationError,
     ExecutionRateLimiter,
+    ProviderCredentialPool,
     ProviderSpendBudget,
     ProviderCircuitBreaker,
 )
@@ -65,3 +66,14 @@ def test_dynamic_provider_spend_budget_rejects_over_budget(monkeypatch) -> None:
     with pytest.raises(ExecutionAuthorizationError):
         budget.reserve(provider="openai", estimated_cost_usd=41, user_id="u2", demand_units=10)
     budget.settle(reservation, 60)
+
+
+def test_provider_credential_pool_cools_down_rate_limited_key(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "one")
+    monkeypatch.setenv("OPENAI_API_KEY_2", "two")
+    pool = ProviderCredentialPool()
+    selected = pool.acquire("openai", ["OPENAI_API_KEY", "OPENAI_API_KEY_2"])
+    pool.release("openai", selected, type("ProviderRateLimitError", (), {})())
+    next_key = pool.acquire("openai", ["OPENAI_API_KEY", "OPENAI_API_KEY_2"])
+    assert next_key != selected
+    pool.release("openai", next_key)

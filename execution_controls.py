@@ -14,7 +14,21 @@ import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, Mapping, Optional
+
+
+def _configured_spend_defaults() -> tuple[float, int]:
+    """Read spend defaults from the versioned SLO profile, not source code."""
+    profile_path = os.getenv("SCALABILITY_SLO_PATH") or str(Path(__file__).resolve().parent / "config" / "scalability_slos.json")
+    try:
+        profile = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+        defaults = profile.get("capacity_defaults") or {}
+        return float(defaults.get("provider_spend_base_usd_per_minute", 0)), max(
+            1, int(defaults.get("provider_spend_base_demand_units", 1))
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 0.0, 1
 
 
 class ExecutionAuthorizationError(PermissionError):
@@ -243,8 +257,9 @@ class ProviderSpendBudget:
     """
 
     def __init__(self) -> None:
-        self.base_budget_usd = max(0.0, float(os.getenv("AI_PROVIDER_SPEND_BASE_USD_PER_MINUTE", "100")))
-        self.base_demand_units = max(1, int(os.getenv("AI_PROVIDER_SPEND_BASE_DEMAND_UNITS", "10")))
+        configured_budget, configured_units = _configured_spend_defaults()
+        self.base_budget_usd = max(0.0, float(os.getenv("AI_PROVIDER_SPEND_BASE_USD_PER_MINUTE", str(configured_budget))))
+        self.base_demand_units = max(1, int(os.getenv("AI_PROVIDER_SPEND_BASE_DEMAND_UNITS", str(configured_units))))
         self.growth_multiplier = max(0.0, float(os.getenv("AI_PROVIDER_SPEND_GROWTH_MULTIPLIER", "1")))
         configured_cap = float(os.getenv("AI_PROVIDER_SPEND_MAX_USD_PER_MINUTE", "0"))
         self.max_budget_usd = configured_cap if configured_cap > 0 else None
@@ -319,6 +334,44 @@ class ProviderSpendBudget:
             return
         with self._lock:
             self._local_spend[reservation.key] = max(0.0, self._local_spend[reservation.key] + delta)
+
+
+class ProviderCredentialPool:
+    """Least-loaded provider key selection with cooldown and quarantine state."""
+
+    def __init__(self) -> None:
+        self.cooldown_seconds = max(1, int(os.getenv("AI_PROVIDER_KEY_COOLDOWN_SECONDS", "60")))
+        self._state: Dict[str, Dict[str, float]] = defaultdict(dict)
+        self._lock = threading.Lock()
+
+    def acquire(self, provider: str, key_envs: Iterable[str]) -> Optional[str]:
+        candidates = [str(item) for item in key_envs if item and os.environ.get(str(item))]
+        if not candidates:
+            return None
+        now = time.time()
+        with self._lock:
+            healthy = [item for item in candidates if float(self._state[f"{provider}:{item}"].get("cooldown_until", 0)) <= now and not self._state[f"{provider}:{item}"].get("quarantined")]
+            if not healthy:
+                raise ExecutionAuthorizationError(f"all configured credentials are unavailable for {provider}")
+            selected = min(healthy, key=lambda item: self._state[f"{provider}:{item}"].get("in_flight", 0))
+            state = self._state[f"{provider}:{selected}"]
+            state["in_flight"] = state.get("in_flight", 0) + 1
+            return selected
+
+    def release(self, provider: str, key_env: Optional[str], error: Optional[Exception] = None) -> None:
+        if not key_env:
+            return
+        with self._lock:
+            state = self._state[f"{provider}:{key_env}"]
+            state["in_flight"] = max(0, state.get("in_flight", 0) - 1)
+            if error.__class__.__name__ == "ProviderRateLimitError":
+                state["cooldown_until"] = time.time() + self.cooldown_seconds
+            elif error.__class__.__name__ == "ProviderAuthError":
+                state["quarantined"] = 1
+
+    def status(self) -> Dict[str, Dict[str, float]]:
+        with self._lock:
+            return {key: dict(value) for key, value in self._state.items()}
 
 
 class ResponseCache:

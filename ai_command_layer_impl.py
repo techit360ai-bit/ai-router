@@ -12,6 +12,7 @@ import json
 import os
 import random
 import time
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -22,6 +23,7 @@ from execution_controls import (
     ExecutionGrantVerifier,
     ExecutionRateLimiter,
     ProviderSpendBudget,
+    ProviderCredentialPool,
     ResponseCache,
 )
 from output_validation import OutputValidationError, validate_output
@@ -52,6 +54,7 @@ class ExecutionCommandLayer:
         }
         self.rate_limiter = ExecutionRateLimiter()
         self.spend_budget = ProviderSpendBudget()
+        self.credential_pool = ProviderCredentialPool()
         self.cache = ResponseCache()
         self.grant_replay_guard = ExecutionGrantReplayGuard()
         self.telemetry = ExecutionTelemetryRecorder()
@@ -273,22 +276,34 @@ class ExecutionCommandLayer:
 
     async def _call_llm(self, model_config: Any, prompt: str, request: Any) -> Dict[str, Any]:
         provider = str(model_config.provider)
-        if model_config.api_key_env and not os.environ.get(model_config.api_key_env):
+        key_envs = getattr(model_config, "api_key_envs", None) or ([model_config.api_key_env] if model_config.api_key_env else [])
+        selected_key = None
+        failure = None
+        try:
+            selected_key = self.credential_pool.acquire(provider, key_envs)
+        except ExecutionAuthorizationError:
+            raise
+        if model_config.api_key_env and not selected_key:
             if self.allow_placeholder and self.environment not in {"production", "staging"}:
                 return {"text": f"AI placeholder response via {model_config.model_name}", "tokens": 0,
                         "prompt_tokens": 0, "completion_tokens": 0, "confidence": 0.0, "duration_ms": 0}
-            raise ProviderConfigError(f"{provider} requires {model_config.api_key_env}")
+            raise ProviderConfigError(f"{provider} requires a configured provider credential")
+        call_config = replace(model_config, api_key_env=selected_key or model_config.api_key_env)
         try:
-            response = await call_provider_model(model_config, prompt, request, clients=self.provider_clients)
+            response = await call_provider_model(call_config, prompt, request, clients=self.provider_clients)
             output = response.as_ai_output()
             output["prompt_tokens"] = response.raw.get("prompt_tokens") or 0
             output["completion_tokens"] = response.raw.get("completion_tokens") or 0
             output["tokens"] = int(response.tokens or 0)
             return output
-        except ProviderError:
-            raise
+        except ProviderError as exc:
+            failure = exc
+            raise exc
         except Exception as exc:  # noqa: BLE001
+            failure = exc
             raise ProviderError(f"{provider} provider execution failed: {exc}") from exc
+        finally:
+            self.credential_pool.release(provider, selected_key, failure)
 
     def _build_response(self, request: Any, output: Dict[str, Any], request_id: str,
                         started: float, cached: bool = False) -> Any:
