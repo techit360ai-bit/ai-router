@@ -86,6 +86,13 @@ Exit: load model and SLOs are approved and reproducible in staging.
 - Make Redis mandatory for distributed rate limits, circuit state, queues, locks, cache coordination, and WebSocket pub/sub.
 - Review indexes, slow queries, transaction sizes, and retention policies.
 
+Current implementation status: the AI Router already uses PostgreSQL for its
+authoritative execution telemetry and job state. The Node backend now exposes a
+`SCALE_PROFILE` guard and shared Redis gateway controls. Its legacy core state
+adapter still has synchronous SQLite/JSON call sites; `SCALE_PROFILE=multi-replica`
+therefore fails closed until that adapter is migrated transactionally to
+PostgreSQL. Do not enable multi-replica mode on SQLite.
+
 Exit: no authoritative production state depends on a local filesystem or process memory.
 
 ### Phase 2 - Gateway and AI admission control
