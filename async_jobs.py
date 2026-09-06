@@ -37,6 +37,11 @@ def submit_incubation_job(*, user_id: str, payload: Dict[str, Any], idempotency_
     from workers.workers import celery
     task = celery.send_task("workers.incubation_pipeline", args=[payload])
     job_id = str(task.id)
+    try:
+        from hardening_metrics import METRICS
+        METRICS.increment("incubation_jobs_submitted")
+    except Exception:
+        pass
     redis.setex(f"techit:ai:job:owner:{job_id}", int(os.getenv("AI_JOB_OWNER_TTL_SECONDS", "86400")), user_id)
     if idempotency_key:
         redis.setex(key, int(os.getenv("AI_JOB_IDEMPOTENCY_TTL_SECONDS", "86400")), job_id)

@@ -312,6 +312,11 @@ class ProviderSpendBudget:
                 self._redis.expire(key, 120)
                 if current > budget:
                     self._redis.incrbyfloat(key, -estimated)
+                    try:
+                        from hardening_metrics import METRICS
+                        METRICS.increment("provider_spend_reservation_rejected", provider)
+                    except Exception:
+                        pass
                     raise ExecutionAuthorizationError(
                         f"provider spend budget exceeded for {provider}: {current:.6f} > {budget:.6f} USD/min"
                     )
@@ -319,6 +324,11 @@ class ProviderSpendBudget:
                 with self._lock:
                     current = self._local_spend[key] + estimated
                     if current > budget:
+                        try:
+                            from hardening_metrics import METRICS
+                            METRICS.increment("provider_spend_reservation_rejected", provider)
+                        except Exception:
+                            pass
                         raise ExecutionAuthorizationError(
                             f"provider spend budget exceeded for {provider}: {current:.6f} > {budget:.6f} USD/min"
                         )
@@ -356,6 +366,11 @@ class ProviderCredentialPool:
             selected = min(healthy, key=lambda item: self._state[f"{provider}:{item}"].get("in_flight", 0))
             state = self._state[f"{provider}:{selected}"]
             state["in_flight"] = state.get("in_flight", 0) + 1
+            try:
+                from hardening_metrics import METRICS
+                METRICS.increment("provider_credential_acquires", provider)
+            except Exception:
+                pass
             return selected
 
     def release(self, provider: str, key_env: Optional[str], error: Optional[Exception] = None) -> None:
@@ -366,8 +381,18 @@ class ProviderCredentialPool:
             state["in_flight"] = max(0, state.get("in_flight", 0) - 1)
             if error.__class__.__name__ == "ProviderRateLimitError":
                 state["cooldown_until"] = time.time() + self.cooldown_seconds
+                try:
+                    from hardening_metrics import METRICS
+                    METRICS.increment("provider_credential_cooldowns", provider)
+                except Exception:
+                    pass
             elif error.__class__.__name__ == "ProviderAuthError":
                 state["quarantined"] = 1
+                try:
+                    from hardening_metrics import METRICS
+                    METRICS.increment("provider_credential_quarantines", provider)
+                except Exception:
+                    pass
 
     def status(self) -> Dict[str, Dict[str, float]]:
         with self._lock:

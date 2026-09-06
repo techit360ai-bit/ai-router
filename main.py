@@ -474,7 +474,17 @@ async def ready():
 async def hardening_metrics(user: UserContext = Depends(get_user_context)):
     if user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="admin role required")
-    return METRICS.snapshot()
+    snapshot = METRICS.snapshot()
+    if brain is not None:
+        snapshot["provider_credentials"] = brain.command_layer.credential_pool.status()
+        snapshot["spend_budget"] = {
+            "enabled": brain.command_layer.spend_budget.enabled,
+            "base_budget_usd_per_minute": brain.command_layer.spend_budget.base_budget_usd,
+            "base_demand_units": brain.command_layer.spend_budget.base_demand_units,
+            "growth_multiplier": brain.command_layer.spend_budget.growth_multiplier,
+            "max_budget_usd_per_minute": brain.command_layer.spend_budget.max_budget_usd,
+        }
+    return snapshot
 
 
 @app.post("/api/v1/admin/calibration/outcomes", tags=["Admin"])
