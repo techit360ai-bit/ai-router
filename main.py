@@ -79,6 +79,7 @@ from runtime_config import (
     database_engine_options,
     runtime_checks,
 )
+from async_jobs import async_jobs_enabled, job_status, submit_incubation_job
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
 from live_domain_repository import LiveDomainRepository
@@ -513,8 +514,37 @@ async def root():
 # INCUBATION HUB
 # ============================================================================
 
+def _incubation_job_payload(user: UserContext, venture_data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "user": {
+            "user_id": user.user_id,
+            "role": user.role.value,
+            "project_id": user.project_id,
+            "project_stage": user.project_stage,
+            "industry": user.industry,
+            "tech_stack": user.tech_stack,
+            "past_feedback": user.past_feedback,
+            "training_progress": user.training_progress,
+            "time_logged_today": user.time_logged_today,
+            "tasks_completed_week": user.tasks_completed_week,
+            "days_since_update": user.days_since_update,
+            "team_size": user.team_size,
+            "has_revenue": user.has_revenue,
+            "beta_users_count": user.beta_users_count,
+            "compliance_items": user.compliance_items,
+            "transparency_items": user.transparency_items,
+            "workspace_id": user.workspace_id,
+        },
+        "venture_data": venture_data,
+    }
+
+
+def _async_requested(request: Request) -> bool:
+    return async_jobs_enabled() and request.headers.get("x-techit-async", "").lower() in {"1", "true", "yes"}
+
 @app.post("/api/v1/incubation/pipeline/run", tags=["Incubation Hub"])
 async def run_pipeline(
+    request: Request,
     venture_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
@@ -525,7 +555,27 @@ async def run_pipeline(
 
     Cost: 12 execution budget units. Min tier: Investor+
     """
+    if _async_requested(request):
+        try:
+            submitted = submit_incubation_job(
+                user_id=user.user_id,
+                payload=_incubation_job_payload(user, venture_data),
+                idempotency_key=request.headers.get("idempotency-key"),
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "30"}) from exc
+        return JSONResponse(status_code=202, content=submitted)
     return await IncubationHubService(brain).run_full_venture_pipeline(user, venture_data)
+
+
+@app.get("/api/v1/incubation/jobs/{job_id}", tags=["Incubation Hub"])
+async def incubation_job_status(job_id: str, user: UserContext = Depends(get_user_context)):
+    try:
+        return job_status(user_id=user.user_id, job_id=job_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail="job_not_found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "30"}) from exc
 
 
 @app.get("/api/v1/incubation/projects/{project_id}/export", tags=["Incubation Hub"])
@@ -564,6 +614,7 @@ async def persist_incubation_analysis(
 
 @app.post("/api/v1/incubation/fast-track/run", tags=["Incubation Hub"])
 async def fast_track_run(
+    request: Request,
     venture_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
@@ -595,6 +646,16 @@ async def fast_track_run(
     if venture_data.get("stage"):
         enriched["current_stage"] = venture_data["stage"]
 
+    if _async_requested(request):
+        try:
+            submitted = submit_incubation_job(
+                user_id=user.user_id,
+                payload=_incubation_job_payload(user, enriched),
+                idempotency_key=request.headers.get("idempotency-key"),
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "30"}) from exc
+        return JSONResponse(status_code=202, content=submitted)
     return await IncubationHubService(brain).run_full_venture_pipeline(user, enriched)
 
 

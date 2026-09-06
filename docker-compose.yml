@@ -96,6 +96,7 @@ services:
       - MISTRAL_API_KEY=${MISTRAL_API_KEY}
       - MODEL_REGISTRY_PATH=/app/config/model_registry.json
       - TASK_POLICY_PATH=/app/config/task_policies.json
+      - AI_TRUSTED_WORKER_EXECUTION=true
       - PYTHONPATH=/app
     depends_on:
       postgres:

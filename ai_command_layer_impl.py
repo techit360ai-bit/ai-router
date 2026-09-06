@@ -66,7 +66,8 @@ class ExecutionCommandLayer:
         grant = getattr(request.user_context, "execution_grant", None)
         request_id = grant.request_id if grant is not None else str(uuid4())
 
-        if os.getenv("REQUIRE_AI_EXECUTION_GRANT", "false").lower() in {"1", "true", "yes"} and grant is None:
+        trusted_worker = os.getenv("AI_TRUSTED_WORKER_EXECUTION", "false").lower() in {"1", "true", "yes"}
+        if os.getenv("REQUIRE_AI_EXECUTION_GRANT", "false").lower() in {"1", "true", "yes"} and grant is None and not trusted_worker:
             raise ExecutionAuthorizationError("A backend execution grant is required")
         if grant is not None:
             try:
