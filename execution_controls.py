@@ -55,8 +55,8 @@ class ExecutionGrantVerifier:
     """Verify short-lived backend grants without interpreting billing state."""
 
     def __init__(self, secret: Optional[str] = None) -> None:
-        self.secret = secret or os.getenv("AI_EXECUTION_GRANT_SECRET") or os.getenv("JWT_SECRET")
-        self.algorithm = os.getenv("AI_EXECUTION_GRANT_ALGORITHM", "HS256")
+        self.secret = secret or os.getenv("AI_EXECUTION_GRANT_SECRET") or os.getenv("JWT_PUBLIC_KEY") or os.getenv("JWT_SECRET")
+        self.algorithm = os.getenv("AI_EXECUTION_GRANT_ALGORITHM", "RS256" if os.getenv("ENVIRONMENT", "development").lower() in {"production", "staging"} else "HS256")
         self.issuer = os.getenv("AI_EXECUTION_GRANT_ISSUER", "techit-backend")
         self.audience = os.getenv("AI_EXECUTION_GRANT_AUDIENCE", "techit-ai-router")
 
@@ -69,7 +69,7 @@ class ExecutionGrantVerifier:
             from jose import JWTError, jwt
             claims = jwt.decode(
                 token,
-                self.secret,
+                self.secret.replace("\\n", "\n"),
                 algorithms=[self.algorithm],
                 issuer=self.issuer,
                 audience=self.audience,

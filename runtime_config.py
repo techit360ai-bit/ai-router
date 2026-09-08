@@ -76,17 +76,26 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
     ))
 
     secret = values.get("JWT_SECRET") or values.get("SECRET_KEY") or ""
+    public_key = values.get("JWT_PUBLIC_KEY") or ""
     checks.append(RuntimeCheck(
         "auth.jwt_secret",
-        bool(secret) and len(secret) >= 32 and not _is_placeholder(secret),
-        "JWT_SECRET must be set, strong, and non-placeholder",
+        (bool(public_key) if env_name in PROD_ENVS else bool(secret) and len(secret) >= 32 and not _is_placeholder(secret)),
+        "JWT_PUBLIC_KEY is required in production; JWT_SECRET must be strong for development/test",
     ))
 
-    checks.append(RuntimeCheck(
-        "auth.jwt_algorithm",
-        values.get("JWT_ALGORITHM", "HS256") == "HS256",
-        "JWT_ALGORITHM must be HS256",
-    ))
+    jwt_algorithm = values.get("JWT_ALGORITHM", "RS256" if env_name in PROD_ENVS else "HS256").upper()
+    if env_name in PROD_ENVS:
+        checks.append(RuntimeCheck(
+            "auth.jwt_algorithm",
+            jwt_algorithm in {"RS256", "EdDSA"} and bool(values.get("JWT_PUBLIC_KEY")),
+            "Production requires RS256/EdDSA and JWT_PUBLIC_KEY",
+        ))
+    else:
+        checks.append(RuntimeCheck(
+            "auth.jwt_algorithm",
+            jwt_algorithm in {"HS256", "RS256", "EdDSA"},
+            "JWT_ALGORITHM must be HS256, RS256, or EdDSA",
+        ))
 
     allowed_origins = [item.strip() for item in values.get("ALLOWED_ORIGINS", "").split(",") if item.strip()]
     if env_name in PROD_ENVS:

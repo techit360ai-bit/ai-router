@@ -23,7 +23,8 @@ from runtime_config import (  # noqa: E402
 BASE_PROD_ENV = {
     "ENVIRONMENT": "production",
     "ALLOW_DEMO_AUTH": "false",
-    "JWT_ALGORITHM": "HS256",
+    "JWT_ALGORITHM": "RS256",
+    "JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A\\n-----END PUBLIC KEY-----",
     "JWT_SECRET": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "JWT_ISSUER": "techit-backend",
     "JWT_AUDIENCE": "techit-platform",

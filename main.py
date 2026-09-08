@@ -178,9 +178,8 @@ async def security_headers(request: Request, call_next):
 # ============================================================================
 
 # Auth config (env-driven).
-#   JWT_SECRET       -- HS256 signing key shared with the token issuer (BACKEND repo,
-#                       both Node main and Go feat/messaging-backend). Canonical name
-#                       across all platform services as of 2026-06-20.
+#   JWT_SECRET       -- legacy HS256 signing key for development/test only.
+#   JWT_PUBLIC_KEY   -- production RS256/EdDSA verification key (PEM/JWK).
 #   SECRET_KEY       -- legacy alias for JWT_SECRET. Honored as a fallback so existing
 #                       ai-router deployments keep booting; new deployments should set
 #                       JWT_SECRET instead.
@@ -192,7 +191,7 @@ async def security_headers(request: Request, call_next):
 #   ENVIRONMENT      -- "development" | "staging" | "production". Drives the demo-auth
 #                       guardrail.
 SECRET_KEY = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "RS256" if os.getenv("ENVIRONMENT", "development").lower() in {"production", "staging"} else "HS256")
 ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
 
@@ -335,7 +334,10 @@ async def get_user_context(request: Request) -> UserContext:
             decode_options["issuer"] = issuer
         if audience:
             decode_options["audience"] = audience
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM], **decode_options)
+        verification_key = os.getenv("JWT_PUBLIC_KEY", "") or SECRET_KEY
+        if ENVIRONMENT in PROD_ENVS and not os.getenv("JWT_PUBLIC_KEY"):
+            raise HTTPException(status_code=500, detail="Asymmetric JWT verification is not configured")
+        payload = jwt.decode(token, verification_key.replace("\\n", "\n"), algorithms=[JWT_ALGORITHM], **decode_options)
     except JWTError as exc:
         logger.warning("auth_jwt_invalid", reason="decode_failed", error=str(exc))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
