@@ -1,0 +1,22 @@
+name: TECHIT AI Router — Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/ai-router
+            git pull origin main
+            docker compose up -d --no-deps --build api worker scheduler
+            echo "✅ AI Router deployed"
