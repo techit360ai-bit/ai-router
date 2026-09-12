@@ -12,6 +12,7 @@ import json
 import os
 import random
 import time
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -21,6 +22,9 @@ from execution_controls import (
     ExecutionGrantReplayGuard,
     ExecutionGrantVerifier,
     ExecutionRateLimiter,
+    ProviderSpendBudget,
+    ProviderCredentialPool,
+    AIAdmissionController,
     ResponseCache,
 )
 from output_validation import OutputValidationError, validate_output
@@ -50,6 +54,9 @@ class ExecutionCommandLayer:
             "1", "true", "yes"
         }
         self.rate_limiter = ExecutionRateLimiter()
+        self.spend_budget = ProviderSpendBudget()
+        self.credential_pool = ProviderCredentialPool()
+        self.admission = AIAdmissionController()
         self.cache = ResponseCache()
         self.grant_replay_guard = ExecutionGrantReplayGuard()
         self.telemetry = ExecutionTelemetryRecorder()
@@ -61,7 +68,8 @@ class ExecutionCommandLayer:
         grant = getattr(request.user_context, "execution_grant", None)
         request_id = grant.request_id if grant is not None else str(uuid4())
 
-        if os.getenv("REQUIRE_AI_EXECUTION_GRANT", "false").lower() in {"1", "true", "yes"} and grant is None:
+        trusted_worker = os.getenv("AI_TRUSTED_WORKER_EXECUTION", "false").lower() in {"1", "true", "yes"}
+        if os.getenv("REQUIRE_AI_EXECUTION_GRANT", "false").lower() in {"1", "true", "yes"} and grant is None and not trusted_worker:
             raise ExecutionAuthorizationError("A backend execution grant is required")
         if grant is not None:
             try:
@@ -144,7 +152,11 @@ class ExecutionCommandLayer:
                     return response
 
             chain = self.model_router.select_chain(request)
-            response = await self._execute_with_fallback(chain, prompt, request, policy, request_id)
+            lease = await self.admission.acquire()
+            try:
+                response = await self._execute_with_fallback(chain, prompt, request, policy, request_id)
+            finally:
+                lease.release()
             if cache_allowed:
                 await self.cache.set(cache_key, {
                     "text": response.output,
@@ -174,7 +186,24 @@ class ExecutionCommandLayer:
             for retry_number in range(retries + 1):
                 attempt_number += 1
                 attempt_started = time.perf_counter()
+                reservation = None
                 try:
+                    estimated_input_tokens = max(1, len(prompt.encode("utf-8")) // 4)
+                    estimated_cost = self._provider_cost_estimate(
+                        config,
+                        estimated_input_tokens,
+                        int(getattr(request, "max_tokens", 0) or 0),
+                    )
+                    grant = getattr(request.user_context, "execution_grant", None)
+                    demand_units = None
+                    if grant is not None:
+                        demand_units = grant.claims.get("platform_demand_units")
+                    reservation = self.spend_budget.reserve(
+                        provider=config.provider,
+                        estimated_cost_usd=estimated_cost,
+                        user_id=request.user_context.user_id,
+                        demand_units=demand_units,
+                    )
                     output = await asyncio.wait_for(
                         self._call_llm(config, prompt, request),
                         timeout=max(1.0, float(policy.timeout_seconds)),
@@ -188,6 +217,8 @@ class ExecutionCommandLayer:
                     output["provider"] = config.provider
                     output["model"] = config.model_name
                     output["provider_cost_usd"] = self._provider_cost(config, output)
+                    self.spend_budget.settle(reservation, output["provider_cost_usd"] or 0.0)
+                    reservation = None
                     output["request_id"] = request_id
                     output["attempt_latency_ms"] = int((time.perf_counter() - attempt_started) * 1000)
                     await self._record_successful_attempt(
@@ -201,11 +232,17 @@ class ExecutionCommandLayer:
                     )
                     return self._build_response(request, output, request_id, time.perf_counter())
                 except Exception as exc:  # noqa: BLE001 - fallback boundary
+                    self.spend_budget.settle(reservation, 0.0)
+                    reservation = None
                     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
                         exc = ProviderTimeoutError(
                             f"{config.provider} exceeded task timeout of {policy.timeout_seconds}s"
                         )
                     last_exc = exc
+                    if isinstance(exc, ExecutionAuthorizationError):
+                        # Capacity policy is not provider health. Try the next
+                        # eligible provider without opening its circuit.
+                        break
                     self.model_router.circuit_breaker.record_failure(circuit_key)
                     await self._record_failed_attempt(request, config, request_id, attempt_number, exc, attempt_started)
                     self.model_router.record_feedback(
@@ -226,6 +263,15 @@ class ExecutionCommandLayer:
         return isinstance(exc, (ProviderRateLimitError, ProviderTimeoutError))
 
     @staticmethod
+    def _provider_cost_estimate(config: Any, input_tokens: int, output_tokens: int) -> float:
+        if config.input_cost_per_million is None or config.output_cost_per_million is None:
+            return 0.0
+        return max(0.0, (
+            input_tokens / 1_000_000 * config.input_cost_per_million
+            + output_tokens / 1_000_000 * config.output_cost_per_million
+        ))
+
+    @staticmethod
     def _provider_cost(config: Any, output: Dict[str, Any]) -> Optional[float]:
         if config.input_cost_per_million is None or config.output_cost_per_million is None:
             return None
@@ -237,22 +283,34 @@ class ExecutionCommandLayer:
 
     async def _call_llm(self, model_config: Any, prompt: str, request: Any) -> Dict[str, Any]:
         provider = str(model_config.provider)
-        if model_config.api_key_env and not os.environ.get(model_config.api_key_env):
+        key_envs = getattr(model_config, "api_key_envs", None) or ([model_config.api_key_env] if model_config.api_key_env else [])
+        selected_key = None
+        failure = None
+        try:
+            selected_key = self.credential_pool.acquire(provider, key_envs)
+        except ExecutionAuthorizationError:
+            raise
+        if model_config.api_key_env and not selected_key:
             if self.allow_placeholder and self.environment not in {"production", "staging"}:
                 return {"text": f"AI placeholder response via {model_config.model_name}", "tokens": 0,
                         "prompt_tokens": 0, "completion_tokens": 0, "confidence": 0.0, "duration_ms": 0}
-            raise ProviderConfigError(f"{provider} requires {model_config.api_key_env}")
+            raise ProviderConfigError(f"{provider} requires a configured provider credential")
+        call_config = replace(model_config, api_key_env=selected_key or model_config.api_key_env)
         try:
-            response = await call_provider_model(model_config, prompt, request, clients=self.provider_clients)
+            response = await call_provider_model(call_config, prompt, request, clients=self.provider_clients)
             output = response.as_ai_output()
             output["prompt_tokens"] = response.raw.get("prompt_tokens") or 0
             output["completion_tokens"] = response.raw.get("completion_tokens") or 0
             output["tokens"] = int(response.tokens or 0)
             return output
-        except ProviderError:
-            raise
+        except ProviderError as exc:
+            failure = exc
+            raise exc
         except Exception as exc:  # noqa: BLE001
+            failure = exc
             raise ProviderError(f"{provider} provider execution failed: {exc}") from exc
+        finally:
+            self.credential_pool.release(provider, selected_key, failure)
 
     def _build_response(self, request: Any, output: Dict[str, Any], request_id: str,
                         started: float, cached: bool = False) -> Any:

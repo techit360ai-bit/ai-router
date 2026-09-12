@@ -21,6 +21,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 import os
+import hmac
+import hashlib
+import json
+import time
+from datetime import datetime
 import structlog
 from sqlalchemy import text
 
@@ -57,11 +62,12 @@ from integration_guide import (
     HackathonService,
 )
 from ai_router_core import ModelRouter, ScoringEngine, TaskType, UserContext, UserRole
+from trust_engine_lite import FounderTrustProfile, TrustEngineComputer, VerificationStatus
 from gsis_v2 import project_scorecard
 from execution_controls import ExecutionGrantVerifier, ExecutionAuthorizationError
 from model_registry import ModelRegistry, RegistryError
 from policy_registry import SCORING_POLICY
-from database_schema import Project, GsisV2ConfigAudit, GsisV2Recommendation
+from database_schema import Project, GsisV2ConfigAudit, GsisV2Recommendation, TrustProfile
 from gsis_v2_persistence import (
     audit_config,
     list_benchmarks,
@@ -79,6 +85,7 @@ from runtime_config import (
     database_engine_options,
     runtime_checks,
 )
+from async_jobs import async_jobs_enabled, job_status, submit_incubation_job
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
 from live_domain_repository import LiveDomainRepository
@@ -177,9 +184,8 @@ async def security_headers(request: Request, call_next):
 # ============================================================================
 
 # Auth config (env-driven).
-#   JWT_SECRET       -- HS256 signing key shared with the token issuer (BACKEND repo,
-#                       both Node main and Go feat/messaging-backend). Canonical name
-#                       across all platform services as of 2026-06-20.
+#   JWT_SECRET       -- legacy HS256 signing key for development/test only.
+#   JWT_PUBLIC_KEY   -- production RS256/EdDSA verification key (PEM/JWK).
 #   SECRET_KEY       -- legacy alias for JWT_SECRET. Honored as a fallback so existing
 #                       ai-router deployments keep booting; new deployments should set
 #                       JWT_SECRET instead.
@@ -191,7 +197,7 @@ async def security_headers(request: Request, call_next):
 #   ENVIRONMENT      -- "development" | "staging" | "production". Drives the demo-auth
 #                       guardrail.
 SECRET_KEY = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "RS256" if os.getenv("ENVIRONMENT", "development").lower() in {"production", "staging"} else "HS256")
 ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
 
@@ -334,7 +340,10 @@ async def get_user_context(request: Request) -> UserContext:
             decode_options["issuer"] = issuer
         if audience:
             decode_options["audience"] = audience
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM], **decode_options)
+        verification_key = os.getenv("JWT_PUBLIC_KEY", "") or SECRET_KEY
+        if ENVIRONMENT in PROD_ENVS and not os.getenv("JWT_PUBLIC_KEY"):
+            raise HTTPException(status_code=500, detail="Asymmetric JWT verification is not configured")
+        payload = jwt.decode(token, verification_key.replace("\\n", "\n"), algorithms=[JWT_ALGORITHM], **decode_options)
     except JWTError as exc:
         logger.warning("auth_jwt_invalid", reason="decode_failed", error=str(exc))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -473,7 +482,18 @@ async def ready():
 async def hardening_metrics(user: UserContext = Depends(get_user_context)):
     if user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="admin role required")
-    return METRICS.snapshot()
+    snapshot = METRICS.snapshot()
+    if brain is not None:
+        snapshot["provider_credentials"] = brain.command_layer.credential_pool.status()
+        snapshot["admission"] = brain.command_layer.admission.snapshot()
+        snapshot["spend_budget"] = {
+            "enabled": brain.command_layer.spend_budget.enabled,
+            "base_budget_usd_per_minute": brain.command_layer.spend_budget.base_budget_usd,
+            "base_demand_units": brain.command_layer.spend_budget.base_demand_units,
+            "growth_multiplier": brain.command_layer.spend_budget.growth_multiplier,
+            "max_budget_usd_per_minute": brain.command_layer.spend_budget.max_budget_usd,
+        }
+    return snapshot
 
 
 @app.post("/api/v1/admin/calibration/outcomes", tags=["Admin"])
@@ -513,8 +533,37 @@ async def root():
 # INCUBATION HUB
 # ============================================================================
 
+def _incubation_job_payload(user: UserContext, venture_data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "user": {
+            "user_id": user.user_id,
+            "role": user.role.value,
+            "project_id": user.project_id,
+            "project_stage": user.project_stage,
+            "industry": user.industry,
+            "tech_stack": user.tech_stack,
+            "past_feedback": user.past_feedback,
+            "training_progress": user.training_progress,
+            "time_logged_today": user.time_logged_today,
+            "tasks_completed_week": user.tasks_completed_week,
+            "days_since_update": user.days_since_update,
+            "team_size": user.team_size,
+            "has_revenue": user.has_revenue,
+            "beta_users_count": user.beta_users_count,
+            "compliance_items": user.compliance_items,
+            "transparency_items": user.transparency_items,
+            "workspace_id": user.workspace_id,
+        },
+        "venture_data": venture_data,
+    }
+
+
+def _async_requested(request: Request) -> bool:
+    return async_jobs_enabled() and request.headers.get("x-techit-async", "").lower() in {"1", "true", "yes"}
+
 @app.post("/api/v1/incubation/pipeline/run", tags=["Incubation Hub"])
 async def run_pipeline(
+    request: Request,
     venture_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
@@ -525,7 +574,27 @@ async def run_pipeline(
 
     Cost: 12 execution budget units. Min tier: Investor+
     """
+    if _async_requested(request):
+        try:
+            submitted = submit_incubation_job(
+                user_id=user.user_id,
+                payload=_incubation_job_payload(user, venture_data),
+                idempotency_key=request.headers.get("idempotency-key"),
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "30"}) from exc
+        return JSONResponse(status_code=202, content=submitted)
     return await IncubationHubService(brain).run_full_venture_pipeline(user, venture_data)
+
+
+@app.get("/api/v1/incubation/jobs/{job_id}", tags=["Incubation Hub"])
+async def incubation_job_status(job_id: str, user: UserContext = Depends(get_user_context)):
+    try:
+        return job_status(user_id=user.user_id, job_id=job_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail="job_not_found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "30"}) from exc
 
 
 @app.get("/api/v1/incubation/projects/{project_id}/export", tags=["Incubation Hub"])
@@ -564,6 +633,7 @@ async def persist_incubation_analysis(
 
 @app.post("/api/v1/incubation/fast-track/run", tags=["Incubation Hub"])
 async def fast_track_run(
+    request: Request,
     venture_data: Dict[str, Any],
     user: UserContext = Depends(get_user_context),
 ):
@@ -595,6 +665,16 @@ async def fast_track_run(
     if venture_data.get("stage"):
         enriched["current_stage"] = venture_data["stage"]
 
+    if _async_requested(request):
+        try:
+            submitted = submit_incubation_job(
+                user_id=user.user_id,
+                payload=_incubation_job_payload(user, enriched),
+                idempotency_key=request.headers.get("idempotency-key"),
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "30"}) from exc
+        return JSONResponse(status_code=202, content=submitted)
     return await IncubationHubService(brain).run_full_venture_pipeline(user, enriched)
 
 
@@ -1204,6 +1284,10 @@ async def gsis_v2_calibration(
 # TRUST ENGINE LITE
 # ============================================================================
 
+def require_backend_trust_authority(request: Request) -> None:
+    if os.getenv("TRUST_MUTATIONS_BACKEND_ONLY", "true").lower() in {"1", "true", "yes"} and request.headers.get("x-trust-authority") != "backend":
+        raise HTTPException(status_code=403, detail="trust mutations require backend authority")
+
 @app.get("/api/v1/trust/profile", tags=["Trust Engine"])
 async def trust_profile(
     user: UserContext = Depends(get_user_context),
@@ -1211,6 +1295,81 @@ async def trust_profile(
 ):
     """Current metadata-only trust profile. 0 execution budget units, Free+."""
     return TrustVerificationService(brain).get_profile(user, db)
+
+
+@app.post("/internal/trust/projection", tags=["Internal Trust"])
+async def trust_projection(request: Request, db=Depends(get_db)):
+    """Accept only signed proof-derived projections from the platform backend."""
+    raw = await request.body()
+    secret = os.getenv("TRUST_PROJECTION_SECRET", "")
+    timestamp = request.headers.get("x-trust-timestamp", "")
+    signature = request.headers.get("x-trust-signature", "")
+    if not secret or not timestamp or not signature:
+        raise HTTPException(status_code=401, detail="trust projection authentication required")
+    try:
+        if abs(time.time() - float(timestamp)) > 300:
+            raise ValueError("stale projection")
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="trust projection timestamp invalid") from exc
+    expected = hmac.new(secret.encode(), f"{timestamp}.".encode() + raw, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(status_code=401, detail="trust projection signature invalid")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        profile_payload = payload["profile"]
+        user_id = str(payload["userId"])
+        project_id = payload.get("projectId")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="trust projection payload invalid") from exc
+    query = db.query(TrustProfile).filter(TrustProfile.user_id == user_id)
+    query = query.filter(TrustProfile.project_id == project_id) if project_id else query.filter(TrustProfile.project_id.is_(None))
+    row = query.first()
+    if row is None:
+        row = TrustProfile(user_id=user_id, project_id=project_id)
+        db.add(row)
+    verified_skills = profile_payload.get("verifiedSkills") if isinstance(profile_payload.get("verifiedSkills"), list) else []
+    normalized = FounderTrustProfile(
+        founder_id=user_id,
+        email_verified=bool(profile_payload.get("email_verified")),
+        phone_verified=bool(profile_payload.get("phone_verified")),
+        github_connected=bool(profile_payload.get("github_connected")),
+        linkedin_connected=bool(profile_payload.get("linkedin_connected")),
+        domain_verified=bool(profile_payload.get("domain_verified")),
+        organization_verified=bool(profile_payload.get("organization_verified")),
+        deployment_live=bool(profile_payload.get("deployment_live")),
+        product_activity_verified=bool(profile_payload.get("product_activity_verified")),
+        github_repo_count=int(profile_payload.get("github_repo_count", 0) or 0),
+        github_commit_count=int(profile_payload.get("github_commit_count", 0) or 0),
+        github_contributor_count=int(profile_payload.get("github_contributor_count", 0) or 0),
+        team_verified_count=int(profile_payload.get("team_verified_count", 0) or 0),
+        milestone_count=int(profile_payload.get("milestone_count", 0) or 0),
+        deployments_30d=int(profile_payload.get("deployments_30d", 0) or 0),
+        mau=int(profile_payload.get("mau", 0) or 0),
+        dau=int(profile_payload.get("dau", 0) or 0),
+        verified_skills_count=len(verified_skills),
+    )
+    computed = TrustEngineComputer.compute(normalized)
+    row.github_connected = normalized.github_connected
+    row.linkedin_connected = normalized.linkedin_connected
+    row.domain_verified = normalized.domain_verified
+    row.organization_verified = normalized.organization_verified
+    row.deployment_live = normalized.deployment_live
+    row.product_activity_verified = normalized.product_activity_verified
+    row.github_repo_count = normalized.github_repo_count
+    row.github_commit_count = normalized.github_commit_count
+    row.github_contributor_count = normalized.github_contributor_count
+    row.deployments_30d = normalized.deployments_30d
+    row.mau = normalized.mau
+    row.dau = normalized.dau
+    row.verified_skills_count = len(verified_skills)
+    row.verified_skills = verified_skills
+    row.trust_score = computed["trust_score"]
+    row.confidence_score = min(1.0, computed["trust_score"] / 100.0)
+    row.verification_status = VerificationStatus(computed["verification_status"])
+    row.badges = computed["badges"]
+    row.last_sync_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "user_id": user_id, "project_id": project_id, "trust": computed, "proof_count": profile_payload.get("proof_count", 0), "privacy": {"metadata_only": True, "signed_projection": True, "raw_payload_stored": False}}
 
 
 @app.get("/api/v1/trust/badges", tags=["Trust Engine"])
@@ -1258,6 +1417,7 @@ async def trust_integrations(
 async def trust_verify_source(
     source: str,
     body: Dict[str, Any],
+    request: Request,
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
@@ -1269,6 +1429,7 @@ async def trust_verify_source(
     contact lists, or document blobs.
     """
     try:
+        require_backend_trust_authority(request)
         return TrustVerificationService(brain).verify_source(user, source, body, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1278,11 +1439,13 @@ async def trust_verify_source(
 async def trust_verify_adapter_payload(
     provider: str,
     body: Dict[str, Any],
+    request: Request,
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
     """Normalize provider metadata through a privacy adapter, then append a Trust verification row. 1 execution budget unit, Free+."""
     try:
+        require_backend_trust_authority(request)
         return TrustVerificationService(brain).verify_adapter_payload(user, provider, body, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1292,11 +1455,13 @@ async def trust_verify_adapter_payload(
 async def trust_disconnect_source(
     source: str,
     body: Dict[str, Any] | None = None,
+    request: Request = None,
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
     """Disconnect a trust source and append a disconnected history row. 0 execution budget units, Free+."""
     try:
+        require_backend_trust_authority(request)
         return TrustVerificationService(brain).disconnect_source(user, source, body, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1306,11 +1471,13 @@ async def trust_disconnect_source(
 async def trust_refresh_source(
     source: str,
     body: Dict[str, Any] | None = None,
+    request: Request = None,
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
     """Trigger a metadata-only manual re-verification contract. 1 execution budget unit, Free+."""
     try:
+        require_backend_trust_authority(request)
         return TrustVerificationService(brain).refresh_source(user, source, body, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1398,6 +1565,18 @@ async def daily_check_in(
 ):
     """Daily momentum check-in. 0 execution budget units, Free+"""
     return await TourGuideService(brain).daily_check_in(user, body or {})
+
+
+@app.post("/api/v1/tour-guide/conversation", tags=["Tour Guide"])
+async def tour_guide_conversation(
+    body: Optional[Dict[str, Any]] = Body(default=None),
+    user: UserContext = Depends(get_user_context),
+):
+    """Live Havi conversation using the existing AI Router and user context."""
+    try:
+        return await TourGuideService(brain).converse(user, body or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # ============================================================================

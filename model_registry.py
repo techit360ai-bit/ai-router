@@ -30,7 +30,10 @@ class ProviderDefinition:
     id: str
     adapter: str
     api_key_env: str
+    api_key_envs: Sequence[str] = field(default_factory=tuple)
     base_url: str = ""
+    base_url_env: str = ""
+    enabled_env: str = ""
     enabled: bool = True
     region: str = "global"
     headers: Dict[str, str] = field(default_factory=dict)
@@ -141,7 +144,10 @@ class ModelRegistry:
                 id=str(raw["id"]),
                 adapter=str(raw["adapter"]),
                 api_key_env=str(raw.get("api_key_env") or ""),
+                api_key_envs=tuple(str(item) for item in (raw.get("api_key_envs") or [raw.get("api_key_env") or ""])),
                 base_url=str(raw.get("base_url") or ""),
+                base_url_env=str(raw.get("base_url_env") or ""),
+                enabled_env=str(raw.get("enabled_env") or ""),
                 enabled=bool(raw.get("enabled", True)),
                 region=str(raw.get("region") or "global"),
                 headers={str(k): str(v) for k, v in (raw.get("headers") or {}).items()},
@@ -267,7 +273,16 @@ class ModelRegistry:
     ) -> bool:
         values = env or os.environ
         provider = self.provider_for(model)
-        return provider.enabled and (not provider.api_key_env or bool(values.get(provider.api_key_env)))
+        explicitly_enabled = True
+        if provider.enabled_env:
+            explicitly_enabled = str(values.get(provider.enabled_env, "")).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        return (
+            provider.enabled
+            and explicitly_enabled
+            and (not provider.api_key_env or any(values.get(item) for item in provider.api_key_envs))
+        )
 
     def selectable_models(self, task_type: Optional[str] = None) -> List[ModelDefinition]:
         policy = self.task_policy(task_type) if task_type else None

@@ -6,6 +6,9 @@ import execution_controls
 from execution_controls import (
     ExecutionAuthorizationError,
     ExecutionRateLimiter,
+    ProviderCredentialPool,
+    AIAdmissionController,
+    ProviderSpendBudget,
     ProviderCircuitBreaker,
 )
 
@@ -34,3 +37,55 @@ async def test_user_and_workspace_rate_limits(monkeypatch) -> None:
     await limiter.check("user-a", "workspace-a")
     with pytest.raises(ExecutionAuthorizationError):
         await limiter.check("user-a", "workspace-a")
+
+
+def test_dynamic_provider_spend_budget_scales_from_base(monkeypatch) -> None:
+    monkeypatch.setenv("AI_PROVIDER_SPEND_BASE_USD_PER_MINUTE", "100")
+    monkeypatch.setenv("AI_PROVIDER_SPEND_BASE_DEMAND_UNITS", "10")
+    monkeypatch.setenv("AI_PROVIDER_SPEND_MAX_USD_PER_MINUTE", "0")
+    budget = ProviderSpendBudget()
+    assert budget.budget_for(10) == 100
+    assert budget.budget_for(100) == 1000
+    assert budget.budget_for(1_000_000) == 10_000_000
+
+
+def test_dynamic_provider_spend_budget_releases_failed_reservation(monkeypatch) -> None:
+    monkeypatch.setenv("AI_PROVIDER_SPEND_BASE_USD_PER_MINUTE", "100")
+    monkeypatch.setenv("AI_PROVIDER_SPEND_BASE_DEMAND_UNITS", "10")
+    budget = ProviderSpendBudget()
+    reservation = budget.reserve(provider="openai", estimated_cost_usd=80, user_id="u1", demand_units=10)
+    budget.settle(reservation, 0)
+    second = budget.reserve(provider="openai", estimated_cost_usd=100, user_id="u2", demand_units=10)
+    budget.settle(second, 100)
+
+
+def test_dynamic_provider_spend_budget_rejects_over_budget(monkeypatch) -> None:
+    monkeypatch.setenv("AI_PROVIDER_SPEND_BASE_USD_PER_MINUTE", "100")
+    monkeypatch.setenv("AI_PROVIDER_SPEND_BASE_DEMAND_UNITS", "10")
+    budget = ProviderSpendBudget()
+    reservation = budget.reserve(provider="openai", estimated_cost_usd=60, user_id="u1", demand_units=10)
+    with pytest.raises(ExecutionAuthorizationError):
+        budget.reserve(provider="openai", estimated_cost_usd=41, user_id="u2", demand_units=10)
+    budget.settle(reservation, 60)
+
+
+def test_provider_credential_pool_cools_down_rate_limited_key(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "one")
+    monkeypatch.setenv("OPENAI_API_KEY_2", "two")
+    pool = ProviderCredentialPool()
+    selected = pool.acquire("openai", ["OPENAI_API_KEY", "OPENAI_API_KEY_2"])
+    pool.release("openai", selected, type("ProviderRateLimitError", (), {})())
+    next_key = pool.acquire("openai", ["OPENAI_API_KEY", "OPENAI_API_KEY_2"])
+    assert next_key != selected
+    pool.release("openai", next_key)
+
+
+@pytest.mark.asyncio
+async def test_ai_admission_controller_rejects_when_queue_is_full(monkeypatch) -> None:
+    monkeypatch.setenv("AI_MAX_IN_FLIGHT", "1")
+    monkeypatch.setenv("AI_MAX_QUEUE", "0")
+    controller = AIAdmissionController()
+    first = await controller.acquire()
+    with pytest.raises(ExecutionAuthorizationError):
+        await controller.acquire()
+    first.release()

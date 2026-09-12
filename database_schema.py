@@ -1294,6 +1294,8 @@ class TrustProfile(Base):
     retention_rate_pct       = Column(Float, default=0.0, nullable=False)
     verified_team_count      = Column(Integer, default=0, nullable=False)
     milestone_count          = Column(Integer, default=0, nullable=False)
+    verified_skills_count    = Column(Integer, default=0, nullable=False)
+    verified_skills          = Column(JSON, default=lambda: [])
 
     verification_status = Column(
         SQLEnum(VerificationStatusEnum),

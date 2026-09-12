@@ -44,6 +44,30 @@ from celery.schedules import crontab
 logger = structlog.get_logger()
 
 
+def _job_user_context(payload: Dict[str, Any]):
+    from ai_router_core import UserContext, UserRole
+    raw = payload["user"]
+    return UserContext(
+        user_id=str(raw["user_id"]),
+        role=UserRole(str(raw["role"])),
+        project_id=raw.get("project_id"),
+        project_stage=raw.get("project_stage"),
+        industry=raw.get("industry"),
+        tech_stack=list(raw.get("tech_stack") or []),
+        past_feedback=list(raw.get("past_feedback") or []),
+        training_progress=dict(raw.get("training_progress") or {}),
+        time_logged_today=int(raw.get("time_logged_today") or 0),
+        tasks_completed_week=int(raw.get("tasks_completed_week") or 0),
+        days_since_update=int(raw.get("days_since_update") or 0),
+        team_size=int(raw.get("team_size") or 1),
+        has_revenue=bool(raw.get("has_revenue")),
+        beta_users_count=int(raw.get("beta_users_count") or 0),
+        compliance_items=dict(raw.get("compliance_items") or {}),
+        transparency_items=dict(raw.get("transparency_items") or {}),
+        workspace_id=raw.get("workspace_id"),
+    )
+
+
 # ============================================================================
 # CELERY APP
 # ============================================================================
@@ -104,6 +128,7 @@ celery.conf.update(
         "workers.document_cleanup_weekly":      {"queue": "scheduled"},
         "workers.impact_snapshot_daily":        {"queue": "scheduled"},
         "workers.trust_continuous_verification": {"queue": "scheduled"},
+        "workers.incubation_pipeline":          {"queue": "ai_heavy"},
     },
 )
 
@@ -1846,3 +1871,28 @@ def trust_continuous_verification(self, execute: Optional[bool] = None, limit: i
     except Exception as exc:
         logger.error("trust_continuous_verification_task_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120)
+
+
+@celery.task(
+    name="workers.incubation_pipeline",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=900,
+    time_limit=960,
+)
+def incubation_pipeline(self, payload: Dict[str, Any]):
+    """Execute the existing Incubation pipeline outside the HTTP request."""
+    try:
+        self.update_state(state="PROGRESS", meta={"stage": "running", "step": "venture_pipeline"})
+        from integration_guide import IncubationHubService, TechITAIBrain
+        user = _job_user_context(payload)
+        result = asyncio.run(
+            IncubationHubService(TechITAIBrain()).run_full_venture_pipeline(
+                user,
+                dict(payload.get("venture_data") or {}),
+            )
+        )
+        return result
+    except Exception as exc:
+        logger.error("fast_track_pipeline_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=min(300, 30 * (2 ** self.request.retries)))

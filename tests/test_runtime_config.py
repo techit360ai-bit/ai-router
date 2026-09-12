@@ -23,7 +23,8 @@ from runtime_config import (  # noqa: E402
 BASE_PROD_ENV = {
     "ENVIRONMENT": "production",
     "ALLOW_DEMO_AUTH": "false",
-    "JWT_ALGORITHM": "HS256",
+    "JWT_ALGORITHM": "RS256",
+    "JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A\\n-----END PUBLIC KEY-----",
     "JWT_SECRET": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "JWT_ISSUER": "techit-backend",
     "JWT_AUDIENCE": "techit-platform",
@@ -75,6 +76,20 @@ def test_production_requires_provider_keys() -> None:
     failed = _failed_names(env)
     assert "provider.openai" in failed
     assert "provider.anthropic" in failed
+
+
+def test_optional_agentrouter_requires_secure_configuration_only_when_enabled() -> None:
+    assert "provider.agentrouter" not in _failed_names(BASE_PROD_ENV)
+    enabled_without_key = {**BASE_PROD_ENV, "AGENTROUTER_ENABLED": "true"}
+    assert "provider.agentrouter" in _failed_names(enabled_without_key)
+    configured = {
+        **BASE_PROD_ENV,
+        "AGENTROUTER_ENABLED": "true",
+        "AGENTROUTER_API_KEY": "ak-live-agentrouter",
+        "AGENTROUTER_BASE_URL": "https://agentrouter.org/v1",
+    }
+    assert "provider.agentrouter" not in _failed_names(configured)
+    assert "provider.agentrouter_base_url" not in _failed_names(configured)
 
 
 def test_production_requires_execution_grants_and_private_storage() -> None:
