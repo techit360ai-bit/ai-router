@@ -2944,6 +2944,7 @@ class TrustVerificationService:
             product_activity_verified=bool(getattr(row, "product_activity_verified", False)),
             team_verified_count=int(getattr(row, "verified_team_count", 0) or 0),
             milestone_count=int(getattr(row, "milestone_count", 0) or 0),
+            verified_skills_count=int(getattr(row, "verified_skills_count", 0) or 0),
             github_repo_count=int(getattr(row, "github_repo_count", 0) or 0),
             github_commit_count=int(getattr(row, "github_commit_count", 0) or 0),
             github_contributor_count=int(getattr(row, "github_contributor_count", 0) or 0),
