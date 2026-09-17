@@ -83,9 +83,11 @@ from routing_engine import ComplexityTier, ModelConfig, ModelRouter
 # ============================================================================
 
 class UserRole(Enum):
+    EXPLORER        = "explorer"
     FOUNDER         = "founder"
     BUILDER         = "collaborator"
     INVESTOR        = "investor"
+    ORGANIZATION    = "organization"
     ADMIN           = "admin"
     ACCELERATOR_MGR = "accelerator_manager"
 
@@ -683,6 +685,11 @@ class UserContext:
     compliance_items:     Dict[str, bool] = field(default_factory=dict)
     transparency_items:   Dict[str, bool] = field(default_factory=dict)
     workspace_id:         Optional[str] = None
+    active_role:          Optional[str] = None
+    organization_id:      Optional[str] = None
+    resource_type:        Optional[str] = None
+    resource_id:          Optional[str] = None
+    permissions:          List[str] = field(default_factory=list)
     execution_grant:      Optional[ExecutionGrant] = None
 
     def to_prompt_context(self) -> str:
@@ -690,6 +697,9 @@ class UserContext:
         return (
             f"USER CONTEXT:\n"
             f"  Role:              {self.role.value}\n"
+            f"  Active Role:       {self.active_role or self.role.value}\n"
+            f"  Organization:      {self.organization_id or 'None'}\n"
+            f"  Resource Context:  {self.resource_type or 'None'} / {self.resource_id or 'None'}\n"
             f"  Project Stage:     {self.project_stage or 'Not started'}\n"
             f"  Industry:          {self.industry or 'General'}\n"
             f"  Tech Stack:        {', '.join(self.tech_stack) or 'None'}\n"
