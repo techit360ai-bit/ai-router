@@ -18,8 +18,7 @@
         "ALLOWED_ORIGINS",
         "MCP_BASE_URL",
         "MCP_TIMEOUT",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
+        "AI_ROUTER_MODE",
         "REQUIRE_AI_EXECUTION_GRANT",
         "AI_EXECUTION_GRANT_SECRET",
         "BACKEND_USAGE_SETTLEMENT_URL",
@@ -55,8 +54,7 @@
         "DATABASE_URL",
         "REDIS_URL",
         "CELERY_BROKER",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY"
+        "AI_ROUTER_MODE"
       ],
       "dependencies": [
         "postgres-pgvector",
@@ -108,11 +106,9 @@
     },
     {
       "name": "provider-integrations",
-      "requiredEnv": [
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY"
-      ],
       "optionalEnv": [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
         "COHERE_API_KEY",
         "GEMINI_API_KEY",
         "OPENROUTER_API_KEY",

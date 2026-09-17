@@ -78,6 +78,7 @@ from runtime_config import (
     assert_runtime_ready,
     database_engine_options,
     runtime_checks,
+    ai_router_mode,
 )
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
@@ -424,6 +425,7 @@ async def health():
         "task_types":     len(TaskType),
         "scoring_models": 20,
         "db_tables":      42,
+        "ai_router_mode": ai_router_mode(),
     }
 
 
@@ -459,6 +461,7 @@ async def ready():
     ok = all(check.ok for check in checks)
     body = {
         "status": "ready" if ok else "not_ready",
+        "ai_router_mode": ai_router_mode(),
         "checks": [
             {"name": check.name, "ok": check.ok, "detail": check.detail}
             for check in checks
