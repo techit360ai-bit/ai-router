@@ -133,10 +133,14 @@ def require_url_value(name: str, value: str, schemes: set[str]) -> None:
 
 
 def validate_integrations() -> None:
-    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
-        value = require_value(name)
-        if "replace" in value.lower() or "your_key_here" in value.lower():
-            fail(f"{name} must not be a placeholder")
+    mode = os.getenv("AI_ROUTER_MODE", "llm").strip().lower()
+    if mode not in {"deterministic", "hybrid", "llm"}:
+        fail("AI_ROUTER_MODE must be deterministic, hybrid, or llm")
+    if mode == "llm":
+        for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+            value = require_value(name)
+            if "replace" in value.lower() or "your_key_here" in value.lower():
+                fail(f"{name} must not be a placeholder")
     from model_registry import ModelRegistry
     ModelRegistry()
 

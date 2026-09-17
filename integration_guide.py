@@ -28,6 +28,7 @@ Services
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -1425,7 +1426,7 @@ class AdminMonitorService:
         self, admin_context: UserContext, signals: List[Dict]
     ) -> Dict:
         """POST /api/v1/admin/monitor/scan -- 0 execution budget units, Enterprise only"""
-        if admin_context.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
+        if admin_context.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR, UserRole.ORGANIZATION):
             return {"error": "Admin access required."}
         ctx = AgentContext(user_context=admin_context, trigger_event={"anomaly_signals": signals})
         r   = await self.brain.trigger_agent(AgentType.ADMIN_MONITOR, ctx)
@@ -1492,6 +1493,16 @@ class GSISService:
         self, user_context: UserContext, component_scores: Dict
     ) -> Dict:
         """POST /api/v1/gsis/compute -- 1 execution budget unit"""
+        mode = os.getenv("AI_ROUTER_MODE", "llm").strip().lower()
+        deterministic = self.compute(component_scores)
+        if mode == "deterministic" or (mode == "hybrid" and not (os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY"))):
+            return {
+                **deterministic,
+                "narrative": None,
+                "ai_available": False,
+                "ai_enrichment_requested": False,
+                "status": "provisional_human_review_required",
+            }
         ctx = AgentContext(
             user_context=user_context,
             trigger_event={"scores": component_scores},

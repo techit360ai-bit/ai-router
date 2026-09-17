@@ -78,12 +78,14 @@ from runtime_config import (
     assert_runtime_ready,
     database_engine_options,
     runtime_checks,
+    ai_router_mode,
 )
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
 from live_domain_repository import LiveDomainRepository
 from hardening_metrics import METRICS
 from production_calibration import ProductionCalibrationError, production_report, record_outcome
+from agent_orchestration import AgentContext, AgentType
 
 logger = structlog.get_logger()
 
@@ -199,12 +201,14 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
 
 # Tolerant aliases so tokens minted by the Node backend map onto our enums.
 _ROLE_ALIASES = {
+    "explorer": UserRole.EXPLORER,
+    "user": UserRole.EXPLORER,
     "founder": UserRole.FOUNDER,
     "collaborator": UserRole.BUILDER,
     "builder": UserRole.BUILDER,
     "investor": UserRole.INVESTOR,
-    "organisation": UserRole.ACCELERATOR_MGR,
-    "organization": UserRole.ACCELERATOR_MGR,
+    "organisation": UserRole.ORGANIZATION,
+    "organization": UserRole.ORGANIZATION,
     "accelerator_manager": UserRole.ACCELERATOR_MGR,
     "admin": UserRole.ADMIN,
 }
@@ -212,15 +216,15 @@ _ROLE_ALIASES = {
 
 def _role_from_claim(value: Any) -> UserRole:
     if isinstance(value, str):
-        return _ROLE_ALIASES.get(value.strip().lower(), UserRole.FOUNDER)
-    return UserRole.FOUNDER
+        return _ROLE_ALIASES.get(value.strip().lower(), UserRole.EXPLORER)
+    return UserRole.EXPLORER
 
 
 def _demo_user_context() -> UserContext:
     """Demo context for local development only (ALLOW_DEMO_AUTH)."""
     return UserContext(
         user_id="demo_user_001",
-        role=UserRole.FOUNDER,
+        role=UserRole.EXPLORER,
         project_id=None,
         project_stage="idea",
         industry="edtech",
@@ -261,6 +265,11 @@ def _context_from_claim(user_id: str, payload: Dict[str, Any]) -> UserContext:
         team_size=_int("team_size", 1),
         has_revenue=bool(payload.get("has_revenue", False)),
         beta_users_count=_int("beta_users_count", 0),
+        active_role=payload.get("active_role") or payload.get("activeRole"),
+        organization_id=payload.get("organization_id") or payload.get("organizationId"),
+        resource_type=payload.get("resource_type") or payload.get("resourceType"),
+        resource_id=payload.get("resource_id") or payload.get("resourceId"),
+        permissions=payload.get("permissions") or [],
     )
 
 
@@ -424,6 +433,7 @@ async def health():
         "task_types":     len(TaskType),
         "scoring_models": 20,
         "db_tables":      42,
+        "ai_router_mode": ai_router_mode(),
     }
 
 
@@ -459,6 +469,7 @@ async def ready():
     ok = all(check.ok for check in checks)
     body = {
         "status": "ready" if ok else "not_ready",
+        "ai_router_mode": ai_router_mode(),
         "checks": [
             {"name": check.name, "ok": check.ok, "detail": check.detail}
             for check in checks
@@ -1400,6 +1411,37 @@ async def trust_notifications_preview(
     return TrustVerificationService(brain).preview_notifications(user, body)
 
 
+@app.post("/api/v1/verification/evidence/analyze", tags=["Verification"])
+async def verification_evidence_analyze(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Advisory evidence analysis only. Backend policies remain authoritative."""
+    if not getattr(user, "execution_grant", None):
+        raise HTTPException(status_code=403, detail="AI execution grant is required")
+    bounded = {key: body.get(key) for key in ("role", "claim", "source", "metadata", "evidence_text") if key in body}
+    result = await brain.trigger_agent(
+        AgentType.EVIDENCE_RESEARCH,
+        AgentContext(user_context=user, trigger_event={"verification_evidence": bounded}, shared_memory={}),
+    )
+    output = result.output if isinstance(result.output, dict) else {}
+    confidence = output.get("confidence", output.get("provisional_score", 0))
+    try:
+        confidence = max(0, min(1, float(confidence))) if float(confidence) <= 1 else max(0, min(1, float(confidence) / 100))
+    except (TypeError, ValueError):
+        confidence = 0
+    return {
+        "claims": output.get("claims", []),
+        "evidence_classification": output.get("evidence_classification", output.get("research_mode", "unclassified")),
+        "possible_contradictions": output.get("contradictory_evidence", []),
+        "confidence": confidence,
+        "duplicate_organization_hints": output.get("duplicate_organization_hints", []),
+        "manual_review_priority": output.get("manual_review_priority", "normal"),
+        "human_review_required": True,
+        "authorization_authority": False,
+    }
+
+
 # ============================================================================
 # TOUR GUIDE
 # ============================================================================
@@ -2051,7 +2093,7 @@ async def admin_monitor_scan(
     user: UserContext = Depends(get_user_context),
 ):
     """Anomaly scan over signals. 0 execution budget units, Admin only. Body: { signals: [...] }"""
-    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
+    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR, UserRole.ORGANIZATION):
         raise HTTPException(status_code=403, detail="Admin access required")
     return await AdminMonitorService(brain).run_anomaly_scan(user, body.get("signals", []))
 
@@ -2062,7 +2104,7 @@ async def admin_stagnation_roster(
     user: UserContext = Depends(get_user_context),
 ):
     """Stagnating-project roster (decay-based). 0 execution budget units. Body: { projects: [...] }"""
-    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR):
+    if user.role not in (UserRole.ADMIN, UserRole.ACCELERATOR_MGR, UserRole.ORGANIZATION):
         raise HTTPException(status_code=403, detail="Admin access required")
     return await AdminMonitorService(brain).check_stagnation_roster(user, body.get("projects", []))
 
