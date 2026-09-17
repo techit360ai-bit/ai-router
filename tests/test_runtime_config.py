@@ -17,6 +17,7 @@ from runtime_config import (  # noqa: E402
     database_engine_options,
     read_positive_int,
     runtime_checks,
+    ai_router_mode,
 )
 
 
@@ -90,6 +91,23 @@ def test_optional_agentrouter_requires_secure_configuration_only_when_enabled() 
     }
     assert "provider.agentrouter" not in _failed_names(configured)
     assert "provider.agentrouter_base_url" not in _failed_names(configured)
+def test_deterministic_mode_does_not_require_provider_keys() -> None:
+    env = {key: value for key, value in BASE_PROD_ENV.items() if key not in {"OPENAI_API_KEY", "ANTHROPIC_API_KEY"}}
+    env["AI_ROUTER_MODE"] = "deterministic"
+    assert _failed_names(env) == set()
+    assert_runtime_ready(env)
+
+
+def test_hybrid_mode_allows_optional_provider_keys() -> None:
+    env = {key: value for key, value in BASE_PROD_ENV.items() if key not in {"OPENAI_API_KEY", "ANTHROPIC_API_KEY"}}
+    env["AI_ROUTER_MODE"] = "hybrid"
+    assert _failed_names(env) == set()
+    assert ai_router_mode(env) == "hybrid"
+
+
+def test_invalid_mode_fails_readiness() -> None:
+    env = {**BASE_PROD_ENV, "AI_ROUTER_MODE": "magic"}
+    assert "ai.mode" in _failed_names(env)
 
 
 def test_production_requires_execution_grants_and_private_storage() -> None:
@@ -155,6 +173,9 @@ def main() -> int:
         test_valid_production_runtime_passes,
         test_production_demo_auth_fails_closed,
         test_production_requires_provider_keys,
+        test_deterministic_mode_does_not_require_provider_keys,
+        test_hybrid_mode_allows_optional_provider_keys,
+        test_invalid_mode_fails_readiness,
         test_production_requires_execution_grants_and_private_storage,
         test_production_rejects_local_dependency_urls,
         test_production_rejects_wildcard_or_insecure_cors,
