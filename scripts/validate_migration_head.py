@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_HEAD = "d5e6f7a8b9c0"
+EXPECTED_HEAD = "b7e2f1a9c4d0"
 
 
 def main() -> int:
