@@ -78,6 +78,7 @@ from runtime_config import (
     assert_runtime_ready,
     database_engine_options,
     runtime_checks,
+    ai_router_mode,
 )
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
@@ -85,6 +86,7 @@ from live_domain_repository import LiveDomainRepository
 from hardening_metrics import METRICS
 from production_calibration import ProductionCalibrationError, production_report, record_outcome
 from admin_service_auth import require_admin_telemetry_service
+from agent_orchestration import AgentContext, AgentType
 
 logger = structlog.get_logger()
 
@@ -435,6 +437,9 @@ async def health():
         "registered_models": len(registry.models),
         "db_tables":      len(Base.registry.mappers),
         "generated_at":   __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "scoring_models": 20,
+        "db_tables":      42,
+        "ai_router_mode": ai_router_mode(),
     }
 
 
@@ -470,6 +475,7 @@ async def ready():
     ok = all(check.ok for check in checks)
     body = {
         "status": "ready" if ok else "not_ready",
+        "ai_router_mode": ai_router_mode(),
         "checks": [
             {"name": check.name, "ok": check.ok, "detail": check.detail}
             for check in checks
@@ -1426,6 +1432,37 @@ async def trust_notifications_preview(
 ):
     """Build founder-only Trust notification intents without executing delivery. 0 execution budget units, Free+."""
     return TrustVerificationService(brain).preview_notifications(user, body)
+
+
+@app.post("/api/v1/verification/evidence/analyze", tags=["Verification"])
+async def verification_evidence_analyze(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Advisory evidence analysis only. Backend policies remain authoritative."""
+    if not getattr(user, "execution_grant", None):
+        raise HTTPException(status_code=403, detail="AI execution grant is required")
+    bounded = {key: body.get(key) for key in ("role", "claim", "source", "metadata", "evidence_text") if key in body}
+    result = await brain.trigger_agent(
+        AgentType.EVIDENCE_RESEARCH,
+        AgentContext(user_context=user, trigger_event={"verification_evidence": bounded}, shared_memory={}),
+    )
+    output = result.output if isinstance(result.output, dict) else {}
+    confidence = output.get("confidence", output.get("provisional_score", 0))
+    try:
+        confidence = max(0, min(1, float(confidence))) if float(confidence) <= 1 else max(0, min(1, float(confidence) / 100))
+    except (TypeError, ValueError):
+        confidence = 0
+    return {
+        "claims": output.get("claims", []),
+        "evidence_classification": output.get("evidence_classification", output.get("research_mode", "unclassified")),
+        "possible_contradictions": output.get("contradictory_evidence", []),
+        "confidence": confidence,
+        "duplicate_organization_hints": output.get("duplicate_organization_hints", []),
+        "manual_review_priority": output.get("manual_review_priority", "normal"),
+        "human_review_required": True,
+        "authorization_authority": False,
+    }
 
 
 # ============================================================================
