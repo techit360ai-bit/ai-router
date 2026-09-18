@@ -10,7 +10,8 @@ from urllib.parse import urlparse
 
 PROD_ENVS = {"production", "staging"}
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
-EXPECTED_ALEMBIC_HEAD = "fa34bc56de78"
+AI_ROUTER_MODES = {"deterministic", "hybrid", "llm"}
+EXPECTED_ALEMBIC_HEAD = "b7e2f1a9c4d0"
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,12 @@ def bool_env(value: str | None, *, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def ai_router_mode(env: Mapping[str, str] | None = None) -> str:
+    values = env or os.environ
+    mode = values.get("AI_ROUTER_MODE", "llm").strip().lower()
+    return mode if mode in AI_ROUTER_MODES else "invalid"
+
+
 def _is_placeholder(value: str) -> bool:
     return any(token in value.lower() for token in ("replace", "your_key_here", "test-secret"))
 
@@ -68,6 +75,13 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
     values = env or os.environ
     env_name = environment(values)
     checks: list[RuntimeCheck] = []
+
+    mode = ai_router_mode(values)
+    checks.append(RuntimeCheck(
+        "ai.mode",
+        mode in AI_ROUTER_MODES,
+        "AI_ROUTER_MODE must be deterministic, hybrid, or llm",
+    ))
 
     allow_demo = bool_env(values.get("ALLOW_DEMO_AUTH"), default=True)
     checks.append(RuntimeCheck(
@@ -127,7 +141,7 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
     checks.append(_check_url("celery.broker", values.get("CELERY_BROKER") or values.get("REDIS_URL"), {"redis", "rediss"}, env_name))
     checks.append(_check_url("mcp.base_url", values.get("MCP_BASE_URL"), {"https"}, env_name))
 
-    if env_name in PROD_ENVS:
+    if env_name in PROD_ENVS and mode == "llm":
         for name, env_key in (
             ("provider.openai", "OPENAI_API_KEY"),
             ("provider.anthropic", "ANTHROPIC_API_KEY"),

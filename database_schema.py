@@ -55,9 +55,11 @@ Base = declarative_base()
 # ============================================================================
 
 class RoleEnum(str, Enum):
+    EXPLORER        = "explorer"
     FOUNDER         = "founder"
     COLLABORATOR    = "collaborator"
     INVESTOR        = "investor"
+    ORGANIZATION    = "organization"
     ADMIN           = "admin"
     ACCELERATOR_MGR = "accelerator_manager"
 
