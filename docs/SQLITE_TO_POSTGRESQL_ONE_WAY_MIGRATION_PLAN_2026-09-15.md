@@ -9,7 +9,7 @@
 
 Completed in the working tree:
 
-- Reconciled Alembic to the single approved head `fa34bc56de78` and added `database_migration_audits`.
+- Reconciled Alembic to the single approved head `b7e2f1a9c4d0` and added `database_migration_audits`.
 - Added read-only SQLite inventory/import tooling, PostgreSQL structural/parity verification, quarantine reporting, hashed migration reports, bounded batching, `--resume`, and `--resume-from`.
 - Enforced PostgreSQL-only runtime URLs for API persistence, workers, telemetry, live-domain storage, and settlement outbox; the in-memory live-domain seam now requires explicit test opt-in.
 - Removed runtime settlement schema auto-creation; Alembic owns the outbox table.
@@ -77,7 +77,7 @@ The application already has a PostgreSQL-first foundation: SQLAlchemy models in 
 
 ### 2.3 Migration-head risk
 
-The migration graph was reconciled and the approved single head is `fa34bc56de78`; `scripts/validate_migration_head.py` and readiness checks enforce it. The migration must not proceed against an ambiguous or stale Alembic head contract.
+The migration graph was reconciled and the approved single head is `b7e2f1a9c4d0`; `scripts/validate_migration_head.py` and readiness checks enforce it. The migration must not proceed against an ambiguous or stale Alembic head contract.
 
 ## 3. Goals
 
