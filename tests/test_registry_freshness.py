@@ -57,6 +57,13 @@ def test_production_rejects_stale_registry(tmp_path: Path, monkeypatch: pytest.M
         ModelRegistry(str(model_path), str(policy_path))
 
 
+def test_bundled_registry_is_fresh_for_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("MODEL_REGISTRY_MAX_AGE_DAYS", raising=False)
+
+    ModelRegistry()
+
+
 def test_invalid_registry_schema_fails_closed(tmp_path: Path) -> None:
     model_path, policy_path = _copy_registry_files(tmp_path)
     registry = json.loads(model_path.read_text(encoding="utf-8"))
