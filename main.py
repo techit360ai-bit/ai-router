@@ -78,11 +78,14 @@ from gsis_v2_persistence import (
     save_benchmark,
 )
 from runtime_config import (
+    EXPECTED_ALEMBIC_HEAD,
     PROD_ENVS,
     RuntimeCheck,
     RuntimeConfigError,
     assert_runtime_ready,
     database_engine_options,
+    migration_head_check,
+    require_postgres_url,
     runtime_checks,
 )
 from async_jobs import async_jobs_enabled, job_status, submit_incubation_job
@@ -402,7 +405,7 @@ def _db_session_factory():
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
 
-        database_url = os.getenv("DATABASE_URL", "postgresql://techit:password@postgres:5432/techit_db")
+        database_url = require_postgres_url(os.getenv("DATABASE_URL"))
         _db_engine = create_engine(database_url, **database_engine_options(database_url))
         _DBSession = sessionmaker(bind=_db_engine, expire_on_commit=False)
     return _DBSession
@@ -465,6 +468,19 @@ async def ready():
         db_detail = str(exc)
 
     checks.append(RuntimeCheck("database.ping", db_ok, db_detail))
+    if db_ok and ENVIRONMENT in PROD_ENVS:
+        migration_detail = "alembic_version unavailable"
+        try:
+            Session = _db_session_factory()
+            session = Session()
+            try:
+                version = session.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+            finally:
+                session.close()
+            checks.append(migration_head_check(version))
+        except Exception as exc:  # noqa: BLE001
+            migration_detail = str(exc)
+            checks.append(RuntimeCheck("database.migration_head", False, migration_detail))
     ok = all(check.ok for check in checks)
     body = {
         "status": "ready" if ok else "not_ready",

@@ -15,7 +15,7 @@ The target behavior is controlled degradation: queue work that can wait, reject 
 | AI routing | Async calls, model fallback, retries, circuit breakers, cache, user/workspace limits | Add admission queues, provider/key bulkheads, durable jobs, and global demand budgets |
 | Provider credentials | One `api_key_env` per provider | Add secret references for multiple key slots with health and cooldown state |
 | Backend | Express routes and route-specific limits | Add global distributed limits, stateless replicas, and PostgreSQL |
-| Persistence | SQLite production fallback and local JSON development path | PostgreSQL as the authoritative multi-replica store; retain SQLite for local use |
+| Persistence | Legacy SQLite/local JSON compatibility paths | PostgreSQL as the sole authoritative store; SQLite is migration input or archive only |
 | Frontend | Vite + React, lazy routes, shared API clients, IndexedDB/PWA resilience | Add request coalescing, cache validators, polling backoff, and queue-aware states |
 | Fast-Track | Existing intake, simulated progress, synchronous full pipeline, results dashboard | Preserve result contract; submit long work as durable jobs with real progress |
 | Observability | Execution telemetry and hardening metrics | Add queue, provider-key, database-pool, and frontend saturation dashboards |

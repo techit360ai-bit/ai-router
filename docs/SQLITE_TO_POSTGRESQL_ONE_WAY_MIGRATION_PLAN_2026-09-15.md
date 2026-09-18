@@ -1,9 +1,38 @@
 # AI Router SQLite to PostgreSQL One-Way Migration Plan
 
-**Status:** Plan only; implementation has not started  
+**Status:** Repository implementation production-ready; live-environment preflight and one-way cutover pending external execution
 **Date:** 2026-09-15  
 **Repository:** `techit360ai-bit/ai-router`  
 **Target:** PostgreSQL 16 with pgvector as the sole AI Router runtime database
+
+## Implementation Checkpoint — 2026-09-16
+
+Completed in the working tree:
+
+- Reconciled Alembic to the single approved head `fa34bc56de78` and added `database_migration_audits`.
+- Added read-only SQLite inventory/import tooling, PostgreSQL structural/parity verification, quarantine reporting, hashed migration reports, bounded batching, `--resume`, and `--resume-from`.
+- Enforced PostgreSQL-only runtime URLs for API persistence, workers, telemetry, live-domain storage, and settlement outbox; the in-memory live-domain seam now requires explicit test opt-in.
+- Removed runtime settlement schema auto-creation; Alembic owns the outbox table.
+- Added readiness migration-head validation, the static SQLite-retirement release gate, and PostgreSQL CI integration coverage.
+- Added fail-closed `scripts/migration_preflight.py` for source authority/inventory, read-only snapshot, target head/pgvector, backup/PITR, retention, freeze-window, and operator sign-off evidence.
+- Converted settlement persistence coverage from SQLite to PostgreSQL.
+- Verified the full Alembic chain on a fresh PostgreSQL 16 + pgvector database.
+- Rehearsed a populated SQLite import, idempotent resume, audit recording, report hashing, vector/index/constraint checks, and source parity on disposable PostgreSQL databases.
+
+Verification at this checkpoint:
+
+- `205 passed, 1 skipped` for the local suite; the skipped test is the PostgreSQL-only outbox integration when no test URL is supplied locally.
+- `python3 scripts/release_gate.py` passes all gates: deployment contract, hardening contracts, offline evaluation, migration head, SQLite retirement, scalability, and full pytest.
+- `scripts/migration_preflight.py` fails closed without explicit source/inventory, operator, retention, backup/PITR, freeze-window, and cutover approval evidence.
+- `13 passed` when the PostgreSQL integration set is run against the disposable pgvector database.
+- Static SQLite retirement, single-head validation, compilation, fresh-schema migration, importer resume, and source parity checks pass.
+
+Not yet executable from this repository alone:
+
+- Discovery and approval of any authoritative production SQLite source and its retention owner.
+- Production target/PITR confirmation, migration window, write-freeze policy, and cutover operator sign-off must be supplied to `scripts/migration_preflight.py`; repository code cannot invent those external facts.
+- Shadow comparison against real production data and workload.
+- Production snapshot, import, cutover, post-cutover smoke verification, and archival/retention execution. These require the real production PostgreSQL endpoint, any real legacy source path, backup provider evidence, credentials, and an authorized operator.
 
 ## 1. Decision Summary
 
@@ -48,7 +77,7 @@ The application already has a PostgreSQL-first foundation: SQLAlchemy models in 
 
 ### 2.3 Migration-head risk
 
-`alembic heads` currently reports `ef12ab34cd56` while `scripts/validate_migration_head.py` expects `cd34ef56a7b9`. Before data migration, the migration graph must be reconciled and a single approved head recorded. The migration must not proceed against an ambiguous or stale Alembic head contract.
+The migration graph was reconciled and the approved single head is `fa34bc56de78`; `scripts/validate_migration_head.py` and readiness checks enforce it. The migration must not proceed against an ambiguous or stale Alembic head contract.
 
 ## 3. Goals
 
@@ -318,7 +347,7 @@ Commands must support `--dry-run`, `--source`, `--target`, `--table`, `--batch-s
 - `POSTGRES_PASSWORD`/secret management must be configured outside source control.
 - Pool settings must be bounded and compatible with API + worker + scheduler concurrency.
 - Migration role credentials must be separate from runtime role credentials where supported.
-- `AI_SETTLEMENT_OUTBOX_AUTO_CREATE` should remain disabled; the table must come from Alembic.
+- Runtime outbox schema auto-creation is removed; the table must come from Alembic.
 - `AI_SETTLEMENT_OUTBOX_ENABLED` remains enabled only when PostgreSQL and the settlement endpoint are ready.
 
 ### Docker/CI changes

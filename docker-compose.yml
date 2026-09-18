@@ -138,11 +138,14 @@ services:
       dockerfile: Dockerfile.worker
     command: celery -A workers.workers beat --loglevel=info
     environment:
+      - DATABASE_URL=postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db
       - CELERY_BROKER=redis://redis:6379
       - REDIS_URL=redis://redis:6379
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - PYTHONPATH=/app
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
       worker:

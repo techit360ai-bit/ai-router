@@ -1,4 +1,3 @@
-import pgvector.sqlalchemy
 """fix_embeddings
 
 Revision ID: 79e83ff518e5
@@ -18,17 +17,20 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     # Convert existing ARRAY columns to pgvector VECTOR type
     op.alter_column("idea_embeddings", "embedding",
         existing_type=postgresql.ARRAY(sa.DOUBLE_PRECISION(precision=53)),
         type_=pgvector.Vector(dim=1536),
-        existing_nullable=True
+        existing_nullable=True,
+        postgresql_using="embedding::vector"
     )
 
     op.alter_column("user_skill_embeddings", "embedding",
         existing_type=postgresql.ARRAY(sa.DOUBLE_PRECISION(precision=53)),
         type_=pgvector.Vector(dim=1536),
-        existing_nullable=True
+        existing_nullable=True,
+        postgresql_using="embedding::vector"
     )
 
 
@@ -37,11 +39,13 @@ def downgrade() -> None:
     op.alter_column("user_skill_embeddings", "embedding",
         existing_type=pgvector.Vector(dim=1536),
         type_=postgresql.ARRAY(sa.DOUBLE_PRECISION(precision=53)),
-        existing_nullable=True
+        existing_nullable=True,
+        postgresql_using="embedding::real[]"
     )
 
     op.alter_column("idea_embeddings", "embedding",
         existing_type=pgvector.Vector(dim=1536),
         type_=postgresql.ARRAY(sa.DOUBLE_PRECISION(precision=53)),
-        existing_nullable=True
+        existing_nullable=True,
+        postgresql_using="embedding::real[]"
     )

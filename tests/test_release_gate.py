@@ -12,15 +12,19 @@ def test_release_gate_runs_hardening_contracts_before_full_pytest() -> None:
         "hardening-contracts",
         "offline-evaluation",
         "migration-head",
+        "postgres-only-persistence",
         "scalability-readiness",
         "pytest",
     ]
     assert gates[1][2]["ENVIRONMENT"] == "production"
     assert gates[1][2]["ALLOW_DEMO_AUTH"] == "false"
+    assert gates[1][2]["JWT_ALGORITHM"] == "RS256"
+    assert "BEGIN PUBLIC KEY" in gates[1][2]["JWT_PUBLIC_KEY"]
     assert gates[1][2]["REQUIRE_AI_EXECUTION_GRANT"] == "true"
     assert gates[2][1][2:4] == ["pytest", "-q"]
     assert gates[3][1][-1] == "scripts/validate_offline_evaluation.py"
     assert gates[4][1][-1] == "scripts/validate_migration_head.py"
-    assert gates[5][1][-1] == "scripts/scalability_check.py"
-    assert gates[6][2]["ENVIRONMENT"] == "development"
-    assert gates[6][1][-2:] == ["pytest", "-q"]
+    assert gates[5][1][-1] == "scripts/retire_sqlite_paths.py"
+    assert gates[6][1][-1] == "scripts/scalability_check.py"
+    assert gates[7][2]["ENVIRONMENT"] == "development"
+    assert gates[7][1][-2:] == ["pytest", "-q"]

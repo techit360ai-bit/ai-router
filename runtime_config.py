@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 PROD_ENVS = {"production", "staging"}
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
+EXPECTED_ALEMBIC_HEAD = "fa34bc56de78"
 
 
 @dataclass(frozen=True)
@@ -212,6 +213,7 @@ def database_engine_options(database_url: str, env: Mapping[str, str] | None = N
     defaults keep a bad database connection from holding /ready open for tens of
     seconds while still allowing operators to loosen the timeout temporarily.
     """
+    require_postgres_url(database_url)
     values = env or os.environ
     connect_timeout = read_positive_int(values, "DATABASE_CONNECT_TIMEOUT_SECONDS", 5, 60)
     options: dict[str, object] = {
@@ -220,6 +222,29 @@ def database_engine_options(database_url: str, env: Mapping[str, str] | None = N
         "max_overflow": 5,
         "pool_timeout": read_positive_int(values, "DATABASE_POOL_TIMEOUT_SECONDS", 5, 60),
     }
-    if urlparse(database_url).scheme.startswith("postgres"):
-        options["connect_args"] = {"connect_timeout": connect_timeout}
+    options["connect_args"] = {"connect_timeout": connect_timeout}
     return options
+
+
+def is_postgres_url(database_url: str | None) -> bool:
+    """Return whether a database URL targets the supported PostgreSQL authority."""
+    return bool(database_url) and urlparse(str(database_url)).scheme in {"postgres", "postgresql"}
+
+
+def require_postgres_url(database_url: str | None, setting: str = "DATABASE_URL") -> str:
+    """Return a validated PostgreSQL URL or fail closed."""
+    value = str(database_url or "").strip()
+    if not value:
+        raise RuntimeConfigError(f"{setting} is required")
+    if not is_postgres_url(value):
+        raise RuntimeConfigError(f"{setting} must use postgres:// or postgresql://")
+    return value
+
+
+def migration_head_check(actual_head: str | None) -> RuntimeCheck:
+    """Return the readiness result for the deployed PostgreSQL schema revision."""
+    return RuntimeCheck(
+        "database.migration_head",
+        actual_head == EXPECTED_ALEMBIC_HEAD,
+        f"expected={EXPECTED_ALEMBIC_HEAD}; actual={actual_head or 'none'}",
+    )

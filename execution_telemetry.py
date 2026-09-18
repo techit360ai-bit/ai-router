@@ -18,7 +18,10 @@ class ExecutionTelemetryRecorder:
         self.enabled = os.getenv("AI_EXECUTION_TELEMETRY_ENABLED", "true").lower() not in {
             "0", "false", "no"
         }
-        self.database_url = os.getenv("DATABASE_URL", "")
+        self.database_url = os.getenv("DATABASE_URL", "").strip()
+        if self.database_url:
+            from runtime_config import require_postgres_url
+            self.database_url = require_postgres_url(self.database_url)
         self._engine: Optional[Any] = None
         self.errors: list[str] = []
 
@@ -32,9 +35,10 @@ class ExecutionTelemetryRecorder:
 
     def _record_sync(self, event: dict[str, Any]) -> None:
         from sqlalchemy import create_engine, text
+        from runtime_config import database_engine_options
 
         if self._engine is None:
-            self._engine = create_engine(self.database_url, pool_pre_ping=True)
+            self._engine = create_engine(self.database_url, **database_engine_options(self.database_url))
         statement = text("""
             INSERT INTO ai_usage_ledger (
                 request_id, user_id, workspace_id, provider, model, task_type,

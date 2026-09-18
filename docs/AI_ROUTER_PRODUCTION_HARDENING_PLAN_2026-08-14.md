@@ -85,11 +85,11 @@ Items 1–10 are implemented as code and release contracts. Consequential decisi
 - `c711313` — expanded CI release gates for the production environment, P0/P1 contracts, deterministic evaluation, migration head, and deployment runbook.
 - `f09927b` — completed investor ranking/parity auditing, immutable scaffold artifact registration, authenticated deployment broker integration, full scaffold JSON Schema validation, stack-selection rationale, hardening metrics/alerts, human override tracking, and database-backed production calibration outcomes.
 
-Verification at this checkpoint: `python3 scripts/release_gate.py` => OK; `pytest -q` => `160 passed`; hardening contracts => `44 passed`; `alembic heads` => `bc23de45fa67`. Existing deprecation and local pytest-cache permission warnings remain.
+Verification at this historical checkpoint: `python3 scripts/release_gate.py` => OK; `pytest -q` => `160 passed`; hardening contracts => `44 passed`; `alembic heads` => `bc23de45fa67`. The current approved head is `fa34bc56de78`; use the current migration plan and release runbook for deployment.
 
 ## Production Activation
 
-1. Apply Alembic head `bc23de45fa67`.
+1. Apply the current Alembic head `fa34bc56de78`.
 2. Record verified outcomes through `/api/v1/admin/calibration/outcomes`.
 3. Monitor `/api/v1/admin/calibration/report`; do not change calibration status until it reports `approved` from real production outcomes.
 4. Follow `docs/AI_ROUTER_PRODUCTION_RELEASE_RUNBOOK.md` for deployment and rollback.

@@ -221,13 +221,12 @@ def _get_db():
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+    from runtime_config import database_engine_options, require_postgres_url
 
-    engine = create_engine(
-        os.getenv("DATABASE_URL", "postgresql://techit:password@postgres:5432/techit_db"),
-        pool_pre_ping=True,
-        pool_size=2,
-        max_overflow=3,
-    )
+    database_url = require_postgres_url(os.getenv("DATABASE_URL"))
+    options = database_engine_options(database_url)
+    options.update(pool_size=2, max_overflow=3)
+    engine = create_engine(database_url, **options)
     Session = sessionmaker(bind=engine)
 
     @contextmanager
