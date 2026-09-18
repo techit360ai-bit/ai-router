@@ -89,6 +89,7 @@ class ModelConfig:
     strengths: List[str]
     use_cases: List[Any] = field(default_factory=list)
     api_key_env: str = ""
+    api_key_envs: List[str] = field(default_factory=list)
     adapter: str = ""
     base_url: str = ""
     quality_score: float = 70
@@ -135,7 +136,8 @@ class ModelRouter:
 
     def _to_config(self, model: ModelDefinition) -> ModelConfig:
         provider = self.registry.provider_for(model)
-        base_url = os.path.expandvars(provider.base_url)
+        base_url = os.getenv(provider.base_url_env, provider.base_url) if provider.base_url_env else provider.base_url
+        base_url = os.path.expandvars(base_url)
         return ModelConfig(
             id=model.id,
             provider=model.provider,
@@ -143,6 +145,7 @@ class ModelRouter:
             max_context_length=model.context_window,
             strengths=sorted(model.tags),
             api_key_env=provider.api_key_env,
+            api_key_envs=list(provider.api_key_envs),
             adapter=provider.adapter,
             base_url=base_url,
             quality_score=model.quality_score,

@@ -117,6 +117,7 @@ class FounderTrustProfile:
     product_activity_verified: bool = False
     team_verified_count: int = 0
     milestone_count: int = 0
+    verified_skills_count: int = 0
     github_repo_count: int = 0
     github_commit_count: int = 0
     github_contributor_count: int = 0
@@ -152,6 +153,7 @@ class TrustEngineComputer:
         "product_activity": 10.0,
         "team_verified": 10.0,
         "milestones": 5.0,
+        "verified_skills": 20.0,
     }
 
     SYNC_INTERVALS = {
@@ -219,6 +221,8 @@ class TrustEngineComputer:
             add_signal("team_verified", min(cls.WEIGHTS["team_verified"], profile.team_verified_count * 2.5))
         if profile.milestone_count:
             add_signal("milestones", min(cls.WEIGHTS["milestones"], profile.milestone_count * 1.25))
+        if profile.verified_skills_count:
+            add_signal("verified_skills", min(cls.WEIGHTS["verified_skills"], profile.verified_skills_count * 4.0))
 
         trust_score = round(min(100.0, score), 2)
         badges = cls.compute_badges(profile, now=now)

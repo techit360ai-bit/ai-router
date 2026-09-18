@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "version": "2026-08-10.1",
-  "updated_at": "2026-08-14T00:00:00Z",
+  "version": "2026-08-28.1",
+  "updated_at": "2026-08-28T00:00:00Z",
   "owner": "platform-routing",
   "providers": [
-    {"id": "openai", "adapter": "openai_responses", "api_key_env": "OPENAI_API_KEY"},
-    {"id": "anthropic", "adapter": "anthropic_messages", "api_key_env": "ANTHROPIC_API_KEY"},
+    {"id": "openai", "adapter": "openai_responses", "api_key_env": "OPENAI_API_KEY", "api_key_envs": ["OPENAI_API_KEY", "OPENAI_API_KEY_2", "OPENAI_API_KEY_3", "OPENAI_API_KEY_4"]},
+    {"id": "agentrouter", "adapter": "openai_responses", "api_key_env": "AGENTROUTER_API_KEY", "base_url": "https://agentrouter.org/v1", "base_url_env": "AGENTROUTER_BASE_URL", "enabled_env": "AGENTROUTER_ENABLED"},
+    {"id": "anthropic", "adapter": "anthropic_messages", "api_key_env": "ANTHROPIC_API_KEY", "api_key_envs": ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_2", "ANTHROPIC_API_KEY_3", "ANTHROPIC_API_KEY_4"]},
     {"id": "google", "adapter": "gemini_generate", "api_key_env": "GEMINI_API_KEY"},
     {"id": "cohere", "adapter": "cohere_embed", "api_key_env": "COHERE_API_KEY"},
     {"id": "openrouter", "adapter": "openai_compatible", "api_key_env": "OPENROUTER_API_KEY", "base_url": "https://openrouter.ai/api/v1/chat/completions"},
@@ -45,6 +46,13 @@
       "input_cost_per_million": 5.0, "cached_input_cost_per_million": 0.5, "output_cost_per_million": 30.0,
       "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
       "priority": 55, "tags": ["openai", "compatibility"]
+    },
+    {
+      "id": "agentrouter-gpt-5.5", "provider": "agentrouter", "upstream_model": "gpt-5.5",
+      "enabled": true, "user_selectable": true, "quality_tier": "frontier", "quality_score": 96,
+      "latency_score": 44, "context_window": 1050000, "max_output_tokens": 128000,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
+      "priority": 56, "tags": ["agentrouter", "openai_compatible", "responses"]
     },
     {
       "id": "gpt-5.4", "provider": "openai", "upstream_model": "gpt-5.4",

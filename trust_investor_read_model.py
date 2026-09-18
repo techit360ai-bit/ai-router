@@ -528,6 +528,7 @@ class InvestorTrustReadService:
             "overallStatus": self._overall_status(score, profile_model.verification_status),
             "verificationHealth": health,
             "confidence": score,
+            "verifiedSkillsCount": profile_model.verified_skills_count,
             "lastVerified": self._freshness_label(profile_model.last_sync_at),
             "evidenceSourcesConnected": self._evidence_source_count(profile_model),
             "activeBadges": [badge.label for badge in TrustEngineComputer.compute_badges(profile_model) if badge.is_active],
@@ -550,6 +551,7 @@ class InvestorTrustReadService:
             product_activity_verified=bool(getattr(row, "product_activity_verified", False)),
             team_verified_count=int(getattr(row, "verified_team_count", 0) or 0),
             milestone_count=int(getattr(row, "milestone_count", 0) or 0),
+            verified_skills_count=int(getattr(row, "verified_skills_count", 0) or 0),
             github_repo_count=int(getattr(row, "github_repo_count", 0) or 0),
             github_commit_count=int(getattr(row, "github_commit_count", 0) or 0),
             github_contributor_count=int(getattr(row, "github_contributor_count", 0) or 0),
@@ -626,6 +628,7 @@ class InvestorTrustReadService:
             "yearsBuildingStartup": self._years_since(getattr(project, "created_at", None)),
             "previousVentures": "Not disclosed",
             "responseRate": "Not measured",
+            "verifiedSkillsCount": profile.verified_skills_count,
         }
 
     def _product_development(self, profile: FounderTrustProfile) -> Dict[str, Any]:

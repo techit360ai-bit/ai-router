@@ -87,13 +87,14 @@ def validate_auth() -> None:
         fail("ENVIRONMENT must be production for this contract")
     if os.getenv("ALLOW_DEMO_AUTH", "").lower() not in {"false", "0", "no"}:
         fail("ALLOW_DEMO_AUTH must be false in production")
-    if os.getenv("JWT_ALGORITHM", "HS256") != "HS256":
-        fail("JWT_ALGORITHM must be HS256 to match BACKEND-issued tokens")
-    secret = require_value("JWT_SECRET")
-    if len(secret) < 32:
-        fail("JWT_SECRET must be at least 32 characters")
-    if re.search(r"change|replace|secret|test-secret", secret, re.IGNORECASE):
-        fail("JWT_SECRET must not be a placeholder or weak demo value")
+    algorithm = os.getenv("JWT_ALGORITHM", "RS256").upper()
+    if algorithm not in {"RS256", "EDDSA"}:
+        fail("JWT_ALGORITHM must be RS256 or EdDSA in production")
+    public_key = require_value("JWT_PUBLIC_KEY")
+    if "BEGIN PUBLIC KEY" not in public_key and not public_key.lstrip().startswith("{"):
+        fail("JWT_PUBLIC_KEY must be a PEM public key or JWK")
+    if re.search(r"change|replace|your[_ -]?key|test-secret", public_key, re.IGNORECASE):
+        fail("JWT_PUBLIC_KEY must not be a placeholder")
 
 
 def validate_datastores() -> None:

@@ -42,3 +42,47 @@ jobs:
 
       - name: Run release gates
         run: python3 scripts/release_gate.py
+
+  postgres-integration:
+    name: PostgreSQL Migration and Persistence Integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: techit
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: techit_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U techit -d techit_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Apply PostgreSQL migrations
+        env:
+          DATABASE_URL: postgresql://techit:test-password@localhost:5432/techit_db
+        run: |
+          alembic upgrade head
+          python3 scripts/validate_migration_head.py
+      - name: Run PostgreSQL persistence integration tests
+        env:
+          DATABASE_URL: postgresql://techit:test-password@localhost:5432/techit_db
+          AI_ROUTER_POSTGRES_TEST_URL: postgresql://techit:test-password@localhost:5432/techit_db
+          BACKEND_USAGE_SETTLEMENT_URL: https://backend.example/internal/usage-settlement
+          AI_ROUTER_SETTLEMENT_SECRET: test-settlement-secret
+        run: pytest -q tests/test_usage_settlement_outbox.py tests/test_postgres_only_persistence.py tests/test_database_migration_tools.py
+      - name: Verify migrated PostgreSQL structure
+        env:
+          DATABASE_URL: postgresql://techit:test-password@localhost:5432/techit_db
+        run: python3 scripts/verify_postgres_migration.py --target "$DATABASE_URL"

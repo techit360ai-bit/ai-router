@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "version": "2026-09-07.1",
+  "updated_at": "2026-09-07T00:00:00Z",
+  "owner": "platform-reliability",
+  "service_levels": {
+    "http_read_p95_ms": 500,
+    "http_write_p95_ms": 1000,
+    "interactive_ai_p95_ms": 15000,
+    "job_submission_p95_ms": 750,
+    "maximum_ai_queue_wait_seconds": 120,
+    "availability_target": 0.999,
+    "maximum_error_rate": 0.01
+  },
+  "capacity_defaults": {
+    "peak_active_fraction": 0.1,
+    "api_calls_per_active_user_per_minute": 2.0,
+    "ai_call_fraction": 0.08,
+    "ai_p95_seconds": 20.0,
+    "worker_concurrency": 8,
+    "database_connections_per_replica": 10,
+    "database_connection_limit": 500,
+    "headroom_multiplier": 1.5,
+    "provider_spend_base_usd_per_minute": 100,
+    "provider_spend_base_demand_units": 10
+  },
+  "scenarios": [100, 500, 1000, 5000, 10000, 100000, 1000000]
+}

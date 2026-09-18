@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 PROD_ENVS = {"production", "staging"}
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
 AI_ROUTER_MODES = {"deterministic", "hybrid", "llm"}
+EXPECTED_ALEMBIC_HEAD = "b7e2f1a9c4d0"
 
 
 @dataclass(frozen=True)
@@ -90,17 +91,26 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
     ))
 
     secret = values.get("JWT_SECRET") or values.get("SECRET_KEY") or ""
+    public_key = values.get("JWT_PUBLIC_KEY") or ""
     checks.append(RuntimeCheck(
         "auth.jwt_secret",
-        bool(secret) and len(secret) >= 32 and not _is_placeholder(secret),
-        "JWT_SECRET must be set, strong, and non-placeholder",
+        (bool(public_key) if env_name in PROD_ENVS else bool(secret) and len(secret) >= 32 and not _is_placeholder(secret)),
+        "JWT_PUBLIC_KEY is required in production; JWT_SECRET must be strong for development/test",
     ))
 
-    checks.append(RuntimeCheck(
-        "auth.jwt_algorithm",
-        values.get("JWT_ALGORITHM", "HS256") == "HS256",
-        "JWT_ALGORITHM must be HS256",
-    ))
+    jwt_algorithm = values.get("JWT_ALGORITHM", "RS256" if env_name in PROD_ENVS else "HS256").upper()
+    if env_name in PROD_ENVS:
+        checks.append(RuntimeCheck(
+            "auth.jwt_algorithm",
+            jwt_algorithm in {"RS256", "EdDSA"} and bool(values.get("JWT_PUBLIC_KEY")),
+            "Production requires RS256/EdDSA and JWT_PUBLIC_KEY",
+        ))
+    else:
+        checks.append(RuntimeCheck(
+            "auth.jwt_algorithm",
+            jwt_algorithm in {"HS256", "RS256", "EdDSA"},
+            "JWT_ALGORITHM must be HS256, RS256, or EdDSA",
+        ))
 
     allowed_origins = [item.strip() for item in values.get("ALLOWED_ORIGINS", "").split(",") if item.strip()]
     if env_name in PROD_ENVS:
@@ -141,6 +151,20 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
                 name,
                 bool(value) and not _is_placeholder(value),
                 f"{env_key} is required and must not be a placeholder",
+            ))
+
+        if bool_env(values.get("AGENTROUTER_ENABLED"), default=False):
+            agentrouter_key = values.get("AGENTROUTER_API_KEY", "")
+            checks.append(RuntimeCheck(
+                "provider.agentrouter",
+                bool(agentrouter_key) and not _is_placeholder(agentrouter_key),
+                "AGENTROUTER_API_KEY is required when AgentRouter is enabled",
+            ))
+            checks.append(_check_url(
+                "provider.agentrouter_base_url",
+                values.get("AGENTROUTER_BASE_URL") or "https://agentrouter.org/v1",
+                {"https"},
+                env_name,
             ))
 
         if bool_env(values.get("REQUIRE_AI_EXECUTION_GRANT"), default=False):
@@ -203,6 +227,7 @@ def database_engine_options(database_url: str, env: Mapping[str, str] | None = N
     defaults keep a bad database connection from holding /ready open for tens of
     seconds while still allowing operators to loosen the timeout temporarily.
     """
+    require_postgres_url(database_url)
     values = env or os.environ
     connect_timeout = read_positive_int(values, "DATABASE_CONNECT_TIMEOUT_SECONDS", 5, 60)
     options: dict[str, object] = {
@@ -211,6 +236,29 @@ def database_engine_options(database_url: str, env: Mapping[str, str] | None = N
         "max_overflow": 5,
         "pool_timeout": read_positive_int(values, "DATABASE_POOL_TIMEOUT_SECONDS", 5, 60),
     }
-    if urlparse(database_url).scheme.startswith("postgres"):
-        options["connect_args"] = {"connect_timeout": connect_timeout}
+    options["connect_args"] = {"connect_timeout": connect_timeout}
     return options
+
+
+def is_postgres_url(database_url: str | None) -> bool:
+    """Return whether a database URL targets the supported PostgreSQL authority."""
+    return bool(database_url) and urlparse(str(database_url)).scheme in {"postgres", "postgresql"}
+
+
+def require_postgres_url(database_url: str | None, setting: str = "DATABASE_URL") -> str:
+    """Return a validated PostgreSQL URL or fail closed."""
+    value = str(database_url or "").strip()
+    if not value:
+        raise RuntimeConfigError(f"{setting} is required")
+    if not is_postgres_url(value):
+        raise RuntimeConfigError(f"{setting} must use postgres:// or postgresql://")
+    return value
+
+
+def migration_head_check(actual_head: str | None) -> RuntimeCheck:
+    """Return the readiness result for the deployed PostgreSQL schema revision."""
+    return RuntimeCheck(
+        "database.migration_head",
+        actual_head == EXPECTED_ALEMBIC_HEAD,
+        f"expected={EXPECTED_ALEMBIC_HEAD}; actual={actual_head or 'none'}",
+    )

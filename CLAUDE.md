@@ -108,7 +108,7 @@ Stripe webhook signature verification is **enabled** (`stripe.Webhook.construct_
 
 Demo-auth fallback (`ALLOW_DEMO_AUTH=true`) returns a fake Founder Pro user when no token is present. **Forbidden** when `ENVIRONMENT` is `"production"` or `"staging"` — the module-level guardrail at the top of `main.py` raises on import so the service refuses to boot.
 
-Operational fields (credits, team_size, …) are read from the JWT claims today; the production path will hydrate them from PostgreSQL keyed by `sub` (TODO). Dependencies: `python-jose[cryptography]` and `passlib[bcrypt]` are already in `requirements.txt`.
+Operational fields (credits, team_size, …) are hydrated from PostgreSQL keyed by `sub` where a persisted profile exists; JWT claims remain limited to authenticated identity/context. PostgreSQL is the sole production/staging authority; SQLite is migration input or archive only. Dependencies: `python-jose[cryptography]` and `passlib[bcrypt]` are already in `requirements.txt`.
 
 ### Agent groups (34 total)
 

@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ENV_CONTRACT = {
     "ENVIRONMENT": "production",
     "ALLOW_DEMO_AUTH": "false",
-    "JWT_ALGORITHM": "HS256",
+    "JWT_ALGORITHM": "RS256",
+    "JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A\n-----END PUBLIC KEY-----",
     "JWT_ISSUER": "techit-backend",
     "JWT_AUDIENCE": "techit-platform",
     "JWT_SECRET": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -61,6 +62,7 @@ def release_gates() -> list[tuple[str, list[str], dict[str, str] | None]]:
           "tests/test_production_calibration.py"], TEST_ENV),
         ("offline-evaluation", [sys.executable, "scripts/validate_offline_evaluation.py"], TEST_ENV),
         ("migration-head", [sys.executable, "scripts/validate_migration_head.py"], TEST_ENV),
+        ("postgres-only-persistence", [sys.executable, "scripts/retire_sqlite_paths.py"], TEST_ENV),
         ("scalability-readiness", [sys.executable, "scripts/scalability_check.py"], TEST_ENV),
         ("pytest", [sys.executable, "-m", "pytest", "-q"], TEST_ENV),
     ]
