@@ -197,6 +197,35 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
 
+# Token freshness controls (WS-05). A verified signature only proves the token
+# was minted by the platform; it does not prove the session behind it is still
+# valid. Role changes are already re-read from the database per request by
+# `_hydrate_from_db`, so this closes the remaining window where an unexpired
+# token still carries a session that was revoked (logout, global logout,
+# refresh-token reuse detection).
+#   AI_ROUTER_MAX_TOKEN_AGE_SECONDS      -- 0 (default) disables the age bound.
+#       Set it above the backend access-token TTL (AUTH_ACCESS_TTL_SECONDS,
+#       default 900s) so the normal refresh cycle is never rejected.
+#   AI_ROUTER_SESSION_REVOCATION_CHECK   -- "auto" (default) enforces the
+#       user_sessions lookup in staging/production and skips it elsewhere.
+def _token_age_limit_seconds() -> int:
+    try:
+        return max(0, int(os.getenv("AI_ROUTER_MAX_TOKEN_AGE_SECONDS", "0") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _session_revocation_check_enabled() -> bool:
+    value = os.getenv("AI_ROUTER_SESSION_REVOCATION_CHECK", "auto").strip().lower()
+    if value == "auto":
+        return ENVIRONMENT in PROD_ENVS
+    return value in {"1", "true", "yes", "on", "enforce"}
+
+
+def _session_revocation_check_strict() -> bool:
+    return os.getenv("AI_ROUTER_SESSION_REVOCATION_STRICT", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 # Startup guardrails are enforced in lifespan via runtime_config.assert_runtime_ready.
 
 # Tolerant aliases so tokens minted by the Node backend map onto our enums.
@@ -304,6 +333,106 @@ def _hydrate_from_db(ctx: UserContext, db, *, require_user: bool = False) -> Use
     )
 
 
+class SessionFreshnessError(RuntimeError):
+    """The access token is too old, or the session behind it is no longer valid."""
+
+
+_identity_engine = None
+_identity_sessionmaker = None
+
+
+def _identity_session_factory():
+    """Session factory for the platform identity store that owns `user_sessions`.
+
+    The Router's own DATABASE_URL points at its application database, which does
+    not contain the backend session table. The revocation check therefore targets
+    the identity database when it is configured and falls back to the Router's
+    own database so a single-database deployment keeps working.
+    """
+    global _identity_engine, _identity_sessionmaker
+    if _identity_sessionmaker is None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        database_url = (
+            os.getenv("AI_ROUTER_IDENTITY_DATABASE_URL")
+            or os.getenv("IDENTITY_DATABASE_URL")
+            or os.getenv("DATABASE_URL", "postgresql://techit:password@postgres:5432/techit_db")
+        )
+        _identity_engine = create_engine(database_url, **database_engine_options(database_url))
+        _identity_sessionmaker = sessionmaker(bind=_identity_engine, expire_on_commit=False)
+    return _identity_sessionmaker
+
+
+def _assert_token_fresh(payload: Dict[str, Any], db=None, *, now: Optional[int] = None) -> None:
+    """Enforce the optional token-age bound and session-revocation check (WS-05).
+
+    A valid signature is not proof that the session still exists. Revoking a
+    session (logout, revoke-all, refresh reuse) must take effect on the Router
+    within the access-token lifetime, not only after the token expires.
+    """
+    import time as _time  # noqa: PLC0415 - only needed for the freshness check
+
+    current = int(now if now is not None else _time.time())
+    max_age = _token_age_limit_seconds()
+    if max_age > 0:
+        try:
+            issued_at = int(payload.get("iat"))
+        except (TypeError, ValueError):
+            raise SessionFreshnessError("token is missing a usable issued-at claim")
+        if current - issued_at > max_age:
+            raise SessionFreshnessError("token exceeds the maximum permitted age")
+
+    if not _session_revocation_check_enabled():
+        return
+
+    session_identifier = payload.get("sid")
+    if not session_identifier:
+        # Tokens minted before the backend added the sid claim cannot be resolved
+        # against the session store; the age bound above is their only control.
+        return
+
+    session = db
+    owns_session = False
+    if session is None:
+        try:
+            session = _identity_session_factory()()
+            owns_session = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auth_session_store_unavailable", error=str(exc))
+            if _session_revocation_check_strict():
+                raise SessionFreshnessError("session store is unavailable") from exc
+            return
+
+    from sqlalchemy import text as _text  # noqa: PLC0415 - aligned with other lazy imports
+
+    try:
+        row = session.execute(
+            _text(
+                "SELECT user_id FROM user_sessions "
+                "WHERE session_identifier = :sid AND revoked_at IS NULL"
+            ),
+            {"sid": str(session_identifier)},
+        ).first()
+    except Exception as exc:  # noqa: BLE001
+        # A missing table or unreachable identity store must not lock every user
+        # out; log loudly and keep serving. Set AI_ROUTER_SESSION_REVOCATION_STRICT
+        # to turn this into a hard failure once the identity DB is wired.
+        logger.warning("auth_session_lookup_failed", error=str(exc))
+        if _session_revocation_check_strict():
+            raise SessionFreshnessError("session store lookup failed") from exc
+        return
+    finally:
+        if owns_session:
+            session.close()
+
+    if row is None:
+        raise SessionFreshnessError("session is not active")
+    subject = str(payload.get("sub") or payload.get("user_id") or "")
+    if subject and str(row[0]) != subject:
+        raise SessionFreshnessError("session subject mismatch")
+
+
 async def get_user_context(request: Request) -> UserContext:
     """
     Extract and validate the current user from the request.
@@ -376,8 +505,14 @@ async def get_user_context(request: Request) -> UserContext:
         session = Session()
         try:
             ctx = _hydrate_from_db(ctx, session, require_user=ENVIRONMENT in PROD_ENVS)
+            # Resolves the identity store internally; the Router's own database
+            # does not own the session table.
+            _assert_token_fresh(payload)
         finally:
             session.close()
+    except SessionFreshnessError as exc:
+        logger.warning("auth_token_not_fresh", user_id=str(user_id), reason=str(exc))
+        raise HTTPException(status_code=401, detail="Session is no longer valid") from exc
     except Exception as exc:  # noqa: BLE001
         logger.warning("user_db_session_unavailable", user_id=str(user_id), error=str(exc))
         if ENVIRONMENT in PROD_ENVS:
