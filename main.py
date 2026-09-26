@@ -1604,6 +1604,7 @@ async def investor_trust_notes(
 @app.get("/api/v1/investor/deal-flow", tags=["Investor"])
 async def deal_flow(user: UserContext = Depends(get_user_context)):
     """Ranked deal flow with EVI-I signals. 0 execution budget units, Investor+"""
+    _require_investor_role(user)
     return await InvestorSectionService(brain).get_deal_flow_ranking(user)
 
 
@@ -1614,12 +1615,14 @@ async def investor_evi(
     user: UserContext = Depends(get_user_context),
 ):
     """6-dimensional EVI-I investor execution signal. 2 execution budget units, Investor+"""
+    _require_investor_role(user)
     return await InvestorSectionService(brain).get_investor_evi(user, startup_data)
 
 
 @app.get("/api/v1/investor/capital-pools", tags=["Investor"])
 async def investor_capital_pools(user: UserContext = Depends(get_user_context)):
     """Investor micro-fund capital pools with deployment + milestone release. 0 execution budget units."""
+    _require_investor_role(user)
     return await CapitalPoolService(brain).get_capital_pools(user)
 
 
@@ -1629,6 +1632,7 @@ async def investor_create_pool(
     user: UserContext = Depends(get_user_context),
 ):
     """Create a new capital pool. 0 execution budget units. Body: { name, totalCapital, rules }"""
+    _require_investor_role(user)
     return await CapitalPoolService(brain).create_pool(user, body)
 
 
@@ -1639,12 +1643,14 @@ async def investor_pool_release(
     user: UserContext = Depends(get_user_context),
 ):
     """Release escrowed capital on a hit milestone. 0 execution budget units. Body: { projectId, milestone, amount }"""
+    _require_investor_role(user)
     return await CapitalPoolService(brain).release_on_milestone(user, {**body, "poolId": pool_id})
 
 
 @app.get("/api/v1/investor/deal-rooms", tags=["Investor"])
 async def investor_deal_rooms(user: UserContext = Depends(get_user_context)):
     """Deal-room list metadata (status/stage/activity per startup). 0 execution budget units."""
+    _require_investor_role(user)
     return await DealRoomService(brain).get_deal_rooms(user)
 
 
@@ -1658,12 +1664,14 @@ async def investor_deal_room(
     Deal-room detail: term sheet (valuation ARR×8), milestone tranches, documents,
     negotiation stepper. 0 execution budget units. Optional body: startup data (for valuation).
     """
+    _require_investor_role(user)
     return await DealRoomService(brain).get_deal_room(user, project_id, startup)
 
 
 @app.get("/api/v1/investor/data-rooms", tags=["Investor"])
 async def investor_data_rooms(user: UserContext = Depends(get_user_context)):
     """Per-startup data-room vault metadata + access. 0 execution budget units, Investor+"""
+    _require_investor_role(user)
     return await DataRoomService(brain).get_data_rooms(user)
 
 
@@ -1674,6 +1682,7 @@ async def investor_data_room_access(
     user: UserContext = Depends(get_user_context),
 ):
     """Share a data room with an investor. 0 execution budget units. Body: { investorId, canDownload }"""
+    _require_investor_role(user)
     return await DataRoomService(brain).grant_access(user, {**body, "projectId": project_id})
 
 
@@ -1683,12 +1692,14 @@ async def investor_reputation(user: UserContext = Depends(get_user_context)):
     Investor reputation: composite score, component metrics, founder reviews,
     score progression, leaderboard position. 0 execution budget units, Investor+.
     """
+    _require_investor_role(user)
     return await InvestorReputationService(brain).get_reputation(user)
 
 
 @app.get("/api/v1/investor/heatmap", tags=["Investor"])
 async def investor_heatmap(user: UserContext = Depends(get_user_context)):
     """Geographic signal: per-region readiness/compliance + per-sector growth. 0 execution budget units."""
+    _require_investor_role(user)
     return await GeoSignalService(brain).get_heatmap(user)
 
 
