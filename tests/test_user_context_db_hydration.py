@@ -138,3 +138,38 @@ def test_role_downgrade_takes_effect_on_the_next_request() -> None:
     assert ctx.role == UserRole.ADMIN
     hydrated = _hydrate_from_db(ctx, _db(SimpleNamespace(role="investor")))
     assert hydrated.role == UserRole.INVESTOR
+
+
+def _req(method="GET", cookies=None, headers=None, path="/api/v1/anything"):
+    return SimpleNamespace(
+        method=method,
+        cookies=cookies or {},
+        headers=headers or {},
+        url=SimpleNamespace(path=path),
+    )
+
+
+def test_session_cookie_token_reads_the_platform_cookie() -> None:
+    assert main_module._session_cookie_token(_req(cookies={"techit_access": " jwt-1 "})) == "jwt-1"
+    assert main_module._session_cookie_token(_req()) == ""
+
+
+def test_cookie_authenticated_mutation_requires_double_submit() -> None:
+    with pytest.raises(main_module.HTTPException) as exc:
+        main_module._require_csrf_for_cookie_auth(_req(method="POST", cookies={"techit_csrf": "abc"}))
+    assert exc.value.status_code == 403
+
+
+def test_cookie_authenticated_mutation_accepts_matching_token() -> None:
+    main_module._require_csrf_for_cookie_auth(
+        _req(method="POST", cookies={"techit_csrf": "abc"}, headers={"X-CSRF-Token": "abc"}))
+
+
+def test_cookie_authenticated_mutation_rejects_mismatched_token() -> None:
+    with pytest.raises(main_module.HTTPException):
+        main_module._require_csrf_for_cookie_auth(
+            _req(method="DELETE", cookies={"techit_csrf": "abc"}, headers={"X-CSRF-Token": "zzz"}))
+
+
+def test_cookie_authenticated_safe_read_needs_no_csrf() -> None:
+    main_module._require_csrf_for_cookie_auth(_req(method="GET", cookies={"techit_csrf": "abc"}))

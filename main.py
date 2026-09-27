@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 import os
+import secrets
 import structlog
 from sqlalchemy import text
 
@@ -433,6 +434,34 @@ def _assert_token_fresh(payload: Dict[str, Any], db=None, *, now: Optional[int] 
         raise SessionFreshnessError("session subject mismatch")
 
 
+# The browser session is an HttpOnly cookie issued by the Node backend. The SPA
+# sends it with `credentials: include`; in that flow there is no bearer header.
+SESSION_COOKIE_NAME = "techit_access"
+CSRF_COOKIE_NAME = "techit_csrf"
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _session_cookie_token(request: Request) -> str:
+    """Platform JWT carried by the browser session cookie, or "" when absent."""
+    return (request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
+
+
+def _require_csrf_for_cookie_auth(request: Request) -> None:
+    """Enforce the double-submit token for cookie-authenticated mutations.
+
+    Mirrors BACKEND src/middlewares/csrf.js: a bearer header is an explicit,
+    caller-supplied credential, but the cookie is ambient, so a state-changing
+    request must also prove it originated from the application.
+    """
+    if request.method.upper() not in _UNSAFE_METHODS:
+        return
+    expected = request.cookies.get(CSRF_COOKIE_NAME, "")
+    supplied = request.headers.get("X-CSRF-Token", "")
+    if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+        logger.warning("csrf_blocked", method=request.method, path=request.url.path)
+        raise HTTPException(status_code=403, detail="csrf_token_invalid")
+
+
 async def get_user_context(request: Request) -> UserContext:
     """
     Extract and validate the current user from the request.
@@ -451,6 +480,11 @@ async def get_user_context(request: Request) -> UserContext:
     """
     auth_header = request.headers.get("Authorization", "")
     token = auth_header[7:].strip() if auth_header[:7].lower() == "bearer " else ""
+
+    if not token:
+        token = _session_cookie_token(request)
+        if token:
+            _require_csrf_for_cookie_auth(request)
 
     if not token:
         if ALLOW_DEMO_AUTH:
@@ -1850,7 +1884,9 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
     if auth_header[:7].lower() == "bearer ":
         token = auth_header[7:].strip()
         return token or None
-    return None
+    # A cookie-authenticated browser has no bearer header to forward, but the
+    # downstream BACKEND/api/mcp call still needs the platform JWT.
+    return _session_cookie_token(request) or None
 
 
 @app.post("/api/v1/workspace/tasks/suggest", tags=["Workspace"])
