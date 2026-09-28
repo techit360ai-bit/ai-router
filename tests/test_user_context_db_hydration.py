@@ -173,3 +173,43 @@ def test_cookie_authenticated_mutation_rejects_mismatched_token() -> None:
 
 def test_cookie_authenticated_safe_read_needs_no_csrf() -> None:
     main_module._require_csrf_for_cookie_auth(_req(method="GET", cookies={"techit_csrf": "abc"}))
+
+
+def test_safe_detail_preserves_an_authored_domain_message() -> None:
+    assert main_module._safe_detail(ValueError("title must be at most 120 characters"), 422) == (
+        "title must be at most 120 characters"
+    )
+
+
+def test_safe_detail_suppresses_infrastructure_detail() -> None:
+    class OperationalError(Exception):
+        pass
+
+    OperationalError.__module__ = "sqlalchemy.exc"
+    detail = main_module._safe_detail(
+        OperationalError('relation "user_sessions" does not exist'), 404
+    )
+    assert detail == "Not found"
+    assert "user_sessions" not in detail
+
+
+def test_safe_detail_suppresses_submitted_input_from_parse_errors() -> None:
+    class JSONDecodeError(ValueError):
+        pass
+
+    JSONDecodeError.__module__ = "json.decoder"
+    assert "salary" not in main_module._safe_detail(
+        JSONDecodeError("Expecting value: line 1 column 12 (char 11)"), 400
+    )
+
+
+def test_rate_limit_key_hashes_the_credential_and_never_returns_it() -> None:
+    key = main_module._rate_limit_key(_req(headers={"Authorization": "Bearer super-secret-jwt"}))
+    assert "super-secret-jwt" not in key
+    assert key.startswith("cred:")
+
+
+def test_rate_limit_key_falls_back_to_ip_for_anonymous_callers() -> None:
+    request = _req()
+    request.client = SimpleNamespace(host="203.0.113.7")
+    assert main_module._rate_limit_key(request) == "ip:203.0.113.7"
