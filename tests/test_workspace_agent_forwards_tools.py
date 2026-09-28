@@ -149,6 +149,61 @@ def test_workspace_conversation_requires_workspace_identity() -> None:
         raise AssertionError("workspace conversation must require workspace identity")
 
 
+class _FakeBrain:
+    """Returns an agent/AI result that carries every internal field, so the
+    test proves the service projects them out rather than the fake omitting
+    them."""
+
+    async def process(self, _request):
+        return SimpleNamespace(
+            output={"summary": "ok"},
+            provider_cost_usd=0.42,
+            model_used="m-1",
+            provider="upstream-provider",
+        )
+
+    async def trigger_agent(self, _agent_type, _ctx):
+        return SimpleNamespace(
+            output={"task_suggestions": ["a"], "internal_trace": "secret"},
+            recommendations=["r"],
+        )
+
+
+class _FakeRepo:
+    def latest_workspace_context_pack(self, _user_id, _workspace_id):
+        return {"contextData": {"schema_version": "1.0"}}
+
+    def workspace_context(self, *_args, **_kwargs):
+        return {}
+
+
+def _service() -> WorkspaceAIService:
+    service = WorkspaceAIService.__new__(WorkspaceAIService)
+    service.brain = _FakeBrain()
+    service.repo = _FakeRepo()
+    return service
+
+
+def test_code_review_does_not_expose_internal_cost() -> None:
+    """WS-15: provider cost accounting is internal; the browser must not receive it."""
+    result = asyncio.run(_service().review_code(_user(), {"code": "print(1)"}))
+    assert "provider_cost_usd" not in result, f"cost leaked: {sorted(result)}"
+
+
+def test_workspace_conversation_does_not_expose_provider() -> None:
+    """WS-15: upstream provider identity is routing infrastructure, not UI data."""
+    result = asyncio.run(_service().converse(_user(), {"workspace_id": "w1", "message": "hi"}))
+    assert "provider" not in result, f"provider leaked: {sorted(result)}"
+    assert result["message"] == {"summary": "ok"}
+
+
+def test_sprint_plan_projects_agent_output() -> None:
+    """WS-15: the whole agent output is not forwarded; only the user-facing keys."""
+    result = asyncio.run(_service().plan_sprint(_user(), {"workspace_id": "w1"}))
+    assert set(result) == {"task_suggestions", "recommendations"}, f"unexpected keys: {sorted(result)}"
+    assert "internal_trace" not in str(result)
+
+
 def main() -> int:
     tests = [
         test_available_tools_reach_input_data_when_present,
@@ -156,6 +211,9 @@ def main() -> int:
         test_workspace_context_pack_reaches_every_workspace_agent_prompt,
         test_trigger_event_none_doesnt_crash,
         test_workspace_conversation_requires_workspace_identity,
+        test_code_review_does_not_expose_internal_cost,
+        test_workspace_conversation_does_not_expose_provider,
+        test_sprint_plan_projects_agent_output,
     ]
     for t in tests:
         try:
