@@ -153,7 +153,11 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 # CORS -- restrict in production via ALLOWED_ORIGINS env var
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:8000",
+    # Development defaults, mirroring the Node backend and the messaging
+    # service: the Vite dev server (5173) and `vite preview` (4173) must be able
+    # to call ai-router from the SPA. In production/staging this must be set
+    # explicitly to non-local https origins (see runtime_config.cors_origins).
+    "http://localhost:3000,http://localhost:5173,http://localhost:4173,http://localhost:8000",
 ).split(",")
 
 app.add_middleware(
