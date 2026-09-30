@@ -193,7 +193,22 @@ async def security_headers(request: Request, call_next):
 #   ENVIRONMENT      -- "development" | "staging" | "production". Drives the demo-auth
 #                       guardrail.
 SECRET_KEY = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256").strip().upper()
+# Asymmetric verification mirrors the Node backend (`jwtKeyService.js`) and the
+# Go messaging verifier (`internal/auth/jwt.go`): the platform backend signs
+# user access tokens with RS256 in production/staging (HS256 is forbidden
+# there). Without this the router rejects every authenticated call as 401.
+#   JWT_PUBLIC_KEY          -- PEM public key used to verify RS256 tokens.
+#   JWT_ALLOWED_ALGORITHMS  -- comma list; defaults to HS256 + RS256.
+JWT_PUBLIC_KEY = os.getenv("JWT_PUBLIC_KEY")
+_configured_algorithms = os.getenv("JWT_ALLOWED_ALGORITHMS", "").strip()
+JWT_ALLOWED_ALGORITHMS = frozenset(
+    item.strip().upper()
+    for item in (_configured_algorithms.split(",") if _configured_algorithms else [JWT_ALGORITHM, "HS256", "RS256"])
+    if item.strip()
+)
+_HS_ALGORITHMS = frozenset({"HS256", "HS384", "HS512"})
+_RS_ALGORITHMS = frozenset({"RS256", "RS384", "RS512"})
 ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
 
@@ -304,16 +319,51 @@ def _hydrate_from_db(ctx: UserContext, db, *, require_user: bool = False) -> Use
     )
 
 
+def _jwt_verification_material(token: str) -> tuple[str, list[str]]:
+    """Pick the verification key + algorithm allowlist for a platform token.
+
+    The algorithm is read from the (unverified) token header and checked
+    against JWT_ALLOWED_ALGORITHMS. RS256 tokens require JWT_PUBLIC_KEY;
+    HS256 tokens require JWT_SECRET/SECRET_KEY. This keeps one code path for
+    both the dev HS256 secret and the production RS256 key pair.
+    """
+    from jose import jwt as jose_jwt
+
+    try:
+        header = jose_jwt.get_unverified_header(token)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("auth_jwt_invalid", reason="malformed_header", error=str(exc))
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
+
+    alg = str(header.get("alg") or "").upper()
+    if alg not in JWT_ALLOWED_ALGORITHMS:
+        logger.warning("auth_jwt_invalid", reason="algorithm_not_allowed", algorithm=alg)
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    if alg in _RS_ALGORITHMS:
+        if not JWT_PUBLIC_KEY:
+            logger.error("auth_misconfigured", reason="rs256_token_but_no_public_key")
+            raise HTTPException(status_code=500, detail="Authentication is not configured")
+        return JWT_PUBLIC_KEY, [alg]
+
+    if alg in _HS_ALGORITHMS:
+        if not SECRET_KEY:
+            logger.error("auth_misconfigured", reason="jwt_secret_not_set")
+            raise HTTPException(status_code=500, detail="Authentication is not configured")
+        return SECRET_KEY, [alg]
+
+    logger.warning("auth_jwt_invalid", reason="unsupported_algorithm", algorithm=alg)
+    raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+
 async def get_user_context(request: Request) -> UserContext:
     """
     Extract and validate the current user from the request.
 
       1. Read Authorization header -> "Bearer <jwt_token>"
-      2. Decode + verify the JWT (HS256) with SECRET_KEY (python-jose)
-      3. Build a UserContext from claims
-      4. Decode + verify the JWT (HS256) with JWT_SECRET (python-jose).
-         Uses SECRET_KEY only if JWT_SECRET is unset (legacy alias).
-      5. Build a UserContext from the token claims and optionally attach a
+      2. Decode + verify the JWT with JWT_PUBLIC_KEY (RS256) or
+         JWT_SECRET/SECRET_KEY (HS256) via python-jose.
+      3. Build a UserContext from the token claims and optionally attach a
          backend-signed execution grant.
 
     A request WITH a token is always validated (401 on missing/invalid).
@@ -329,13 +379,9 @@ async def get_user_context(request: Request) -> UserContext:
             return _demo_user_context()
         raise HTTPException(status_code=401, detail="Missing authentication token")
 
-    if not SECRET_KEY:
-        # A token was supplied but the server can't verify it.
-        logger.error("auth_misconfigured", reason="JWT_SECRET/SECRET_KEY not set")
-        raise HTTPException(status_code=500, detail="Authentication is not configured")
-
     try:
         from jose import JWTError, jwt
+        key, allowed_algorithms = _jwt_verification_material(token)
         decode_options: Dict[str, Any] = {}
         issuer = os.getenv("JWT_ISSUER", "").strip()
         audience = os.getenv("JWT_AUDIENCE", "").strip()
@@ -343,7 +389,9 @@ async def get_user_context(request: Request) -> UserContext:
             decode_options["issuer"] = issuer
         if audience:
             decode_options["audience"] = audience
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM], **decode_options)
+        payload = jwt.decode(token, key, algorithms=allowed_algorithms, **decode_options)
+    except HTTPException:
+        raise
     except JWTError as exc:
         logger.warning("auth_jwt_invalid", reason="decode_failed", error=str(exc))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
