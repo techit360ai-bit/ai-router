@@ -90,16 +90,29 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
     ))
 
     secret = values.get("JWT_SECRET") or values.get("SECRET_KEY") or ""
-    checks.append(RuntimeCheck(
-        "auth.jwt_secret",
-        bool(secret) and len(secret) >= 32 and not _is_placeholder(secret),
-        "JWT_SECRET must be set, strong, and non-placeholder",
-    ))
+    public_key = values.get("JWT_PUBLIC_KEY") or ""
+    algorithm = (values.get("JWT_ALGORITHM") or "HS256").strip().upper()
+
+    # The platform backend mints RS256 tokens in production/staging (HS256 is
+    # forbidden there by jwtKeyService.js), while dev/test uses HS256. Verify
+    # whichever algorithm the issuer actually uses instead of hard-coding HS256.
+    if algorithm in {"RS256", "RS384", "RS512"}:
+        checks.append(RuntimeCheck(
+            "auth.jwt_public_key",
+            bool(public_key) and not _is_placeholder(public_key),
+            "JWT_PUBLIC_KEY is required and must not be a placeholder when JWT_ALGORITHM uses RSA",
+        ))
+    else:
+        checks.append(RuntimeCheck(
+            "auth.jwt_secret",
+            bool(secret) and len(secret) >= 32 and not _is_placeholder(secret),
+            "JWT_SECRET must be set, strong, and non-placeholder",
+        ))
 
     checks.append(RuntimeCheck(
         "auth.jwt_algorithm",
-        values.get("JWT_ALGORITHM", "HS256") == "HS256",
-        "JWT_ALGORITHM must be HS256",
+        algorithm in {"HS256", "HS384", "HS512", "RS256", "RS384", "RS512"},
+        "JWT_ALGORITHM must be a supported HSnnn or RSnnn algorithm",
     ))
 
     allowed_origins = [item.strip() for item in values.get("ALLOWED_ORIGINS", "").split(",") if item.strip()]
