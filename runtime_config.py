@@ -181,6 +181,13 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
             bool_env(values.get("REQUIRE_AI_EXECUTION_GRANT"), default=False),
             "REQUIRE_AI_EXECUTION_GRANT must be true in production/staging",
         ))
+        # Placeholder completions are a local-dev convenience. They must never be
+        # reachable in production/staging, where output is treated as real.
+        checks.append(RuntimeCheck(
+            "ai.placeholder_responses_disabled",
+            not bool_env(values.get("ALLOW_AI_PLACEHOLDER_RESPONSES"), default=False),
+            "ALLOW_AI_PLACEHOLDER_RESPONSES must be false in production/staging",
+        ))
         storage_key = values.get("AWS_ACCESS_KEY_ID", "")
         storage_secret = values.get("AWS_SECRET_ACCESS_KEY", "")
         checks.append(RuntimeCheck(

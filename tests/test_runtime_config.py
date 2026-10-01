@@ -109,6 +109,29 @@ def test_production_requires_execution_grants_and_private_storage() -> None:
     assert "storage.private_config" in failed
 
 
+def test_production_rejects_placeholder_responses() -> None:
+    env = {**BASE_PROD_ENV, "ALLOW_AI_PLACEHOLDER_RESPONSES": "true"}
+    failed = _failed_names(env)
+    assert "ai.placeholder_responses_disabled" in failed
+    try:
+        assert_runtime_ready(env)
+    except RuntimeConfigError as exc:
+        assert "ALLOW_AI_PLACEHOLDER_RESPONSES" in str(exc)
+    else:
+        raise AssertionError("assert_runtime_ready should fail when placeholder responses are enabled")
+    # Development keeps the convenience path.
+    dev_env = {
+        "ENVIRONMENT": "development",
+        "ALLOW_DEMO_AUTH": "true",
+        "JWT_SECRET": "dev-secret-key-that-is-long-enough-for-tests",
+        "DATABASE_URL": "postgresql://techit:password@localhost:5432/techit_db",
+        "REDIS_URL": "redis://localhost:6379",
+        "MCP_BASE_URL": "https://api.techit.example/api/mcp",
+        "ALLOW_AI_PLACEHOLDER_RESPONSES": "true",
+    }
+    assert _failed_names(dev_env) == set()
+
+
 def test_production_rejects_local_dependency_urls() -> None:
     env = {
         **BASE_PROD_ENV,
@@ -164,6 +187,7 @@ def main() -> int:
         test_hybrid_mode_allows_optional_provider_keys,
         test_invalid_mode_fails_readiness,
         test_production_requires_execution_grants_and_private_storage,
+        test_production_rejects_placeholder_responses,
         test_production_rejects_local_dependency_urls,
         test_production_rejects_wildcard_or_insecure_cors,
         test_development_allows_demo_auth_and_missing_provider_keys,
