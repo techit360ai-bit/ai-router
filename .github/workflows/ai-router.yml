@@ -3,26 +3,8 @@ name: TECHIT AI Router
 on:
   push:
     branches: [main]
-    paths:
-      - "**.py"
-      - "requirements.txt"
-      - "docker-compose.yml"
-      - "Dockerfile.*"
-      - ".env.example"
-      - "docs/**"
-      - "scripts/**"
-      - ".github/workflows/ai-router.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "**.py"
-      - "requirements.txt"
-      - "docker-compose.yml"
-      - "Dockerfile.*"
-      - ".env.example"
-      - "docs/**"
-      - "scripts/**"
-      - ".github/workflows/ai-router.yml"
 
 jobs:
   quality:
