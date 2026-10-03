@@ -27,6 +27,8 @@ import hashlib
 import json
 import time
 from datetime import datetime
+from collections import deque
+import secrets
 import structlog
 from sqlalchemy import text
 
@@ -162,7 +164,11 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 # CORS -- restrict in production via ALLOWED_ORIGINS env var
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:8000",
+    # Development defaults, mirroring the Node backend and the messaging
+    # service: the Vite dev server (5173) and `vite preview` (4173) must be able
+    # to call ai-router from the SPA. In production/staging this must be set
+    # explicitly to non-local https origins (see runtime_config.cors_origins).
+    "http://localhost:3000,http://localhost:5173,http://localhost:4173,http://localhost:8000",
 ).split(",")
 
 app.add_middleware(
@@ -182,6 +188,7 @@ async def security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Cross-Origin-Resource-Policy"] = "same-site"
+    response.headers["Cache-Control"] = "private, no-store"
     if ENVIRONMENT == "production":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
@@ -205,9 +212,57 @@ async def security_headers(request: Request, call_next):
 #   ENVIRONMENT      -- "development" | "staging" | "production". Drives the demo-auth
 #                       guardrail.
 SECRET_KEY = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "RS256" if os.getenv("ENVIRONMENT", "development").lower() in {"production", "staging"} else "HS256")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256").strip().upper()
+# Asymmetric verification mirrors the Node backend (`jwtKeyService.js`) and the
+# Go messaging verifier (`internal/auth/jwt.go`): the platform backend signs
+# user access tokens with RS256 in production/staging (HS256 is forbidden
+# there). Without this the router rejects every authenticated call as 401.
+#   JWT_PUBLIC_KEY          -- PEM public key used to verify RS256 tokens.
+#   JWT_ALLOWED_ALGORITHMS  -- comma list; defaults to HS256 + RS256.
+JWT_PUBLIC_KEY = os.getenv("JWT_PUBLIC_KEY")
+_configured_algorithms = os.getenv("JWT_ALLOWED_ALGORITHMS", "").strip()
+JWT_ALLOWED_ALGORITHMS = frozenset(
+    item.strip().upper()
+    for item in (_configured_algorithms.split(",") if _configured_algorithms else [JWT_ALGORITHM, "HS256", "RS256"])
+    if item.strip()
+)
+_HS_ALGORITHMS = frozenset({"HS256", "HS384", "HS512"})
+_RS_ALGORITHMS = frozenset({"RS256", "RS384", "RS512"})
 ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
+SERVICE_NAME = os.getenv("SERVICE_NAME") or "ai-router"
+APP_VERSION = os.getenv("APP_VERSION") or "3.0.0"
+GIT_SHA = os.getenv("GIT_SHA") or os.getenv("RENDER_GIT_COMMIT") or os.getenv("COMMIT_SHA") or "unknown"
+BUILD_TIME = os.getenv("BUILD_TIME") or os.getenv("BUILD_TIMESTAMP") or "unknown"
+
+# Token freshness controls (WS-05). A verified signature only proves the token
+# was minted by the platform; it does not prove the session behind it is still
+# valid. Role changes are already re-read from the database per request by
+# `_hydrate_from_db`, so this closes the remaining window where an unexpired
+# token still carries a session that was revoked (logout, global logout,
+# refresh-token reuse detection).
+#   AI_ROUTER_MAX_TOKEN_AGE_SECONDS      -- 0 (default) disables the age bound.
+#       Set it above the backend access-token TTL (AUTH_ACCESS_TTL_SECONDS,
+#       default 900s) so the normal refresh cycle is never rejected.
+#   AI_ROUTER_SESSION_REVOCATION_CHECK   -- "auto" (default) enforces the
+#       user_sessions lookup in staging/production and skips it elsewhere.
+def _token_age_limit_seconds() -> int:
+    try:
+        return max(0, int(os.getenv("AI_ROUTER_MAX_TOKEN_AGE_SECONDS", "0") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _session_revocation_check_enabled() -> bool:
+    value = os.getenv("AI_ROUTER_SESSION_REVOCATION_CHECK", "auto").strip().lower()
+    if value == "auto":
+        return ENVIRONMENT in PROD_ENVS
+    return value in {"1", "true", "yes", "on", "enforce"}
+
+
+def _session_revocation_check_strict() -> bool:
+    return os.getenv("AI_ROUTER_SESSION_REVOCATION_STRICT", "false").strip().lower() in {"1", "true", "yes", "on"}
+
 
 # Startup guardrails are enforced in lifespan via runtime_config.assert_runtime_ready.
 
@@ -316,16 +371,179 @@ def _hydrate_from_db(ctx: UserContext, db, *, require_user: bool = False) -> Use
     )
 
 
+class SessionFreshnessError(RuntimeError):
+    """The access token is too old, or the session behind it is no longer valid."""
+
+
+_identity_engine = None
+_identity_sessionmaker = None
+
+
+def _identity_session_factory():
+    """Session factory for the platform identity store that owns `user_sessions`.
+
+    The Router's own DATABASE_URL points at its application database, which does
+    not contain the backend session table. The revocation check therefore targets
+    the identity database when it is configured and falls back to the Router's
+    own database so a single-database deployment keeps working.
+    """
+    global _identity_engine, _identity_sessionmaker
+    if _identity_sessionmaker is None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        database_url = (
+            os.getenv("AI_ROUTER_IDENTITY_DATABASE_URL")
+            or os.getenv("IDENTITY_DATABASE_URL")
+            or os.getenv("DATABASE_URL", "postgresql://techit:password@postgres:5432/techit_db")
+        )
+        _identity_engine = create_engine(database_url, **database_engine_options(database_url))
+        _identity_sessionmaker = sessionmaker(bind=_identity_engine, expire_on_commit=False)
+    return _identity_sessionmaker
+
+
+def _assert_token_fresh(payload: Dict[str, Any], db=None, *, now: Optional[int] = None) -> None:
+    """Enforce the optional token-age bound and session-revocation check (WS-05).
+
+    A valid signature is not proof that the session still exists. Revoking a
+    session (logout, revoke-all, refresh reuse) must take effect on the Router
+    within the access-token lifetime, not only after the token expires.
+    """
+    import time as _time  # noqa: PLC0415 - only needed for the freshness check
+
+    current = int(now if now is not None else _time.time())
+    max_age = _token_age_limit_seconds()
+    if max_age > 0:
+        try:
+            issued_at = int(payload.get("iat"))
+        except (TypeError, ValueError):
+            raise SessionFreshnessError("token is missing a usable issued-at claim")
+        if current - issued_at > max_age:
+            raise SessionFreshnessError("token exceeds the maximum permitted age")
+
+    if not _session_revocation_check_enabled():
+        return
+
+    session_identifier = payload.get("sid")
+    if not session_identifier:
+        # Tokens minted before the backend added the sid claim cannot be resolved
+        # against the session store; the age bound above is their only control.
+        return
+
+    session = db
+    owns_session = False
+    if session is None:
+        try:
+            session = _identity_session_factory()()
+            owns_session = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auth_session_store_unavailable", error=str(exc))
+            if _session_revocation_check_strict():
+                raise SessionFreshnessError("session store is unavailable") from exc
+            return
+
+    from sqlalchemy import text as _text  # noqa: PLC0415 - aligned with other lazy imports
+
+    try:
+        row = session.execute(
+            _text(
+                "SELECT user_id FROM user_sessions "
+                "WHERE session_identifier = :sid AND revoked_at IS NULL"
+            ),
+            {"sid": str(session_identifier)},
+        ).first()
+    except Exception as exc:  # noqa: BLE001
+        # A missing table or unreachable identity store must not lock every user
+        # out; log loudly and keep serving. Set AI_ROUTER_SESSION_REVOCATION_STRICT
+        # to turn this into a hard failure once the identity DB is wired.
+        logger.warning("auth_session_lookup_failed", error=str(exc))
+        if _session_revocation_check_strict():
+            raise SessionFreshnessError("session store lookup failed") from exc
+        return
+    finally:
+        if owns_session:
+            session.close()
+
+    if row is None:
+        raise SessionFreshnessError("session is not active")
+    subject = str(payload.get("sub") or payload.get("user_id") or "")
+    if subject and str(row[0]) != subject:
+        raise SessionFreshnessError("session subject mismatch")
+
+
+# The browser session is an HttpOnly cookie issued by the Node backend. The SPA
+# sends it with `credentials: include`; in that flow there is no bearer header.
+SESSION_COOKIE_NAME = "techit_access"
+CSRF_COOKIE_NAME = "techit_csrf"
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _session_cookie_token(request: Request) -> str:
+    """Platform JWT carried by the browser session cookie, or "" when absent."""
+    return (request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
+
+
+def _require_csrf_for_cookie_auth(request: Request) -> None:
+    """Enforce the double-submit token for cookie-authenticated mutations.
+
+    Mirrors BACKEND src/middlewares/csrf.js: a bearer header is an explicit,
+    caller-supplied credential, but the cookie is ambient, so a state-changing
+    request must also prove it originated from the application.
+    """
+    if request.method.upper() not in _UNSAFE_METHODS:
+        return
+    expected = request.cookies.get(CSRF_COOKIE_NAME, "")
+    supplied = request.headers.get("X-CSRF-Token", "")
+    if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+        logger.warning("csrf_blocked", method=request.method, path=request.url.path)
+        raise HTTPException(status_code=403, detail="csrf_token_invalid")
+
+
+def _jwt_verification_material(token: str) -> tuple[str, list[str]]:
+    """Pick the verification key + algorithm allowlist for a platform token.
+
+    The algorithm is read from the (unverified) token header and checked
+    against JWT_ALLOWED_ALGORITHMS. RS256 tokens require JWT_PUBLIC_KEY;
+    HS256 tokens require JWT_SECRET/SECRET_KEY. This keeps one code path for
+    both the dev HS256 secret and the production RS256 key pair.
+    """
+    from jose import jwt as jose_jwt
+
+    try:
+        header = jose_jwt.get_unverified_header(token)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("auth_jwt_invalid", reason="malformed_header", error=str(exc))
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
+
+    alg = str(header.get("alg") or "").upper()
+    if alg not in JWT_ALLOWED_ALGORITHMS:
+        logger.warning("auth_jwt_invalid", reason="algorithm_not_allowed", algorithm=alg)
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    if alg in _RS_ALGORITHMS:
+        if not JWT_PUBLIC_KEY:
+            logger.error("auth_misconfigured", reason="rs256_token_but_no_public_key")
+            raise HTTPException(status_code=500, detail="Authentication is not configured")
+        return JWT_PUBLIC_KEY, [alg]
+
+    if alg in _HS_ALGORITHMS:
+        if not SECRET_KEY:
+            logger.error("auth_misconfigured", reason="jwt_secret_not_set")
+            raise HTTPException(status_code=500, detail="Authentication is not configured")
+        return SECRET_KEY, [alg]
+
+    logger.warning("auth_jwt_invalid", reason="unsupported_algorithm", algorithm=alg)
+    raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+
 async def get_user_context(request: Request) -> UserContext:
     """
     Extract and validate the current user from the request.
 
       1. Read Authorization header -> "Bearer <jwt_token>"
-      2. Decode + verify the JWT (HS256) with SECRET_KEY (python-jose)
-      3. Build a UserContext from claims
-      4. Decode + verify the JWT (HS256) with JWT_SECRET (python-jose).
-         Uses SECRET_KEY only if JWT_SECRET is unset (legacy alias).
-      5. Build a UserContext from the token claims and optionally attach a
+      2. Decode + verify the JWT with JWT_PUBLIC_KEY (RS256) or
+         JWT_SECRET/SECRET_KEY (HS256) via python-jose.
+      3. Build a UserContext from the token claims and optionally attach a
          backend-signed execution grant.
 
     A request WITH a token is always validated (401 on missing/invalid).
@@ -336,18 +554,19 @@ async def get_user_context(request: Request) -> UserContext:
     token = auth_header[7:].strip() if auth_header[:7].lower() == "bearer " else ""
 
     if not token:
+        token = _session_cookie_token(request)
+        if token:
+            _require_csrf_for_cookie_auth(request)
+
+    if not token:
         if ALLOW_DEMO_AUTH:
             logger.warning("auth_demo_fallback", reason="no_token")
             return _demo_user_context()
         raise HTTPException(status_code=401, detail="Missing authentication token")
 
-    if not SECRET_KEY:
-        # A token was supplied but the server can't verify it.
-        logger.error("auth_misconfigured", reason="JWT_SECRET/SECRET_KEY not set")
-        raise HTTPException(status_code=500, detail="Authentication is not configured")
-
     try:
         from jose import JWTError, jwt
+        key, allowed_algorithms = _jwt_verification_material(token)
         decode_options: Dict[str, Any] = {}
         issuer = os.getenv("JWT_ISSUER", "").strip()
         audience = os.getenv("JWT_AUDIENCE", "").strip()
@@ -355,10 +574,9 @@ async def get_user_context(request: Request) -> UserContext:
             decode_options["issuer"] = issuer
         if audience:
             decode_options["audience"] = audience
-        verification_key = os.getenv("JWT_PUBLIC_KEY", "") or SECRET_KEY
-        if ENVIRONMENT in PROD_ENVS and not os.getenv("JWT_PUBLIC_KEY"):
-            raise HTTPException(status_code=500, detail="Asymmetric JWT verification is not configured")
-        payload = jwt.decode(token, verification_key.replace("\\n", "\n"), algorithms=[JWT_ALGORITHM], **decode_options)
+        payload = jwt.decode(token, key, algorithms=allowed_algorithms, **decode_options)
+    except HTTPException:
+        raise
     except JWTError as exc:
         logger.warning("auth_jwt_invalid", reason="decode_failed", error=str(exc))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -375,7 +593,7 @@ async def get_user_context(request: Request) -> UserContext:
         try:
             grant = ExecutionGrantVerifier().verify(grant_token)
         except ExecutionAuthorizationError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+            raise HTTPException(status_code=403, detail=_safe_detail(exc, 403)) from exc
         if grant.subject != ctx.user_id:
             raise HTTPException(status_code=403, detail="Execution grant subject mismatch")
         from dataclasses import replace as dc_replace
@@ -391,8 +609,14 @@ async def get_user_context(request: Request) -> UserContext:
         session = Session()
         try:
             ctx = _hydrate_from_db(ctx, session, require_user=ENVIRONMENT in PROD_ENVS)
+            # Resolves the identity store internally; the Router's own database
+            # does not own the session table.
+            _assert_token_fresh(payload)
         finally:
             session.close()
+    except SessionFreshnessError as exc:
+        logger.warning("auth_token_not_fresh", user_id=str(user_id), reason=str(exc))
+        raise HTTPException(status_code=401, detail="Session is no longer valid") from exc
     except Exception as exc:  # noqa: BLE001
         logger.warning("user_db_session_unavailable", user_id=str(user_id), error=str(exc))
         if ENVIRONMENT in PROD_ENVS:
@@ -443,17 +667,31 @@ async def health():
     registry = brain.model_router.registry if brain else ModelRegistry()
     return {
         "status":         "healthy",
+        "service":        SERVICE_NAME,
         "ai_brain":       "operational",
-        "version":        "3.0.0",
+        "version":        APP_VERSION,
+        "sha":            GIT_SHA,
+        "builtAt":        BUILD_TIME,
+        "environment":    ENVIRONMENT,
         "agents":         len(getattr(brain.orchestrator, "agents", {}) or {}) if brain else 0,
         "task_types":     len(TaskType),
         "scoring_models": len(SCORING_POLICY),
         "registered_models": len(registry.models),
         "db_tables":      len(Base.registry.mappers),
         "generated_at":   __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
-        "scoring_models": 20,
-        "db_tables":      42,
         "ai_router_mode": ai_router_mode(),
+    }
+
+
+@app.get("/version", tags=["Status"])
+async def version():
+    """Build identity for deploy-parity checks."""
+    return {
+        "service":     SERVICE_NAME,
+        "version":     APP_VERSION,
+        "sha":         GIT_SHA,
+        "builtAt":     BUILD_TIME,
+        "environment": ENVIRONMENT,
     }
 
 
@@ -569,7 +807,7 @@ async def calibration_outcome(
     try:
         row = record_outcome(db, body)
     except ProductionCalibrationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=_safe_detail(exc, 422)) from exc
     return {"decision_id": row.decision_id, "domain": row.domain, "policy_id": row.policy_id, "recorded": True}
 
 
@@ -671,7 +909,7 @@ async def export_incubation_analysis(
     try:
         analysis = IncubationHubService(brain).export_analysis(user, project_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=_safe_detail(exc, 404)) from exc
     filename = f"idea-analysis-{project_id}.json"
     return Response(
         content=json.dumps(analysis, indent=2, default=str),
@@ -840,7 +1078,7 @@ async def pmf_validate(body: Dict[str, Any], user: UserContext = Depends(get_use
         result.update({"status": "questions_required", "human_approval_required": True, "notice": "Start a validation session and answer founder questions before accepting a final verdict."})
         return result
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=_safe_detail(exc, 404)) from exc
 
 
 @app.post("/api/v1/incubation/monetization/analyze", tags=["Incubation Hub"])
@@ -1081,7 +1319,7 @@ async def validation_answers(session_id: str, body: Dict[str, Any], user: UserCo
     try:
         return await IncubationHubService(brain).submit_founder_answers(user, session_id, body.get("answers") or body)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=_safe_detail(exc, 404)) from exc
 
 
 @app.post("/api/v1/incubation/validation/{session_id}/pmf", tags=["Incubation Hub"])
@@ -1089,7 +1327,7 @@ async def validation_pmf(session_id: str, user: UserContext = Depends(get_user_c
     try:
         return await IncubationHubService(brain).run_pmf_validation(user, session_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=_safe_detail(exc, 404)) from exc
 
 
 @app.post("/api/v1/incubation/validation/{session_id}/mvp-plan", tags=["Incubation Hub"])
@@ -1097,7 +1335,7 @@ async def validation_mvp_plan(session_id: str, body: Dict[str, Any], user: UserC
     try:
         return await IncubationHubService(brain).generate_mvp_plan(user, session_id, body.get("founder_constraints") or body)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=_safe_detail(exc, 404)) from exc
 
 
 @app.post("/api/v1/incubation/validation/{session_id}/decisions", tags=["Incubation Hub"])
@@ -1105,7 +1343,7 @@ async def validation_decision(session_id: str, body: Dict[str, Any], user: UserC
     try:
         return IncubationHubService(brain).record_human_decision(user, session_id, body)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=_safe_detail(exc, 422)) from exc
 
 
 @app.post("/api/v1/incubation/validation/{session_id}/builds", tags=["Incubation Hub Build"])
@@ -1116,7 +1354,7 @@ async def create_incubation_build(session_id: str, body: Dict[str, Any], user: U
     try:
         return SandboxBuildService(repo).create(user.user_id, session, body)
     except SandboxBuildError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=_safe_detail(exc, 409)) from exc
 
 
 @app.get("/api/v1/incubation/builds/{build_id}/artifact", tags=["Incubation Hub Build"])
@@ -1125,7 +1363,7 @@ async def download_incubation_build(build_id: str, user: UserContext = Depends(g
         path = SandboxBuildService().artifact_path(user.user_id, build_id)
         return FileResponse(path, media_type="application/zip", filename=f"techit-mvp-{build_id}.zip")
     except SandboxBuildError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=_safe_detail(exc, 404)) from exc
 
 
 @app.get("/api/v1/incubation/builds/{build_id}/preview", tags=["Incubation Hub Build"])
@@ -1133,7 +1371,7 @@ async def preview_incubation_build(build_id: str, user: UserContext = Depends(ge
     try:
         return FileResponse(SandboxBuildService().preview_path(user.user_id, build_id), media_type="text/html")
     except SandboxBuildError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=_safe_detail(exc, 404)) from exc
 
 
 @app.get("/api/v1/incubation/builds/{build_id}/preview/{asset_name}", tags=["Incubation Hub Build"])
@@ -1143,7 +1381,7 @@ async def preview_incubation_asset(build_id: str, asset_name: str, user: UserCon
         media = "text/css" if asset_name.endswith(".css") else "application/javascript"
         return FileResponse(path, media_type=media)
     except SandboxBuildError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=_safe_detail(exc, 404)) from exc
 
 
 @app.post("/api/v1/incubation/validation/{session_id}/builds/{build_id}/deploy-preview", tags=["Incubation Hub Build"])
@@ -1154,7 +1392,7 @@ async def deploy_incubation_preview(session_id: str, build_id: str, user: UserCo
     try:
         return await service.deploy_preview(user.user_id, session, build_id)
     except SandboxBuildError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=_safe_detail(exc, 409)) from exc
 
 
 @app.post("/api/v1/incubation/builds/{build_id}/rollback/{target_build_id}", tags=["Incubation Hub Build"])
@@ -1162,7 +1400,7 @@ async def rollback_incubation_build(build_id: str, target_build_id: str, user: U
     try:
         return SandboxBuildService().rollback(user.user_id, build_id, target_build_id)
     except SandboxBuildError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=_safe_detail(exc, 409)) from exc
 
 
 @app.post("/api/v1/incubation/strategy/generate", tags=["Incubation Hub"])
@@ -1495,7 +1733,7 @@ async def gsis_v2_recommendation_outcome(
     try:
         return record_recommendation_outcome(db, recommendation_id, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=_safe_detail(exc, 422)) from exc
 
 
 @app.get("/api/v2/gsis/benchmarks", tags=["GSIS v2"])
@@ -1534,7 +1772,7 @@ async def gsis_v2_config_update(
     try:
         return audit_config(db, payload, changed_by=user.user_id)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=_safe_detail(exc, 422)) from exc
 
 
 @app.post("/api/v2/admin/gsis/benchmarks", tags=["Admin"])
@@ -1548,7 +1786,7 @@ async def gsis_v2_benchmark_create(
     try:
         return save_benchmark(db, payload, changed_by=user.user_id)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=_safe_detail(exc, 422)) from exc
 
 
 @app.get("/api/v2/admin/gsis/calibration", tags=["Admin"])
@@ -1692,7 +1930,7 @@ async def trust_integrations(
     try:
         return TrustVerificationService(brain).get_integration_manifests(provider)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_safe_detail(exc, 400))
 
 
 @app.post("/api/v1/trust/verify/{source}", tags=["Trust Engine"])
@@ -1714,7 +1952,7 @@ async def trust_verify_source(
         require_backend_trust_authority(request)
         return TrustVerificationService(brain).verify_source(user, source, body, db)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_safe_detail(exc, 400))
 
 
 @app.post("/api/v1/trust/adapters/{provider}/verify", tags=["Trust Engine"])
@@ -1730,7 +1968,7 @@ async def trust_verify_adapter_payload(
         require_backend_trust_authority(request)
         return TrustVerificationService(brain).verify_adapter_payload(user, provider, body, db)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_safe_detail(exc, 400))
 
 
 @app.post("/api/v1/trust/disconnect/{source}", tags=["Trust Engine"])
@@ -1746,7 +1984,7 @@ async def trust_disconnect_source(
         require_backend_trust_authority(request)
         return TrustVerificationService(brain).disconnect_source(user, source, body, db)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_safe_detail(exc, 400))
 
 
 @app.post("/api/v1/trust/refresh/{source}", tags=["Trust Engine"])
@@ -1762,7 +2000,7 @@ async def trust_refresh_source(
         require_backend_trust_authority(request)
         return TrustVerificationService(brain).refresh_source(user, source, body, db)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_safe_detail(exc, 400))
 
 
 @app.post("/api/v1/trust/refresh-plan", tags=["Trust Engine"])
@@ -1784,7 +2022,7 @@ async def trust_continuous_verification_run(
     try:
         return TrustVerificationService(brain).run_continuous_verification(user, body, db)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_safe_detail(exc, 400))
 
 
 @app.post("/api/v1/trust/milestone", tags=["Trust Engine"])
@@ -2205,6 +2443,7 @@ async def investor_trust_notes(
 @app.get("/api/v1/investor/deal-flow", tags=["Investor"])
 async def deal_flow(user: UserContext = Depends(get_user_context)):
     """Ranked deal flow with EVI-I signals. 0 execution budget units, Investor+"""
+    _require_investor_role(user)
     return await InvestorSectionService(brain).get_deal_flow_ranking(user)
 
 
@@ -2215,6 +2454,7 @@ async def investor_evi(
     user: UserContext = Depends(get_user_context),
 ):
     """6-dimensional EVI-I investor execution signal. 2 execution budget units, Investor+"""
+    _require_investor_role(user)
     return await InvestorSectionService(brain).get_investor_evi(user, startup_data)
 
 
@@ -2260,6 +2500,7 @@ async def investor_intelligence_advisory(
 @app.get("/api/v1/investor/capital-pools", tags=["Investor"])
 async def investor_capital_pools(user: UserContext = Depends(get_user_context)):
     """Investor micro-fund capital pools with deployment + milestone release. 0 execution budget units."""
+    _require_investor_role(user)
     return await CapitalPoolService(brain).get_capital_pools(user)
 
 
@@ -2269,6 +2510,7 @@ async def investor_create_pool(
     user: UserContext = Depends(get_user_context),
 ):
     """Create a new capital pool. 0 execution budget units. Body: { name, totalCapital, rules }"""
+    _require_investor_role(user)
     return await CapitalPoolService(brain).create_pool(user, body)
 
 
@@ -2279,12 +2521,14 @@ async def investor_pool_release(
     user: UserContext = Depends(get_user_context),
 ):
     """Release escrowed capital on a hit milestone. 0 execution budget units. Body: { projectId, milestone, amount }"""
+    _require_investor_role(user)
     return await CapitalPoolService(brain).release_on_milestone(user, {**body, "poolId": pool_id})
 
 
 @app.get("/api/v1/investor/deal-rooms", tags=["Investor"])
 async def investor_deal_rooms(user: UserContext = Depends(get_user_context)):
     """Deal-room list metadata (status/stage/activity per startup). 0 execution budget units."""
+    _require_investor_role(user)
     return await DealRoomService(brain).get_deal_rooms(user)
 
 
@@ -2298,12 +2542,14 @@ async def investor_deal_room(
     Deal-room detail: term sheet (valuation ARR×8), milestone tranches, documents,
     negotiation stepper. 0 execution budget units. Optional body: startup data (for valuation).
     """
+    _require_investor_role(user)
     return await DealRoomService(brain).get_deal_room(user, project_id, startup)
 
 
 @app.get("/api/v1/investor/data-rooms", tags=["Investor"])
 async def investor_data_rooms(user: UserContext = Depends(get_user_context)):
     """Per-startup data-room vault metadata + access. 0 execution budget units, Investor+"""
+    _require_investor_role(user)
     return await DataRoomService(brain).get_data_rooms(user)
 
 
@@ -2314,6 +2560,7 @@ async def investor_data_room_access(
     user: UserContext = Depends(get_user_context),
 ):
     """Share a data room with an investor. 0 execution budget units. Body: { investorId, canDownload }"""
+    _require_investor_role(user)
     return await DataRoomService(brain).grant_access(user, {**body, "projectId": project_id})
 
 
@@ -2323,12 +2570,14 @@ async def investor_reputation(user: UserContext = Depends(get_user_context)):
     Investor reputation: composite score, component metrics, founder reviews,
     score progression, leaderboard position. 0 execution budget units, Investor+.
     """
+    _require_investor_role(user)
     return await InvestorReputationService(brain).get_reputation(user)
 
 
 @app.get("/api/v1/investor/heatmap", tags=["Investor"])
 async def investor_heatmap(user: UserContext = Depends(get_user_context)):
     """Geographic signal: per-region readiness/compliance + per-sector growth. 0 execution budget units."""
+    _require_investor_role(user)
     return await GeoSignalService(brain).get_heatmap(user)
 
 
@@ -2344,7 +2593,9 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
     if auth_header[:7].lower() == "bearer ":
         token = auth_header[7:].strip()
         return token or None
-    return None
+    # A cookie-authenticated browser has no bearer header to forward, but the
+    # downstream BACKEND/api/mcp call still needs the platform JWT.
+    return _session_cookie_token(request) or None
 
 
 @app.post("/api/v1/workspace/tasks/suggest", tags=["Workspace"])
@@ -2368,7 +2619,7 @@ async def workspace_conversation(body: Dict[str, Any], user: UserContext = Depen
     try:
         return await WorkspaceAIService(brain).converse(user, body)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=_safe_detail(exc, 422)) from exc
 
 
 @app.get("/api/v1/workspace/tools", tags=["Workspace"])
@@ -2410,6 +2661,42 @@ async def workspace_review_code(
 ):
     """AI code review. 1 execution budget unit, Founder Pro+. Body: { code, language, context }"""
     return await WorkspaceAIService(brain).review_code(user, body)
+
+
+@app.post("/api/v1/workspace/code/plan", tags=["Workspace"])
+async def workspace_plan_code_task(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Context-aware code plan. Advisory only; execution remains backend/MCP-owned."""
+    try:
+        return await WorkspaceAIService(brain).plan_code_task(user, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/workspace/code/propose", tags=["Workspace"])
+async def workspace_propose_code_changes(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Return reviewable code proposals. This endpoint never mutates project state."""
+    try:
+        return await WorkspaceAIService(brain).propose_code_changes(user, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/workspace/code/orchestrate", tags=["Workspace"])
+async def workspace_orchestrate_code_task(
+    body: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Return bounded multi-stage coding reasoning; never execute project mutations."""
+    try:
+        return await WorkspaceAIService(brain).orchestrate_code_task(user, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/v1/workspace/sprint/plan", tags=["Workspace"])
@@ -3159,7 +3446,7 @@ async def list_models(
         router = brain.model_router if brain else ModelRouter(ModelRegistry())
         return {"version": router.registry.version, "models": router.list_models(task_type)}
     except RegistryError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=_safe_detail(exc, 503)) from exc
 
 
 @app.get("/api/v1/tasks/{task_type}/models", tags=["AI Execution"])
@@ -3170,6 +3457,79 @@ async def list_task_models(task_type: str, user: UserContext = Depends(get_user_
 # ============================================================================
 # GLOBAL ERROR HANDLER
 # ============================================================================
+
+# ============================================================================
+# RATE LIMITING (WS-14)
+# ============================================================================
+
+# This service had no limiter at all, so a single authenticated caller could
+# drive unbounded model spend. The key is a hash of the presented credential,
+# never the credential itself, so no secret is held in memory keys or logs.
+_RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_ROUTER_RATE_LIMIT_PER_MINUTE", "120"))
+_RATE_LIMIT_WINDOW = 60.0
+_RATE_LIMIT_MAX_KEYS = 20000
+_rate_buckets: Dict[str, deque] = {}
+
+
+def _rate_limit_key(request: Request) -> str:
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    if not token:
+        token = request.cookies.get("techit_access", "")
+    if token:
+        return "cred:" + hashlib.sha256(token.encode()).hexdigest()[:32]
+    return "ip:" + (request.client.host if request.client else "unknown")
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if _RATE_LIMIT_PER_MINUTE <= 0 or os.getenv("ENVIRONMENT") == "test":
+        return await call_next(request)
+    now = time.monotonic()
+    if len(_rate_buckets) > _RATE_LIMIT_MAX_KEYS:
+        for key in [k for k, v in _rate_buckets.items() if not v or now - v[-1] > _RATE_LIMIT_WINDOW]:
+            _rate_buckets.pop(key, None)
+    bucket = _rate_buckets.setdefault(_rate_limit_key(request), deque())
+    while bucket and now - bucket[0] > _RATE_LIMIT_WINDOW:
+        bucket.popleft()
+    if len(bucket) >= _RATE_LIMIT_PER_MINUTE:
+        logger.warning("rate_limit_exceeded", path=request.url.path)
+        return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded", "detail": "Too many requests"})
+    bucket.append(now)
+    return await call_next(request)
+
+
+# WS-12: exceptions raised by these modules carry infrastructure detail - SQL
+# text, table and column names, upstream provider payloads, parser positions,
+# submitted field values. Their messages must never reach a caller, so they are
+# logged server-side and replaced with a status-appropriate generic message.
+# Authored domain messages (ai-router's own errors, plain ValueError from
+# validation) are preserved so the SPA contract does not change.
+_UNSAFE_ERROR_MODULES = (
+    "sqlalchemy", "asyncpg", "psycopg", "psycopg2", "aiosqlite", "sqlite3",
+    "httpx", "httpcore", "requests", "aiohttp", "urllib3",
+    "openai", "anthropic", "litellm", "google", "redis", "pydantic", "jose", "json",
+)
+
+_GENERIC_DETAIL = {
+    400: "Invalid request",
+    403: "Not permitted",
+    404: "Not found",
+    409: "Request conflicts with the current state",
+    422: "Request could not be processed",
+    429: "Too many requests",
+    503: "Service temporarily unavailable",
+}
+
+
+def _safe_detail(exc: Exception, status: int) -> str:
+    """Return a caller-safe detail string for a caught exception."""
+    module = (type(exc).__module__ or "").split(".")[0]
+    if module in _UNSAFE_ERROR_MODULES:
+        logger.error("error_detail_suppressed", status=status, error_type=type(exc).__name__, module=module)
+        return _GENERIC_DETAIL.get(status, "Request could not be completed")
+    return str(exc)
+
 
 @app.exception_handler(PermissionError)
 async def permission_error_handler(request: Request, exc: PermissionError):
@@ -3183,7 +3543,7 @@ async def permission_error_handler(request: Request, exc: PermissionError):
 async def value_error_handler(request: Request, exc: ValueError):
     return JSONResponse(
         status_code=400,
-        content={"error": "bad_request", "detail": str(exc)},
+        content={"error": "bad_request", "detail": _safe_detail(exc, 400)},
     )
 
 
@@ -3220,7 +3580,7 @@ async def upload_file(
     try:
         file_storage.validate_upload(contents, file.filename or "untitled", file.content_type or "application/octet-stream")
     except FileValidationError as exc:
-        raise HTTPException(status_code=413 if "exceeds" in str(exc) else 415, detail=str(exc)) from exc
+        raise HTTPException(status_code=413 if "exceeds" in str(exc) else 415, detail=_safe_detail(exc, 400)) from exc
     result = file_storage.upload_file(
         contents,
         file.filename or "untitled",
@@ -3239,7 +3599,7 @@ async def incubation_document_upload(
     try:
         file_storage.validate_upload(contents, file.filename or "document", file.content_type or "application/octet-stream", document_only=True)
     except FileValidationError as exc:
-        raise HTTPException(status_code=413 if "exceeds" in str(exc) else 415, detail=str(exc)) from exc
+        raise HTTPException(status_code=413 if "exceeds" in str(exc) else 415, detail=_safe_detail(exc, 400)) from exc
     text = file_storage.extract_text(contents, file.filename or "document")
     if not text.strip():
         raise HTTPException(400, "Could not extract text from the uploaded document")

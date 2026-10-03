@@ -13,6 +13,26 @@ from execution_controls import (
 )
 
 
+def test_private_api_responses_are_not_cacheable() -> None:
+    """WS-10: this service returns user-specific JSON, so a browser or shared
+    cache must never be able to replay a response to a later, less-privileged
+    reader. The header is applied centrally; public routes override it."""
+    import asyncio
+
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    import main
+
+    async def call_next(_request: Request) -> Response:
+        return Response()
+
+    request = Request({"type": "http", "method": "GET", "path": "/health", "headers": []})
+    response = asyncio.run(main.security_headers(request, call_next))
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
 def test_circuit_breaker_opens_and_recovers(monkeypatch) -> None:
     monkeypatch.setenv("AI_CIRCUIT_FAILURE_THRESHOLD", "2")
     monkeypatch.setenv("AI_CIRCUIT_COOLDOWN_SECONDS", "10")

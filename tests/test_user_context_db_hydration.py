@@ -7,7 +7,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from main import IdentityHydrationError, _context_from_claim, _hydrate_from_db
+import main as main_module
+from main import (
+    IdentityHydrationError,
+    SessionFreshnessError,
+    _assert_token_fresh,
+    _context_from_claim,
+    _hydrate_from_db,
+)
 from ai_router_core import UserRole
 
 
@@ -53,3 +60,156 @@ def test_production_hydration_fails_closed_on_missing_user_or_query_error() -> N
         _hydrate_from_db(ctx, _db(), require_user=True)
     with pytest.raises(IdentityHydrationError):
         _hydrate_from_db(ctx, _db(error=True), require_user=True)
+
+
+def _session_db(user_id=None):
+    db = MagicMock()
+    db.execute.return_value.first.return_value = None if user_id is None else (user_id,)
+    return db
+
+
+def test_token_age_bound_rejects_stale_token(monkeypatch) -> None:
+    monkeypatch.setenv("AI_ROUTER_MAX_TOKEN_AGE_SECONDS", "900")
+    with pytest.raises(SessionFreshnessError):
+        _assert_token_fresh({"sub": "u1", "iat": 1_000}, None, now=2_000)
+
+
+def test_token_age_bound_allows_fresh_token(monkeypatch) -> None:
+    monkeypatch.setenv("AI_ROUTER_MAX_TOKEN_AGE_SECONDS", "900")
+    _assert_token_fresh({"sub": "u1", "iat": 1_900}, None, now=2_000)
+
+
+def test_token_age_bound_requires_issued_at(monkeypatch) -> None:
+    monkeypatch.setenv("AI_ROUTER_MAX_TOKEN_AGE_SECONDS", "900")
+    with pytest.raises(SessionFreshnessError):
+        _assert_token_fresh({"sub": "u1"}, None, now=2_000)
+
+
+def test_age_bound_disabled_by_default() -> None:
+    _assert_token_fresh({"sub": "u1"}, None, now=2_000_000_000)
+
+
+def test_revoked_session_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "ENVIRONMENT", "production")
+    with pytest.raises(SessionFreshnessError):
+        _assert_token_fresh({"sub": "u1", "sid": "s1"}, _session_db())
+
+
+def test_active_session_is_accepted(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "ENVIRONMENT", "production")
+    _assert_token_fresh({"sub": "u1", "sid": "s1"}, _session_db("u1"))
+
+
+def test_session_subject_mismatch_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "ENVIRONMENT", "production")
+    with pytest.raises(SessionFreshnessError):
+        _assert_token_fresh({"sub": "u1", "sid": "s1"}, _session_db("u2"))
+
+
+def test_revocation_check_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "ENVIRONMENT", "production")
+    monkeypatch.setenv("AI_ROUTER_SESSION_REVOCATION_CHECK", "false")
+    _assert_token_fresh({"sub": "u1", "sid": "s1"}, _session_db())
+
+
+def test_legacy_token_without_sid_skips_revocation(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "ENVIRONMENT", "production")
+    _assert_token_fresh({"sub": "u1"}, None)
+
+
+def test_session_lookup_failure_fails_open(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "ENVIRONMENT", "production")
+    db = MagicMock()
+    db.execute.side_effect = RuntimeError("relation \"user_sessions\" does not exist")
+    _assert_token_fresh({"sub": "u1", "sid": "s1"}, db)
+
+
+def test_session_lookup_failure_is_fatal_in_strict_mode(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "ENVIRONMENT", "production")
+    monkeypatch.setenv("AI_ROUTER_SESSION_REVOCATION_STRICT", "true")
+    db = MagicMock()
+    db.execute.side_effect = RuntimeError("boom")
+    with pytest.raises(SessionFreshnessError):
+        _assert_token_fresh({"sub": "u1", "sid": "s1"}, db)
+
+
+def test_role_downgrade_takes_effect_on_the_next_request() -> None:
+    ctx = _context_from_claim("u5", {"role": "admin"})
+    assert ctx.role == UserRole.ADMIN
+    hydrated = _hydrate_from_db(ctx, _db(SimpleNamespace(role="investor")))
+    assert hydrated.role == UserRole.INVESTOR
+
+
+def _req(method="GET", cookies=None, headers=None, path="/api/v1/anything"):
+    return SimpleNamespace(
+        method=method,
+        cookies=cookies or {},
+        headers=headers or {},
+        url=SimpleNamespace(path=path),
+    )
+
+
+def test_session_cookie_token_reads_the_platform_cookie() -> None:
+    assert main_module._session_cookie_token(_req(cookies={"techit_access": " jwt-1 "})) == "jwt-1"
+    assert main_module._session_cookie_token(_req()) == ""
+
+
+def test_cookie_authenticated_mutation_requires_double_submit() -> None:
+    with pytest.raises(main_module.HTTPException) as exc:
+        main_module._require_csrf_for_cookie_auth(_req(method="POST", cookies={"techit_csrf": "abc"}))
+    assert exc.value.status_code == 403
+
+
+def test_cookie_authenticated_mutation_accepts_matching_token() -> None:
+    main_module._require_csrf_for_cookie_auth(
+        _req(method="POST", cookies={"techit_csrf": "abc"}, headers={"X-CSRF-Token": "abc"}))
+
+
+def test_cookie_authenticated_mutation_rejects_mismatched_token() -> None:
+    with pytest.raises(main_module.HTTPException):
+        main_module._require_csrf_for_cookie_auth(
+            _req(method="DELETE", cookies={"techit_csrf": "abc"}, headers={"X-CSRF-Token": "zzz"}))
+
+
+def test_cookie_authenticated_safe_read_needs_no_csrf() -> None:
+    main_module._require_csrf_for_cookie_auth(_req(method="GET", cookies={"techit_csrf": "abc"}))
+
+
+def test_safe_detail_preserves_an_authored_domain_message() -> None:
+    assert main_module._safe_detail(ValueError("title must be at most 120 characters"), 422) == (
+        "title must be at most 120 characters"
+    )
+
+
+def test_safe_detail_suppresses_infrastructure_detail() -> None:
+    class OperationalError(Exception):
+        pass
+
+    OperationalError.__module__ = "sqlalchemy.exc"
+    detail = main_module._safe_detail(
+        OperationalError('relation "user_sessions" does not exist'), 404
+    )
+    assert detail == "Not found"
+    assert "user_sessions" not in detail
+
+
+def test_safe_detail_suppresses_submitted_input_from_parse_errors() -> None:
+    class JSONDecodeError(ValueError):
+        pass
+
+    JSONDecodeError.__module__ = "json.decoder"
+    assert "salary" not in main_module._safe_detail(
+        JSONDecodeError("Expecting value: line 1 column 12 (char 11)"), 400
+    )
+
+
+def test_rate_limit_key_hashes_the_credential_and_never_returns_it() -> None:
+    key = main_module._rate_limit_key(_req(headers={"Authorization": "Bearer super-secret-jwt"}))
+    assert "super-secret-jwt" not in key
+    assert key.startswith("cred:")
+
+
+def test_rate_limit_key_falls_back_to_ip_for_anonymous_callers() -> None:
+    request = _req()
+    request.client = SimpleNamespace(host="203.0.113.7")
+    assert main_module._rate_limit_key(request) == "ip:203.0.113.7"

@@ -4,13 +4,23 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED_PARTS = {".git", "__pycache__", "tests", "docs", "migrations", "scripts"}
 RUNTIME_SUFFIXES = {".py", ".pyi", ".toml", ".ini", ".yml", ".yaml", ".env", ".example"}
-FORBIDDEN = ("sqlite://", "sqlite3", "aiosqlite", "check_same_thread")
+# Match real dependency usage, not incidental mentions (for example the
+# error-sanitization module list in main.py names retired drivers on purpose).
+FORBIDDEN_PATTERNS = (
+    re.compile(r"sqlite://"),
+    re.compile(r"check_same_thread"),
+    re.compile(r"\b(?:import|from)\s+sqlite3\b"),
+    re.compile(r"\bsqlite3\.[A-Za-z_]"),
+    re.compile(r"\b(?:import|from)\s+aiosqlite\b"),
+    re.compile(r"\baiosqlite\.[A-Za-z_]"),
+)
 FORBIDDEN_RUNTIME_SCHEMA = ("AI_SETTLEMENT_OUTBOX_AUTO_CREATE",)
 
 
@@ -27,7 +37,7 @@ def violations() -> list[dict[str, str | int]]:
             continue
         for line_no, line in enumerate(lines, 1):
             lowered = line.lower()
-            if any(pattern in lowered for pattern in FORBIDDEN) or any(pattern.lower() in lowered for pattern in FORBIDDEN_RUNTIME_SCHEMA):
+            if any(pattern.search(line) for pattern in FORBIDDEN_PATTERNS) or any(schema.lower() in lowered for schema in FORBIDDEN_RUNTIME_SCHEMA):
                 result.append({"path": str(path.relative_to(ROOT)), "line": line_no, "text": line.strip()})
     return result
 
