@@ -711,7 +711,9 @@ class WorkspaceAIService:
             execution_profile=str(code_payload.get("execution_profile") or "balanced"),
             incubation=incubation,
         ))
-        return {"review": resp.output, "provider_cost_usd": resp.provider_cost_usd}
+        # WS-15: unit-cost accounting is internal to the router. Exposing it to
+        # the browser reveals the platform's provider economics for no UI need.
+        return {"review": resp.output}
 
     async def plan_code_task(self, user_context: UserContext, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare a coding plan inside the existing Workspace authority model.
@@ -911,7 +913,10 @@ class WorkspaceAIService:
                            trigger_event={"workspace_data": sprint_data, "workspace_context_pack": context_pack, "mode": "sprint_planning"},
                            shared_memory={"workspace_context_pack": context_pack})
         r   = await self.brain.trigger_agent(AgentType.WORKSPACE_ASSISTANT, ctx)
-        return r.output
+        # WS-15: project the agent result instead of forwarding it whole, so a
+        # future agent field cannot leak to the browser by default.
+        suggestions = r.output.get("task_suggestions") if isinstance(r.output, dict) else None
+        return {"task_suggestions": suggestions, "recommendations": r.recommendations}
 
     async def converse(self, user_context: UserContext, body: Dict[str, Any]) -> Dict[str, Any]:
         workspace_id = body.get("workspace_id") or body.get("workspaceId") or user_context.workspace_id
@@ -946,7 +951,6 @@ class WorkspaceAIService:
         return {
             "message": response.output,
             "model_used": response.model_used,
-            "provider": response.provider,
             "context_injected": not bool(context_pack.get("context_missing")),
             "context_version": context_pack.get("schema_version"),
             "approval_required": requested_action in restricted_actions,

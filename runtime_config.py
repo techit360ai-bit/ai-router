@@ -64,7 +64,13 @@ def _check_url(name: str, value: str | None, schemes: set[str], env_name: str) -
         return RuntimeCheck(name, False, f"{name} is required")
     parsed = urlparse(value)
     if parsed.scheme not in schemes:
-        return RuntimeCheck(name, False, f"{name} must use one of: {', '.join(sorted(schemes))}")
+        # Report only the scheme, never the full value: URLs such as
+        # DATABASE_URL can embed credentials and /ready may be public.
+        return RuntimeCheck(
+            name,
+            False,
+            f"{name} must use one of: {', '.join(sorted(schemes))} (got scheme '{parsed.scheme or 'none'}')",
+        )
     if env_name in PROD_ENVS and parsed.hostname in LOCAL_HOSTS:
         return RuntimeCheck(name, False, f"{name} cannot point at localhost in production/staging")
     return RuntimeCheck(name, True)
@@ -90,16 +96,29 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
     ))
 
     secret = values.get("JWT_SECRET") or values.get("SECRET_KEY") or ""
-    checks.append(RuntimeCheck(
-        "auth.jwt_secret",
-        bool(secret) and len(secret) >= 32 and not _is_placeholder(secret),
-        "JWT_SECRET must be set, strong, and non-placeholder",
-    ))
+    public_key = values.get("JWT_PUBLIC_KEY") or ""
+    algorithm = (values.get("JWT_ALGORITHM") or "HS256").strip().upper()
+
+    # The platform backend mints RS256 tokens in production/staging (HS256 is
+    # forbidden there by jwtKeyService.js), while dev/test uses HS256. Verify
+    # whichever algorithm the issuer actually uses instead of hard-coding HS256.
+    if algorithm in {"RS256", "RS384", "RS512"}:
+        checks.append(RuntimeCheck(
+            "auth.jwt_public_key",
+            bool(public_key) and not _is_placeholder(public_key),
+            "JWT_PUBLIC_KEY is required and must not be a placeholder when JWT_ALGORITHM uses RSA",
+        ))
+    else:
+        checks.append(RuntimeCheck(
+            "auth.jwt_secret",
+            bool(secret) and len(secret) >= 32 and not _is_placeholder(secret),
+            "JWT_SECRET must be set, strong, and non-placeholder",
+        ))
 
     checks.append(RuntimeCheck(
         "auth.jwt_algorithm",
-        values.get("JWT_ALGORITHM", "HS256") == "HS256",
-        "JWT_ALGORITHM must be HS256",
+        algorithm in {"HS256", "HS384", "HS512", "RS256", "RS384", "RS512"},
+        "JWT_ALGORITHM must be a supported HSnnn or RSnnn algorithm",
     ))
 
     allowed_origins = [item.strip() for item in values.get("ALLOWED_ORIGINS", "").split(",") if item.strip()]
@@ -173,6 +192,13 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
             "execution_grant.required",
             bool_env(values.get("REQUIRE_AI_EXECUTION_GRANT"), default=False),
             "REQUIRE_AI_EXECUTION_GRANT must be true in production/staging",
+        ))
+        # Placeholder completions are a local-dev convenience. They must never be
+        # reachable in production/staging, where output is treated as real.
+        checks.append(RuntimeCheck(
+            "ai.placeholder_responses_disabled",
+            not bool_env(values.get("ALLOW_AI_PLACEHOLDER_RESPONSES"), default=False),
+            "ALLOW_AI_PLACEHOLDER_RESPONSES must be false in production/staging",
         ))
         storage_key = values.get("AWS_ACCESS_KEY_ID", "")
         storage_secret = values.get("AWS_SECRET_ACCESS_KEY", "")
