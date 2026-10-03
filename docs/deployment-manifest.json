@@ -12,6 +12,8 @@
       "requiredEnv": [
         "ENVIRONMENT",
         "ALLOW_DEMO_AUTH",
+        "JWT_ALGORITHM",
+        "JWT_PUBLIC_KEY",
         "JWT_SECRET",
         "DATABASE_URL",
         "REDIS_URL",

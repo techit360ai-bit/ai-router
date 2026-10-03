@@ -217,12 +217,15 @@ def _gemini_payload(prompt: str, request: Any) -> Dict[str, Any]:
     }
 
 
-async def _openai_client(api_key: str, timeout: float) -> Any:
+async def _openai_client(api_key: str, timeout: float, base_url: str = "") -> Any:
     try:
         from openai import AsyncOpenAI  # type: ignore
     except ImportError as exc:
         raise ProviderConfigError("openai SDK is not installed") from exc
-    return AsyncOpenAI(api_key=api_key, timeout=timeout)
+    options: Dict[str, Any] = {"api_key": api_key, "timeout": timeout}
+    if base_url:
+        options["base_url"] = base_url.rstrip("/")
+    return AsyncOpenAI(**options)
 
 
 async def _anthropic_client(api_key: str, timeout: float) -> Any:
@@ -421,10 +424,13 @@ async def _post_json(client: Any, url: str, headers: Dict[str, str],
 async def _call_openai(model_config: Any, prompt: str, request: Any,
                        api_key: str, clients: Mapping[str, Any],
                        elapsed_ms: Callable[[], int]) -> ProviderResponse:
-    client = clients.get("openai")
+    provider = _provider_value(model_config)
+    client = clients.get(provider)
     created = client is None
     if created:
-        client = await _openai_client(api_key, _timeout_seconds(request))
+        configured_base_url = str(_value(model_config, "base_url", "") or "").strip()
+        base_url = _base_url(model_config) if configured_base_url else ""
+        client = await _openai_client(api_key, _timeout_seconds(request), base_url)
     try:
         model = _model_name(model_config)
         if "embedding" in _capabilities(model_config) and hasattr(client, "embeddings"):

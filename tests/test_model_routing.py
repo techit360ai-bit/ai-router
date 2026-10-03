@@ -36,8 +36,21 @@ def test_modern_models_are_registered() -> None:
         "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
         "gpt-5.4", "gpt-5.3-codex", "claude-fable-5", "claude-opus-5",
         "claude-sonnet-5", "kimi-k2.5", "mistral-large-latest", "codestral-latest",
+        "agentrouter-gpt-5.5",
     ):
         assert model_id in models
+
+
+def test_agentrouter_is_optional_and_enabled_only_with_explicit_configuration(monkeypatch) -> None:
+    router = ModelRouter()
+    model = router.registry.models["agentrouter-gpt-5.5"]
+    assert not router.registry.is_provider_configured(model, {})
+    assert not router.registry.is_provider_configured(model, {
+        "AGENTROUTER_ENABLED": "false", "AGENTROUTER_API_KEY": "test",
+    })
+    assert router.registry.is_provider_configured(model, {
+        "AGENTROUTER_ENABLED": "true", "AGENTROUTER_API_KEY": "test",
+    })
 
 
 def test_user_can_select_eligible_model() -> None:

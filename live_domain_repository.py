@@ -2,8 +2,9 @@
 
 The ai-router service layer historically returned well-shaped demo records from
 ``integration_guide.py``. This repository centralises durable access for those
-same contracts. Production and staging require ``DATABASE_URL``; local tests may
-use the empty in-memory store so contract tests do not need Postgres.
+same contracts. Production and staging require ``DATABASE_URL``. Pure unit
+tests may opt into the isolated in-memory seam through
+``reset_memory_store_for_tests``; it is not a runtime persistence fallback.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 from sqlalchemy import func, or_
 from sqlalchemy.orm import sessionmaker
 
-from runtime_config import PROD_ENVS, database_engine_options
+from runtime_config import PROD_ENVS, database_engine_options, require_postgres_url
 from policy_registry import SCORING_POLICY
 from database_schema import (
     CapTableEntry,
@@ -65,6 +66,7 @@ from database_schema import (
 
 _ENGINE = None
 _SESSION_FACTORY: Optional[sessionmaker] = None
+_TEST_MEMORY_ENABLED = False
 
 _MEMORY: Dict[str, List[Dict[str, Any]]] = {
     "projects": [],
@@ -118,9 +120,10 @@ def _get_session_factory() -> sessionmaker:
     if _SESSION_FACTORY is None:
         from sqlalchemy import create_engine
 
-        database_url = _database_url()
-        if not database_url:
-            raise LiveDomainDatabaseUnavailable("DATABASE_URL is required for live domain persistence")
+        try:
+            database_url = require_postgres_url(_database_url())
+        except RuntimeError as exc:
+            raise LiveDomainDatabaseUnavailable(str(exc)) from exc
         _ENGINE = create_engine(database_url, **database_engine_options(database_url))
         _SESSION_FACTORY = sessionmaker(bind=_ENGINE, expire_on_commit=False)
     return _SESSION_FACTORY
@@ -199,6 +202,15 @@ def _sort_newest(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def reset_memory_store_for_tests() -> None:
+    global _TEST_MEMORY_ENABLED
+    _TEST_MEMORY_ENABLED = True
+    for rows in _MEMORY.values():
+        rows.clear()
+
+
+def disable_memory_store_for_tests() -> None:
+    global _TEST_MEMORY_ENABLED
+    _TEST_MEMORY_ENABLED = False
     for rows in _MEMORY.values():
         rows.clear()
 
@@ -208,7 +220,14 @@ class LiveDomainRepository:
         self.db = db
         self.database_backed = db is not None or bool(_database_url())
         if not self.database_backed and _is_prod_env():
-            raise LiveDomainDatabaseUnavailable("DATABASE_URL is required outside local development")
+            raise LiveDomainDatabaseUnavailable("PostgreSQL DATABASE_URL is required outside local development")
+        if self.database_backed and db is None:
+            try:
+                require_postgres_url(_database_url())
+            except RuntimeError as exc:
+                raise LiveDomainDatabaseUnavailable(str(exc)) from exc
+        if not self.database_backed and not _TEST_MEMORY_ENABLED:
+            raise LiveDomainDatabaseUnavailable("PostgreSQL DATABASE_URL is required; enable the explicit test seam for pure unit tests")
 
     @contextmanager
     def _session(self, *, write: bool = False) -> Iterator[Any]:

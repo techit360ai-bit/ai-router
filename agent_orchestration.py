@@ -781,6 +781,7 @@ class TourGuideAgent(BaseAgent):
     async def execute(self, context: AgentContext) -> AgentResult:
         t0  = datetime.now()
         uc  = context.user_context
+        activity = context.trigger_event if isinstance(context.trigger_event, dict) else {}
         decay = ScoringEngine.compute_decay_factor(uc.days_since_update)
 
         # Momentum score
@@ -793,20 +794,44 @@ class TourGuideAgent(BaseAgent):
         ai = await self._call_ai(
             TaskType.TOUR_GUIDE,
             {"momentum_score": momentum, "decay_factor": round(decay, 4),
-             "days_inactive": uc.days_since_update},
+             "days_inactive": uc.days_since_update, "activity_context": activity},
             uc,
         )
 
-        actions = (
-            [{"priority": "critical", "action": "Complete daily check-in", "est_min": 5},
-             {"priority": "high", "action": "Log at least 1 hour of work", "est_min": 60}]
-            if momentum < 40 else
-            [{"priority": "high", "action": "Complete 3 priority tasks", "est_min": 120},
-             {"priority": "medium", "action": "Review training module", "est_min": 30}]
-            if momentum < 70 else
-            [{"priority": "high", "action": "Ship one feature or deliverable", "est_min": 180},
-             {"priority": "medium", "action": "Conduct user feedback session", "est_min": 60}]
-        )
+        reported_tasks = activity.get("tasks") if isinstance(activity.get("tasks"), list) else []
+        actions = []
+        for item in reported_tasks:
+            if not isinstance(item, dict) or item.get("completed"):
+                continue
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            try:
+                estimated_minutes = int(float(item.get("estimatedMinutes") or 30))
+            except (TypeError, ValueError):
+                estimated_minutes = 30
+            actions.append({
+                "priority": "high" if not actions else "medium",
+                "action": title,
+                "est_min": max(5, min(480, estimated_minutes)),
+            })
+            if len(actions) == 5:
+                break
+        profile = activity.get("profile") if isinstance(activity.get("profile"), dict) else {}
+        next_milestone = str(profile.get("nextMilestone") or profile.get("next_milestone") or "").strip()
+        if not actions and next_milestone:
+            actions = [{"priority": "high", "action": next_milestone, "est_min": 60}]
+        if not actions:
+            actions = (
+                [{"priority": "critical", "action": "Complete daily check-in", "est_min": 5},
+                 {"priority": "high", "action": "Log at least 1 hour of work", "est_min": 60}]
+                if momentum < 40 else
+                [{"priority": "high", "action": "Complete 3 priority tasks", "est_min": 120},
+                 {"priority": "medium", "action": "Review training module", "est_min": 30}]
+                if momentum < 70 else
+                [{"priority": "high", "action": "Ship one feature or deliverable", "est_min": 180},
+                 {"priority": "medium", "action": "Conduct user feedback session", "est_min": 60}]
+            )
 
         recs = []
         if decay < 0.70:

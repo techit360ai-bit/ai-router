@@ -14,7 +14,21 @@ import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, Mapping, Optional
+
+
+def _configured_spend_defaults() -> tuple[float, int]:
+    """Read spend defaults from the versioned SLO profile, not source code."""
+    profile_path = os.getenv("SCALABILITY_SLO_PATH") or str(Path(__file__).resolve().parent / "config" / "scalability_slos.json")
+    try:
+        profile = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+        defaults = profile.get("capacity_defaults") or {}
+        return float(defaults.get("provider_spend_base_usd_per_minute", 0)), max(
+            1, int(defaults.get("provider_spend_base_demand_units", 1))
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 0.0, 1
 
 
 class ExecutionAuthorizationError(PermissionError):
@@ -41,8 +55,8 @@ class ExecutionGrantVerifier:
     """Verify short-lived backend grants without interpreting billing state."""
 
     def __init__(self, secret: Optional[str] = None) -> None:
-        self.secret = secret or os.getenv("AI_EXECUTION_GRANT_SECRET") or os.getenv("JWT_SECRET")
-        self.algorithm = os.getenv("AI_EXECUTION_GRANT_ALGORITHM", "HS256")
+        self.secret = secret or os.getenv("AI_EXECUTION_GRANT_SECRET") or os.getenv("JWT_PUBLIC_KEY") or os.getenv("JWT_SECRET")
+        self.algorithm = os.getenv("AI_EXECUTION_GRANT_ALGORITHM", "RS256" if os.getenv("ENVIRONMENT", "development").lower() in {"production", "staging"} else "HS256")
         self.issuer = os.getenv("AI_EXECUTION_GRANT_ISSUER", "techit-backend")
         self.audience = os.getenv("AI_EXECUTION_GRANT_AUDIENCE", "techit-ai-router")
 
@@ -55,7 +69,7 @@ class ExecutionGrantVerifier:
             from jose import JWTError, jwt
             claims = jwt.decode(
                 token,
-                self.secret,
+                self.secret.replace("\\n", "\n"),
                 algorithms=[self.algorithm],
                 issuer=self.issuer,
                 audience=self.audience,
@@ -221,6 +235,261 @@ class ProviderCircuitBreaker:
             self._state[key]["failures"] = failures
             if failures >= self.failure_threshold:
                 self._state[key]["opened_until"] = time.time() + self.cooldown_seconds
+
+
+@dataclass(frozen=True)
+class SpendReservation:
+    """A short-lived provider spend reservation for one execution attempt."""
+
+    key: str
+    provider: str
+    minute: int
+    reserved_usd: float
+
+
+class ProviderSpendBudget:
+    """Dynamic per-minute provider spend guard.
+
+    The budget starts at ``AI_PROVIDER_SPEND_BASE_USD_PER_MINUTE`` for
+    ``AI_PROVIDER_SPEND_BASE_DEMAND_UNITS`` users/calls and scales linearly
+    with observed demand. Redis is used when shared state is enabled; the
+    process-local path remains useful for development and single instances.
+    """
+
+    def __init__(self) -> None:
+        configured_budget, configured_units = _configured_spend_defaults()
+        self.base_budget_usd = max(0.0, float(os.getenv("AI_PROVIDER_SPEND_BASE_USD_PER_MINUTE", str(configured_budget))))
+        self.base_demand_units = max(1, int(os.getenv("AI_PROVIDER_SPEND_BASE_DEMAND_UNITS", str(configured_units))))
+        self.growth_multiplier = max(0.0, float(os.getenv("AI_PROVIDER_SPEND_GROWTH_MULTIPLIER", "1")))
+        configured_cap = float(os.getenv("AI_PROVIDER_SPEND_MAX_USD_PER_MINUTE", "0"))
+        self.max_budget_usd = configured_cap if configured_cap > 0 else None
+        self.enabled = os.getenv("AI_PROVIDER_SPEND_GUARD_ENABLED", "true").lower() not in {"0", "false", "no"}
+        self._redis = _redis_client()
+        self._local_spend: Dict[str, float] = defaultdict(float)
+        self._local_calls: Dict[int, int] = defaultdict(int)
+        self._local_users: Dict[int, set[str]] = defaultdict(set)
+        self._lock = threading.Lock()
+
+    def budget_for(self, demand_units: int) -> float:
+        demand = max(self.base_demand_units, int(demand_units or 0))
+        budget = self.base_budget_usd * (demand / self.base_demand_units) * self.growth_multiplier
+        if self.max_budget_usd is not None:
+            budget = min(budget, self.max_budget_usd)
+        return round(max(0.0, budget), 8)
+
+    def _demand(self, minute: int, user_id: str, explicit_units: Optional[int]) -> int:
+        if self._redis is not None:
+            calls_key = f"techit:ai:demand:calls:{minute}"
+            users_key = f"techit:ai:demand:users:{minute}"
+            self._redis.incr(calls_key)
+            self._redis.expire(calls_key, 120)
+            self._redis.sadd(users_key, user_id or "anonymous")
+            self._redis.expire(users_key, 120)
+            calls = int(self._redis.get(f"techit:ai:demand:calls:{minute}") or 0)
+            users = int(self._redis.scard(f"techit:ai:demand:users:{minute}") or 0)
+            return max(self.base_demand_units, calls, users, int(explicit_units or 0))
+        with self._lock:
+            self._local_calls[minute] += 1
+            self._local_users[minute].add(user_id or "anonymous")
+            return max(self.base_demand_units, self._local_calls[minute], len(self._local_users[minute]), int(explicit_units or 0))
+
+    def reserve(
+        self,
+        *,
+        provider: str,
+        estimated_cost_usd: float,
+        user_id: str,
+        demand_units: Optional[int] = None,
+    ) -> SpendReservation:
+        minute = int(time.time() // 60)
+        key = f"techit:ai:spend:{provider}:{minute}"
+        estimated = max(0.0, float(estimated_cost_usd or 0.0))
+        demand = self._demand(minute, user_id, demand_units)
+        budget = self.budget_for(demand)
+        if self.enabled and estimated > 0:
+            if self._redis is not None:
+                current = float(self._redis.incrbyfloat(key, estimated))
+                self._redis.expire(key, 120)
+                if current > budget:
+                    self._redis.incrbyfloat(key, -estimated)
+                    try:
+                        from hardening_metrics import METRICS
+                        METRICS.increment("provider_spend_reservation_rejected", provider)
+                    except Exception:
+                        pass
+                    raise ExecutionAuthorizationError(
+                        f"provider spend budget exceeded for {provider}: {current:.6f} > {budget:.6f} USD/min"
+                    )
+            else:
+                with self._lock:
+                    current = self._local_spend[key] + estimated
+                    if current > budget:
+                        try:
+                            from hardening_metrics import METRICS
+                            METRICS.increment("provider_spend_reservation_rejected", provider)
+                        except Exception:
+                            pass
+                        raise ExecutionAuthorizationError(
+                            f"provider spend budget exceeded for {provider}: {current:.6f} > {budget:.6f} USD/min"
+                        )
+                    self._local_spend[key] = current
+        return SpendReservation(key=key, provider=provider, minute=minute, reserved_usd=estimated)
+
+    def settle(self, reservation: Optional[SpendReservation], actual_cost_usd: float = 0.0) -> None:
+        if reservation is None or not self.enabled or reservation.reserved_usd <= 0:
+            return
+        delta = float(actual_cost_usd or 0.0) - reservation.reserved_usd
+        if self._redis is not None:
+            self._redis.incrbyfloat(reservation.key, delta)
+            return
+        with self._lock:
+            self._local_spend[reservation.key] = max(0.0, self._local_spend[reservation.key] + delta)
+
+
+class ProviderCredentialPool:
+    """Least-loaded provider key selection with cooldown and quarantine state."""
+
+    def __init__(self) -> None:
+        self.cooldown_seconds = max(1, int(os.getenv("AI_PROVIDER_KEY_COOLDOWN_SECONDS", "60")))
+        self.max_in_flight = max(0, int(os.getenv("AI_PROVIDER_KEY_MAX_IN_FLIGHT", "0")))
+        self._state: Dict[str, Dict[str, float]] = defaultdict(dict)
+        self._lock = threading.Lock()
+        self._redis = _redis_client()
+
+    @staticmethod
+    def _redis_key(provider: str, key_env: str) -> str:
+        return f"techit:ai:credential:{provider}:{key_env}"
+
+    def acquire(self, provider: str, key_envs: Iterable[str]) -> Optional[str]:
+        candidates = [str(item) for item in key_envs if item and os.environ.get(str(item))]
+        if not candidates:
+            return None
+        now = time.time()
+        if self._redis is not None:
+            lock = self._redis.lock(f"techit:ai:credential-lock:{provider}", timeout=2, blocking_timeout=1)
+            acquired = lock.acquire()
+            if not acquired:
+                raise ExecutionAuthorizationError(f"provider credential coordination unavailable for {provider}")
+            try:
+                healthy = []
+                for item in candidates:
+                    state = self._redis.hgetall(self._redis_key(provider, item))
+                    cooldown = float(state.get("cooldown_until", 0) or 0)
+                    in_flight = int(state.get("in_flight", 0) or 0)
+                    if cooldown <= now and not state.get("quarantined") and (self.max_in_flight <= 0 or in_flight < self.max_in_flight):
+                        healthy.append((item, in_flight))
+                if not healthy:
+                    raise ExecutionAuthorizationError(f"all configured credentials are unavailable for {provider}")
+                selected = min(healthy, key=lambda item: item[1])[0]
+                redis_key = self._redis_key(provider, selected)
+                self._redis.hincrby(redis_key, "in_flight", 1)
+                self._redis.expire(redis_key, self.cooldown_seconds * 2)
+                return selected
+            finally:
+                lock.release()
+        with self._lock:
+            healthy = [item for item in candidates if float(self._state[f"{provider}:{item}"].get("cooldown_until", 0)) <= now and not self._state[f"{provider}:{item}"].get("quarantined") and (self.max_in_flight <= 0 or self._state[f"{provider}:{item}"].get("in_flight", 0) < self.max_in_flight)]
+            if not healthy:
+                raise ExecutionAuthorizationError(f"all configured credentials are unavailable for {provider}")
+            selected = min(healthy, key=lambda item: self._state[f"{provider}:{item}"].get("in_flight", 0))
+            state = self._state[f"{provider}:{selected}"]
+            state["in_flight"] = state.get("in_flight", 0) + 1
+            try:
+                from hardening_metrics import METRICS
+                METRICS.increment("provider_credential_acquires", provider)
+            except Exception:
+                pass
+            return selected
+
+    def release(self, provider: str, key_env: Optional[str], error: Optional[Exception] = None) -> None:
+        if not key_env:
+            return
+        if self._redis is not None:
+            redis_key = self._redis_key(provider, key_env)
+            current = max(0, int(self._redis.hincrby(redis_key, "in_flight", -1)))
+            self._redis.hset(redis_key, "in_flight", current)
+            if error.__class__.__name__ == "ProviderRateLimitError":
+                self._redis.hset(redis_key, "cooldown_until", time.time() + self.cooldown_seconds)
+            elif error.__class__.__name__ == "ProviderAuthError":
+                self._redis.hset(redis_key, "quarantined", 1)
+            self._redis.expire(redis_key, self.cooldown_seconds * 2)
+            return
+        with self._lock:
+            state = self._state[f"{provider}:{key_env}"]
+            state["in_flight"] = max(0, state.get("in_flight", 0) - 1)
+            if error.__class__.__name__ == "ProviderRateLimitError":
+                state["cooldown_until"] = time.time() + self.cooldown_seconds
+                try:
+                    from hardening_metrics import METRICS
+                    METRICS.increment("provider_credential_cooldowns", provider)
+                except Exception:
+                    pass
+            elif error.__class__.__name__ == "ProviderAuthError":
+                state["quarantined"] = 1
+                try:
+                    from hardening_metrics import METRICS
+                    METRICS.increment("provider_credential_quarantines", provider)
+                except Exception:
+                    pass
+
+    def status(self) -> Dict[str, Dict[str, float]]:
+        if self._redis is not None:
+            return {key: {str(name): float(value) for name, value in self._redis.hgetall(key).items()} for key in self._redis.scan_iter("techit:ai:credential:*") if not key.endswith("-lock")}
+        with self._lock:
+            return {key: dict(value) for key, value in self._state.items()}
+
+
+class AdmissionLease:
+    def __init__(self, controller: "AIAdmissionController") -> None:
+        self._controller = controller
+        self._released = False
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._controller.release()
+
+
+class AIAdmissionController:
+    """Bound total in-flight AI work before provider calls are attempted."""
+
+    def __init__(self) -> None:
+        self.max_in_flight = max(0, int(os.getenv("AI_MAX_IN_FLIGHT", "0")))
+        self.max_queue = max(0, int(os.getenv("AI_MAX_QUEUE", "0")))
+        self._in_flight = 0
+        self._queued = 0
+        self._condition = asyncio.Condition()
+
+    async def acquire(self) -> AdmissionLease:
+        if self.max_in_flight <= 0:
+            return AdmissionLease(self)
+        async with self._condition:
+            if self._in_flight >= self.max_in_flight and self._queued >= self.max_queue:
+                raise ExecutionAuthorizationError("AI admission capacity exhausted")
+            if self._in_flight >= self.max_in_flight:
+                self._queued += 1
+                try:
+                    await self._condition.wait_for(lambda: self._in_flight < self.max_in_flight)
+                finally:
+                    self._queued = max(0, self._queued - 1)
+            self._in_flight += 1
+            return AdmissionLease(self)
+
+    def release(self) -> None:
+        if self.max_in_flight <= 0:
+            return
+        async def notify() -> None:
+            async with self._condition:
+                self._in_flight = max(0, self._in_flight - 1)
+                self._condition.notify(1)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(notify())
+        except RuntimeError:
+            self._in_flight = max(0, self._in_flight - 1)
+
+    def snapshot(self) -> Dict[str, int]:
+        return {"max_in_flight": self.max_in_flight, "max_queue": self.max_queue, "in_flight": self._in_flight, "queued": self._queued}
 
 
 class ResponseCache:

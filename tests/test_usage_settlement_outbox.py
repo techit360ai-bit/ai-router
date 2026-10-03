@@ -3,20 +3,28 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from usage_settlement_client import UsageSettlementClient
+from runtime_config import is_postgres_url
+
+
+POSTGRES_TEST_URL = os.getenv("AI_ROUTER_POSTGRES_TEST_URL", "")
 
 
 @pytest.mark.asyncio
-async def test_outbox_survives_client_restart_and_replays(monkeypatch, tmp_path) -> None:
-    database_url = f"sqlite:///{tmp_path / 'settlement.db'}"
+@pytest.mark.skipif(not is_postgres_url(POSTGRES_TEST_URL), reason="AI_ROUTER_POSTGRES_TEST_URL is required for PostgreSQL integration tests")
+async def test_outbox_survives_client_restart_and_replays(monkeypatch) -> None:
+    database_url = POSTGRES_TEST_URL
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("BACKEND_USAGE_SETTLEMENT_URL", "https://backend.example/internal/usage-settlement")
     monkeypatch.setenv("AI_ROUTER_SETTLEMENT_SECRET", "test-secret")
-    monkeypatch.setenv("AI_SETTLEMENT_OUTBOX_AUTO_CREATE", "true")
+
+    with create_engine(database_url).begin() as connection:
+        connection.execute(text("DELETE FROM usage_settlement_outbox WHERE request_id = 'request-1'"))
 
     first = UsageSettlementClient()
 

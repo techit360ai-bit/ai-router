@@ -136,12 +136,12 @@ class UsageSettlementOutbox:
             Column("updated_at", DateTime(timezone=True), nullable=False),
             Column("delivered_at", DateTime(timezone=True)),
         )
-        engine_options: Dict[str, Any] = {"pool_pre_ping": True}
-        if self.database_url.startswith("sqlite"):
-            engine_options["connect_args"] = {"check_same_thread": False}
-        self._engine = create_engine(self.database_url, **engine_options)
-        if os.getenv("AI_SETTLEMENT_OUTBOX_AUTO_CREATE", "false").lower() in {"1", "true", "yes"}:
-            metadata.create_all(self._engine, tables=[self._table])
+        from runtime_config import database_engine_options, require_postgres_url
+        try:
+            database_url = require_postgres_url(self.database_url)
+        except RuntimeError as exc:
+            raise RuntimeError("AI settlement outbox requires a PostgreSQL DATABASE_URL") from exc
+        self._engine = create_engine(database_url, **database_engine_options(database_url))
 
     async def enqueue(self, body: Dict[str, Any]) -> bool:
         if not self.enabled:

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import provider_adapters
 from ai_router_core import AIRequest, ModelRouter, TaskType, UserContext, UserRole
 from provider_adapters import ProviderConfigError, call_provider_model
 
@@ -65,6 +66,45 @@ async def test_openai_responses_payload_and_usage() -> None:
     )
     assert result.text == "response" and result.tokens == 10
     assert responses.calls[0] == {"model": "gpt-5.6-luna", "input": "prompt", "max_output_tokens": 123}
+
+
+@pytest.mark.asyncio
+async def test_agentrouter_uses_responses_wire_contract_without_replacing_openai() -> None:
+    responses = Recorder(SimpleNamespace(
+        output_text="agentrouter response",
+        usage=SimpleNamespace(input_tokens=5, output_tokens=7, total_tokens=12),
+    ))
+    result = await call_provider_model(
+        _model("agentrouter-gpt-5.5"),
+        "prompt",
+        _request(max_tokens=321),
+        env={"AGENTROUTER_API_KEY": "test"},
+        clients={"agentrouter": SimpleNamespace(responses=responses)},
+    )
+    assert result.text == "agentrouter response" and result.tokens == 12
+    assert responses.calls[0] == {
+        "model": "gpt-5.5", "input": "prompt", "max_output_tokens": 321,
+    }
+
+
+@pytest.mark.asyncio
+async def test_agentrouter_sdk_client_receives_its_own_base_url(monkeypatch) -> None:
+    seen = {}
+    responses = Recorder(SimpleNamespace(
+        output_text="ok", usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+    ))
+
+    async def fake_client(api_key, timeout, base_url=""):
+        seen.update(api_key=api_key, timeout=timeout, base_url=base_url)
+        return SimpleNamespace(responses=responses, aclose=lambda: None)
+
+    monkeypatch.setattr(provider_adapters, "_openai_client", fake_client)
+    await call_provider_model(
+        _model("agentrouter-gpt-5.5"), "prompt", _request(),
+        env={"AGENTROUTER_API_KEY": "test"},
+    )
+    assert seen["api_key"] == "test"
+    assert seen["base_url"] == "https://agentrouter.org/v1"
 
 
 @pytest.mark.asyncio
