@@ -104,6 +104,13 @@ celery.conf.update(
         "workers.document_cleanup_weekly":      {"queue": "scheduled"},
         "workers.impact_snapshot_daily":        {"queue": "scheduled"},
         "workers.trust_continuous_verification": {"queue": "scheduled"},
+        "workers.validation_synthesis_generate": {"queue": "ai_heavy"},
+        "workers.validation_abuse_analysis": {"queue": "ai_light"},
+        "workers.validation_recommendation_update": {"queue": "ai_light"},
+        "workers.validation_evidence_reconciliation": {"queue": "scheduled"},
+        "workers.validation_expiry_check": {"queue": "scheduled"},
+        "workers.support_maintenance": {"queue": "scheduled"},
+        "workers.support_ai_reconciliation": {"queue": "ai_light"},
     },
 )
 
@@ -173,6 +180,9 @@ celery.conf.beat_schedule = {
         "task":     "workers.trust_continuous_verification",
         "schedule": crontab(minute="*/30"),
     },
+    "validation-expiry-check": {"task": "workers.validation_expiry_check", "schedule": crontab(minute="*/10")},
+    "validation-evidence-reconciliation": {"task": "workers.validation_evidence_reconciliation", "schedule": crontab(minute=15, hour="*/6")},
+    "support-maintenance": {"task": "workers.support_maintenance", "schedule": crontab(minute="*/5")},
 }
 
 
@@ -1846,3 +1856,99 @@ def trust_continuous_verification(self, execute: Optional[bool] = None, limit: i
     except Exception as exc:
         logger.error("trust_continuous_verification_task_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120)
+
+
+# ==========================================================================
+# CUSTOMER EVIDENCE VALIDATION PIPELINE
+# ==========================================================================
+
+@celery.task(name="workers.validation_synthesis_generate", bind=True, max_retries=3)
+def validation_synthesis_generate(self, session_id: str, owner_id: str):
+    try:
+        from customer_validation_service import CustomerValidationService
+        with _get_db() as db:
+            result = CustomerValidationService.create_synthesis(db, owner_id, session_id, generated_by="celery_deterministic")
+            CustomerValidationService.recommendations(db, owner_id, session_id)
+            return {"session_id": session_id, "cached": result.get("cached", False), "status": "ready"}
+    except Exception as exc:
+        logger.error("validation_synthesis_task_failed", session_id=session_id, error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery.task(name="workers.validation_recommendation_update", bind=True, max_retries=2)
+def validation_recommendation_update(self, session_id: str, owner_id: str):
+    try:
+        from customer_validation_service import CustomerValidationService
+        with _get_db() as db:
+            return CustomerValidationService.recommendations(db, owner_id, session_id)
+    except Exception as exc:
+        logger.error("validation_recommendation_task_failed", session_id=session_id, error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery.task(name="workers.validation_abuse_analysis", bind=True, max_retries=2)
+def validation_abuse_analysis(self, session_id: str):
+    """Deterministic reconciliation hook; raw network identifiers are never persisted."""
+    try:
+        from database_schema import CustomerValidationResponse
+        with _get_db() as db:
+            rows = db.query(CustomerValidationResponse).filter(CustomerValidationResponse.session_id == session_id).all()
+            duplicate_hashes = len(rows) - len({row.answer_hash for row in rows})
+            return {"session_id": session_id, "responses": len(rows), "duplicate_hashes": duplicate_hashes}
+    except Exception as exc:
+        logger.error("validation_abuse_task_failed", session_id=session_id, error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery.task(name="workers.validation_expiry_check", bind=True, max_retries=2)
+def validation_expiry_check(self, limit: int = 500):
+    try:
+        from database_schema import CustomerValidationSession
+        from customer_validation_service import CustomerValidationService
+        with _get_db() as db:
+            rows = db.query(CustomerValidationSession).filter(CustomerValidationSession.status == "active", CustomerValidationSession.expires_at <= datetime.utcnow()).limit(limit).all()
+            for row in rows: CustomerValidationService._expire_if_needed(db, row)
+            return {"expired": len(rows)}
+    except Exception as exc:
+        logger.error("validation_expiry_task_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery.task(name="workers.validation_evidence_reconciliation", bind=True, max_retries=2)
+def validation_evidence_reconciliation(self, limit: int = 500):
+    try:
+        from database_schema import CustomerValidationSession
+        from customer_validation_service import CustomerValidationService
+        with _get_db() as db:
+            rows = db.query(CustomerValidationSession).order_by(CustomerValidationSession.updated_at.desc()).limit(limit).all()
+            repaired = 0
+            for row in rows:
+                if row.qualified_response_count < 0 or row.total_response_count < row.qualified_response_count:
+                    row.qualified_response_count = max(0, row.qualified_response_count); row.total_response_count = max(row.total_response_count, row.qualified_response_count); repaired += 1
+            return {"checked": len(rows), "repaired": repaired}
+    except Exception as exc:
+        logger.error("validation_reconciliation_task_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery.task(name="workers.support_maintenance", bind=True, max_retries=3)
+def support_maintenance(self):
+    """Ask the authoritative BACKEND to run SLA/retention/incident maintenance."""
+    import urllib.request
+    try:
+        url = os.getenv("BACKEND_SUPPORT_MAINTENANCE_URL")
+        secret = os.getenv("BACKEND_SUPPORT_MAINTENANCE_SECRET")
+        if not url or not secret:
+            return {"skipped": True, "reason": "backend_support_maintenance_not_configured"}
+        request = urllib.request.Request(url, method="POST", headers={"X-TechIT-Internal-Secret": secret, "Content-Type": "application/json"}, data=b"{}")
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        logger.error("support_maintenance_task_failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery.task(name="workers.support_ai_reconciliation", bind=True, max_retries=2)
+def support_ai_reconciliation(self, case_id: str):
+    """Queue-only hook; BACKEND remains the source of truth for case state."""
+    return {"case_id": case_id, "status": "queued", "authoritative_service": "backend"}
