@@ -64,7 +64,13 @@ def _check_url(name: str, value: str | None, schemes: set[str], env_name: str) -
         return RuntimeCheck(name, False, f"{name} is required")
     parsed = urlparse(value)
     if parsed.scheme not in schemes:
-        return RuntimeCheck(name, False, f"{name} must use one of: {', '.join(sorted(schemes))}")
+        # Report only the scheme, never the full value: URLs such as
+        # DATABASE_URL can embed credentials and /ready may be public.
+        return RuntimeCheck(
+            name,
+            False,
+            f"{name} must use one of: {', '.join(sorted(schemes))} (got scheme '{parsed.scheme or 'none'}')",
+        )
     if env_name in PROD_ENVS and parsed.hostname in LOCAL_HOSTS:
         return RuntimeCheck(name, False, f"{name} cannot point at localhost in production/staging")
     return RuntimeCheck(name, True)

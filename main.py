@@ -220,6 +220,10 @@ _HS_ALGORITHMS = frozenset({"HS256", "HS384", "HS512"})
 _RS_ALGORITHMS = frozenset({"RS256", "RS384", "RS512"})
 ALLOW_DEMO_AUTH = os.getenv("ALLOW_DEMO_AUTH", "true").lower() in ("1", "true", "yes")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
+SERVICE_NAME = os.getenv("SERVICE_NAME") or "ai-router"
+APP_VERSION = os.getenv("APP_VERSION") or "3.0.0"
+GIT_SHA = os.getenv("GIT_SHA") or os.getenv("RENDER_GIT_COMMIT") or os.getenv("COMMIT_SHA") or "unknown"
+BUILD_TIME = os.getenv("BUILD_TIME") or os.getenv("BUILD_TIMESTAMP") or "unknown"
 
 # Token freshness controls (WS-05). A verified signature only proves the token
 # was minted by the platform; it does not prove the session behind it is still
@@ -652,13 +656,29 @@ async def health():
     """Liveness check. Does not prove dependencies are ready."""
     return {
         "status":         "healthy",
+        "service":        SERVICE_NAME,
         "ai_brain":       "operational",
-        "version":        "3.0.0",
+        "version":        APP_VERSION,
+        "sha":            GIT_SHA,
+        "builtAt":        BUILD_TIME,
+        "environment":    ENVIRONMENT,
         "agents":         34,
         "task_types":     len(TaskType),
         "scoring_models": 20,
         "db_tables":      42,
         "ai_router_mode": ai_router_mode(),
+    }
+
+
+@app.get("/version", tags=["Status"])
+async def version():
+    """Build identity for deploy-parity checks."""
+    return {
+        "service":     SERVICE_NAME,
+        "version":     APP_VERSION,
+        "sha":         GIT_SHA,
+        "builtAt":     BUILD_TIME,
+        "environment": ENVIRONMENT,
     }
 
 

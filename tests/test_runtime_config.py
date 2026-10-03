@@ -162,6 +162,21 @@ def test_development_allows_demo_auth_and_missing_provider_keys() -> None:
     assert _failed_names(env) == set()
 
 
+def test_production_accepts_deployed_frontend_origin() -> None:
+    env = {**BASE_PROD_ENV, "ALLOWED_ORIGINS": "https://beta.techitnetwork.com"}
+    assert "http.cors_origins" not in _failed_names(env)
+    assert "mcp.base_url" not in _failed_names(env)
+
+
+def test_mcp_ready_detail_reports_scheme_only() -> None:
+    env = {**BASE_PROD_ENV, "MCP_BASE_URL": "http://backend.techitnetwork.com/api/mcp"}
+    check = next(item for item in runtime_checks(env) if item.name == "mcp.base_url")
+    assert check.ok is False
+    assert "got scheme 'http'" in check.detail
+    # The detail must not echo the full URL (it can embed credentials elsewhere).
+    assert "backend.techitnetwork.com" not in check.detail
+
+
 def test_database_engine_options_bound_readiness_timeouts() -> None:
     env = {
         "DATABASE_CONNECT_TIMEOUT_SECONDS": "999",
@@ -191,6 +206,8 @@ def main() -> int:
         test_production_rejects_local_dependency_urls,
         test_production_rejects_wildcard_or_insecure_cors,
         test_development_allows_demo_auth_and_missing_provider_keys,
+        test_production_accepts_deployed_frontend_origin,
+        test_mcp_ready_detail_reports_scheme_only,
         test_database_engine_options_bound_readiness_timeouts,
     ]
     for test in tests:
