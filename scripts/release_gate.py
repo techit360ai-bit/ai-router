@@ -32,6 +32,7 @@ ENV_CONTRACT = {
     "AI_EXECUTION_GRANT_SECRET": "ci-execution-grant-secret-0123456789abcdef",
     "BACKEND_USAGE_SETTLEMENT_URL": "https://api.techit.example/internal/usage-settlement",
     "AI_ROUTER_SETTLEMENT_SECRET": "ci-settlement-secret-0123456789abcdef",
+    "ADMIN_AI_ROUTER_TELEMETRY_SECRET": "ci-admin-telemetry-secret-0123456789abcdef",
     "AWS_S3_BUCKET": "techit-production-uploads",
     "AWS_ACCESS_KEY_ID": "ci-production-storage-access-key",
     "AWS_SECRET_ACCESS_KEY": "ci-production-storage-secret-key",
