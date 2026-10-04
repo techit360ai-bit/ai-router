@@ -90,6 +90,48 @@ class MCPClient:
             user_token=user_token,
         )
 
+    async def connections(self, *, user_token: str) -> List[Dict[str, Any]]:
+        """GET /api/mcp/connections — workspace credential status.
+
+        Credentials are workspace-scoped (ADR-1). The workspace is derived
+        server-side from the forwarded token, so the client never sends one, and
+        the response carries presence/metadata only — never a secret (ADR-2).
+        """
+        return await self._request("GET", "/connections", user_token=user_token)
+
+    async def is_connected(self, plugin: str, *, user_token: str) -> bool:
+        """True when the acting workspace has a credential for `plugin`."""
+        try:
+            for row in await self.connections(user_token=user_token):
+                if row.get("plugin") == plugin:
+                    return bool(row.get("connected"))
+        except MCPError:
+            return False
+        return False
+
+    async def connect(
+        self,
+        plugin: str,
+        credential: str,
+        *,
+        user_token: str,
+        ttl_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """POST /api/mcp/connections/:plugin — store a workspace credential.
+
+        Operator action: BACKEND requires a human admin/owner in the acting
+        workspace. Never call this from an agent.
+        """
+        return await self._request(
+            "POST", f"/connections/{plugin}",
+            json={"credential": credential, "ttlSeconds": ttl_seconds},
+            user_token=user_token,
+        )
+
+    async def disconnect(self, plugin: str, *, user_token: str) -> Dict[str, Any]:
+        """DELETE /api/mcp/connections/:plugin — remove a workspace credential."""
+        return await self._request("DELETE", f"/connections/{plugin}", user_token=user_token)
+
     async def _request(
         self,
         method: str,
