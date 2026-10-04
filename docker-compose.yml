@@ -72,6 +72,11 @@ services:
       - MCP_BASE_URL=${MCP_BASE_URL:-http://host.docker.internal:3000/api/mcp}
       - MCP_TIMEOUT=${MCP_TIMEOUT:-10}
       - SENTRY_DSN=${SENTRY_DSN}
+      # Build identity for /health and /version. The deploy workflow passes the
+      # exact commit it checked out so deploy-parity can be verified instead of
+      # assumed (previously these were unset -> "unknown").
+      - GIT_SHA=${GIT_SHA:-unknown}
+      - BUILD_TIME=${BUILD_TIME:-unknown}
       - PYTHONPATH=/app
     depends_on:
       postgres:

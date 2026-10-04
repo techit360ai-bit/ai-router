@@ -1,0 +1,63 @@
+name: TECHIT AI Router — Deploy to EC2
+
+# Production for ai-router is the AWS EC2 host (docker compose), not Render.
+# This workflow lived only on the `staging` branch, so pushes to `main` never
+# deployed the service — which is why /version stayed 404 in production.
+
+on:
+  push:
+    branches: [main]
+  # Ops can reconcile the box without an empty commit.
+  workflow_dispatch:
+
+concurrency:
+  group: ai-router-ec2-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          # Fail the job on the first failed command so a blocked pull can never
+          # be reported as a successful deploy.
+          script_stop: true
+          script: |
+            set -e
+            cd ~/ai-router
+
+            # Reconcile the working tree before building: keep any in-flight
+            # edits in a stash, then force the checkout to the commit CI built.
+            git fetch origin main
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              git stash push --include-untracked -m "autostash pre-deploy $(date -u +%FT%TZ)" || true
+            fi
+            git checkout main
+            git reset --hard FETCH_HEAD
+            DEPLOYED_SHA="$(git rev-parse HEAD)"
+            echo "deploying $DEPLOYED_SHA"
+
+            GIT_SHA="$DEPLOYED_SHA" BUILD_TIME="$(date -u +%FT%TZ)" \
+              docker compose up -d --no-deps --build api worker scheduler
+            docker compose ps
+
+            # Verify the deploy landed through the public edge, not just that
+            # the process started: /version must return the commit we built.
+            for _ in $(seq 1 20); do
+              if curl -fsS https://api.techitnetwork.com/health >/dev/null 2>&1; then break; fi
+              sleep 3
+            done
+            VERSION="$(curl -fsS https://api.techitnetwork.com/version)"
+            echo "version: $VERSION"
+            if ! echo "$VERSION" | grep -q "\"sha\": \"$DEPLOYED_SHA\"" \
+               && ! echo "$VERSION" | grep -q "\"sha\":\"$DEPLOYED_SHA\""; then
+              echo "❌ /version sha does not match the deployed commit $DEPLOYED_SHA"
+              exit 1
+            fi
+            echo "✅ AI Router deployed $DEPLOYED_SHA"
