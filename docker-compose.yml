@@ -67,6 +67,11 @@ services:
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - JWT_SECRET=${JWT_SECRET:-${SECRET_KEY}}
       - SECRET_KEY=${SECRET_KEY}
+      # RS256 verification key. The platform backend signs user tokens with
+      # RS256 in production/staging; the router verifies them with this public
+      # key (HS256 remains available for local dev via JWT_ALLOWED_ALGORITHMS).
+      - JWT_PUBLIC_KEY=${JWT_PUBLIC_KEY}
+      - JWT_ALLOWED_ALGORITHMS=${JWT_ALLOWED_ALGORITHMS:-HS256,RS256}
       - ALLOW_DEMO_AUTH=${ALLOW_DEMO_AUTH:-false}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
       - MCP_BASE_URL=${MCP_BASE_URL:-http://host.docker.internal:3000/api/mcp}
