@@ -987,9 +987,67 @@ class WorkspaceAIService:
         """
         from mcp_client import MCPError, get_mcp_client
         try:
-            return await get_mcp_client().invoke(plugin, tool, params, user_token=user_token)
+            result = await get_mcp_client().invoke(plugin, tool, params, user_token=user_token)
         except MCPError as exc:
             return {"ok": False, "error": {"code": "mcp_failed", "error": str(exc)}}
+        # Surface a workspace-credential DENY actionably. BACKEND fails closed
+        # with `credential_missing` (never an env/global fallback — ADR-1/ADR-3);
+        # the agent learns to ask the workspace to connect the provider instead
+        # of seeing a generic upstream error.
+        err = result.get("error") if isinstance(result, dict) else None
+        if isinstance(err, dict) and err.get("code") == "credential_missing":
+            return {
+                "ok": False,
+                "error": {
+                    "code": "connector_not_connected",
+                    "error": err.get("error") or f"Connect {plugin} for this workspace to use this tool.",
+                    "provider": plugin,
+                    "action": "connect_provider",
+                },
+            }
+        return result
+
+    async def list_connections(self, user_context: UserContext, user_token: str) -> Dict[str, Any]:
+        """GET /api/v1/workspace/tools/connections -- 0 execution budget units.
+
+        Workspace-scoped connector credential status (never a secret). The agent
+        layer uses this to tell a user which providers their workspace must
+        connect before a tool can run.
+        """
+        from mcp_client import MCPError, get_mcp_client
+        try:
+            return {"ok": True, "connections": await get_mcp_client().connections(user_token=user_token)}
+        except MCPError as exc:
+            return {"ok": False, "error": str(exc), "connections": []}
+
+    async def execution_intelligence(
+        self,
+        user_context: UserContext,
+        user_token: str,
+        *,
+        role: Optional[str] = None,
+        project_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        hackathon_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """GET /api/v1/workspace/intelligence/execution -- 0 execution budget units.
+
+        The canonical, scope/role-aware execution view shared by every surface
+        (founder, collaborator, investor, organization, hackathon). Trust stays
+        owned by the Trust Engine; the view returns `trustSubjects` pointers.
+        """
+        from mcp_client import MCPError, get_mcp_client
+        try:
+            view = await get_mcp_client().execution_intelligence(
+                user_token=user_token,
+                role=role,
+                project_id=project_id,
+                organization_id=organization_id,
+                hackathon_id=hackathon_id,
+            )
+            return {"ok": True, **view}
+        except MCPError as exc:
+            return {"ok": False, "error": str(exc)}
 
     async def _safe_list_tools(self, user_token: Optional[str]) -> List[Dict[str, Any]]:
         """Best-effort tool fetch for prompt-context injection. Never raises."""
