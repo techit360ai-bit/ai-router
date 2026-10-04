@@ -1020,6 +1020,35 @@ class WorkspaceAIService:
         except MCPError as exc:
             return {"ok": False, "error": str(exc), "connections": []}
 
+    async def execution_intelligence(
+        self,
+        user_context: UserContext,
+        user_token: str,
+        *,
+        role: Optional[str] = None,
+        project_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        hackathon_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """GET /api/v1/workspace/intelligence/execution -- 0 execution budget units.
+
+        The canonical, scope/role-aware execution view shared by every surface
+        (founder, collaborator, investor, organization, hackathon). Trust stays
+        owned by the Trust Engine; the view returns `trustSubjects` pointers.
+        """
+        from mcp_client import MCPError, get_mcp_client
+        try:
+            view = await get_mcp_client().execution_intelligence(
+                user_token=user_token,
+                role=role,
+                project_id=project_id,
+                organization_id=organization_id,
+                hackathon_id=hackathon_id,
+            )
+            return {"ok": True, **view}
+        except MCPError as exc:
+            return {"ok": False, "error": str(exc)}
+
     async def _safe_list_tools(self, user_token: Optional[str]) -> List[Dict[str, Any]]:
         """Best-effort tool fetch for prompt-context injection. Never raises."""
         if not user_token:

@@ -63,6 +63,40 @@ class MCPClient:
         """GET /api/mcp/contributions — execution-intelligence feed."""
         return await self._request("GET", "/contributions", user_token=user_token)
 
+    async def execution_intelligence(
+        self,
+        *,
+        user_token: str,
+        role: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        program_id: Optional[str] = None,
+        cohort_id: Optional[str] = None,
+        hackathon_id: Optional[str] = None,
+        since_hours: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """GET /api/mcp/execution-intelligence — the canonical scope/role view.
+
+        Every consumer surface (founder, collaborator, investor, organization,
+        hackathon) reads the SAME projection. This client never scores: trust is
+        owned by the canonical Trust Engine and returned as `trustSubjects`.
+        """
+        params: Dict[str, Any] = {}
+        for key, value in {
+            "role": role,
+            "actorId": actor_id,
+            "projectId": project_id,
+            "organizationId": organization_id,
+            "programId": program_id,
+            "cohortId": cohort_id,
+            "hackathonId": hackathon_id,
+            "sinceHours": since_hours,
+        }.items():
+            if value is not None and str(value) != "":
+                params[key] = value
+        return await self._request("GET", "/execution-intelligence", user_token=user_token, params=params)
+
     async def approvals(self, *, user_token: str) -> List[Dict[str, Any]]:
         """GET /api/mcp/approvals — pending/approved/rejected approval requests."""
         return await self._request("GET", "/approvals", user_token=user_token)
@@ -139,6 +173,7 @@ class MCPClient:
         *,
         user_token: str,
         json: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> Any:
         if not user_token:
             raise MCPError("user_token is required (forward the caller's Bearer token)")
@@ -146,7 +181,7 @@ class MCPClient:
         url = f"{self.base_url}{path}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as http:
-                response = await http.request(method, url, headers=headers, json=json)
+                response = await http.request(method, url, headers=headers, json=json, params=params)
         except httpx.HTTPError as exc:
             logger.error("mcp_request_failed", method=method, path=path, error=str(exc))
             raise MCPError(f"MCP request failed: {exc}") from exc
