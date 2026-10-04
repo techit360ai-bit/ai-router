@@ -21,10 +21,16 @@ jobs:
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.5
+        env:
+          # RS256 verification key: the platform backend signs user tokens with
+          # RS256 in production, so the router must verify them with the matching
+          # public key. Only the public half ever reaches this box.
+          JWT_PUBLIC_KEY: ${{ secrets.JWT_PUBLIC_KEY }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: JWT_PUBLIC_KEY
           # Fail the job on the first failed command so a blocked pull can never
           # be reported as a successful deploy.
           script_stop: true
@@ -42,6 +48,19 @@ jobs:
             git reset --hard FETCH_HEAD
             DEPLOYED_SHA="$(git rev-parse HEAD)"
             echo "deploying $DEPLOYED_SHA"
+
+            # Ensure the RS256 verification key is present for docker compose to
+            # substitute into the api container (idempotent upsert; .env is only
+            # ever touched when the deploy secret is configured).
+            if [ -n "$JWT_PUBLIC_KEY" ]; then
+              touch .env
+              if grep -q '^JWT_PUBLIC_KEY=' .env; then
+                grep -v '^JWT_PUBLIC_KEY=' .env > .env.tmp && mv .env.tmp .env
+              fi
+              printf 'JWT_PUBLIC_KEY=%s\n' "$JWT_PUBLIC_KEY" >> .env
+              chmod 600 .env
+              echo "JWT_PUBLIC_KEY ensured in ~/ai-router/.env"
+            fi
 
             GIT_SHA="$DEPLOYED_SHA" BUILD_TIME="$(date -u +%FT%TZ)" \
               docker compose up -d --no-deps --build api worker scheduler
