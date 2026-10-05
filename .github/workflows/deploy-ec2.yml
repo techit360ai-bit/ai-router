@@ -3,11 +3,15 @@ name: TECHIT AI Router — Deploy to EC2
 # Production for ai-router is the AWS EC2 host (docker compose), not Render.
 # This workflow lived only on the `staging` branch, so pushes to `main` never
 # deployed the service — which is why /version stayed 404 in production.
+#
+# The compose file now reads DATABASE_URL / REDIS_URL / CELERY_BROKER from the
+# environment. On the box that means AWS RDS PostgreSQL + ElastiCache Redis;
+# this workflow reconciles the tree, provisions ~/ai-router/.env, runs the
+# Alembic migration against RDS, rebuilds, and verifies the probes.
 
 on:
   push:
     branches: [main]
-  # Ops can reconcile the box without an empty commit.
   workflow_dispatch:
 
 concurrency:
@@ -26,11 +30,20 @@ jobs:
           # RS256 in production, so the router must verify them with the matching
           # public key. Only the public half ever reaches this box.
           JWT_PUBLIC_KEY: ${{ secrets.JWT_PUBLIC_KEY }}
+          # RDS PostgreSQL + ElastiCache Redis (never the local compose
+          # containers in production).
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          CELERY_BROKER: ${{ secrets.REDIS_URL }}
+          # LLM providers — required by the production readiness contract when
+          # AI_ROUTER_MODE=llm.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: JWT_PUBLIC_KEY
+          envs: JWT_PUBLIC_KEY,DATABASE_URL,REDIS_URL,CELERY_BROKER,OPENAI_API_KEY,ANTHROPIC_API_KEY
           # Fail the job on the first failed command so a blocked pull can never
           # be reported as a successful deploy.
           script_stop: true
@@ -49,19 +62,75 @@ jobs:
             DEPLOYED_SHA="$(git rev-parse HEAD)"
             echo "deploying $DEPLOYED_SHA"
 
-            # Ensure the RS256 verification key is present for docker compose to
-            # substitute into the api container (idempotent upsert; .env is only
-            # ever touched when the deploy secret is configured).
-            if [ -n "$JWT_PUBLIC_KEY" ]; then
-              touch .env
-              if grep -q '^JWT_PUBLIC_KEY=' .env; then
-                grep -v '^JWT_PUBLIC_KEY=' .env > .env.tmp && mv .env.tmp .env
-              fi
-              printf 'JWT_PUBLIC_KEY=%s\n' "$JWT_PUBLIC_KEY" >> .env
-              chmod 600 .env
-              echo "JWT_PUBLIC_KEY ensured in ~/ai-router/.env"
+            if [ -z "$DATABASE_URL" ]; then
+              echo "❌ DATABASE_URL secret is not set (AI Router must use RDS PostgreSQL)"; exit 1
+            fi
+            if [ -z "$REDIS_URL" ]; then
+              echo "❌ REDIS_URL secret is not set (AI Router must use ElastiCache)"; exit 1
             fi
 
+            # --- provision ~/ai-router/.env ----------------------------------
+            # Non-secret production constants + the RS256 public key. Values are
+            # idempotent upserts so the env never accumulates duplicates.
+            touch .env && chmod 600 .env
+            # The settlement secret is shared with the backend; read it from
+            # the backend env on this same box rather than duplicating it in a
+            # second secret store.
+            AI_ROUTER_SETTLEMENT_SECRET="$(node -e '
+              const fs = require("fs");
+              try {
+                const t = fs.readFileSync("../BACKEND/backend/.env", "utf8");
+                const m = t.match(/^AI_ROUTER_SETTLEMENT_SECRET=(.*)$/m);
+                process.stdout.write(m ? m[1].replace(/^"|"$/g, "") : "");
+              } catch { process.stdout.write(""); }
+            ')"
+            if [ -z "$AI_ROUTER_SETTLEMENT_SECRET" ]; then
+              echo "⚠️ AI_ROUTER_SETTLEMENT_SECRET not found in ~/BACKEND/backend/.env; settlement may be disabled"
+            fi
+
+            DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" CELERY_BROKER="$CELERY_BROKER" \
+            JWT_PUBLIC_KEY="$JWT_PUBLIC_KEY" \
+            OPENAI_API_KEY="$OPENAI_API_KEY" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            AI_ROUTER_SETTLEMENT_SECRET="$AI_ROUTER_SETTLEMENT_SECRET" \
+            node -e '
+              const fs = require("fs");
+              let s = fs.readFileSync(".env", "utf8");
+              const upsert = (k, v) => {
+                const re = new RegExp("^" + k + "=.*$", "m");
+                s = re.test(s) ? s.replace(re, () => k + "=" + v) : s.replace(/\s*$/, "") + "\n" + k + "=" + v + "\n";
+              };
+              const constants = {
+                ENVIRONMENT: "production",
+                ALLOW_DEMO_AUTH: "false",
+                ALLOWED_ORIGINS: "https://beta.techitnetwork.com",
+                JWT_ISSUER: "techit-backend",
+                JWT_AUDIENCE: "techit-platform",
+                JWT_ALGORITHM: "RS256",
+                MCP_BASE_URL: "https://backend.techitnetwork.com/api/mcp",
+                MCP_TIMEOUT: "10",
+                BACKEND_USAGE_SETTLEMENT_URL: "https://backend.techitnetwork.com/internal/usage-settlement",
+              };
+              for (const [k, v] of Object.entries(constants)) upsert(k, v);
+              for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AI_ROUTER_SETTLEMENT_SECRET"]) {
+                if (process.env[k]) upsert(k, process.env[k]);
+              }
+              const pk = process.env.JWT_PUBLIC_KEY || "";
+              if (pk) {
+                // Single quoted line with \n escapes: docker compose decodes it
+                // back to a real PEM, and a raw multi-line value can never
+                // corrupt the .env.
+                const escaped = pk.includes("\n") ? pk.replace(/\r?\n/g, "\\n") : pk;
+                upsert("JWT_PUBLIC_KEY", JSON.stringify(escaped));
+              }
+              fs.writeFileSync(".env", s);
+              fs.chmodSync(".env", 0o600);
+              console.log(JSON.stringify({ event: "ai_router_env_ready", keys: s.split("\n").filter((l) => l.includes("=")).length }));
+            '
+
+            # --- migrate the shared RDS database -----------------------------
+            docker compose run --rm --no-deps migrate
+
+            # --- rebuild + (re)start the services ---------------------------
             GIT_SHA="$DEPLOYED_SHA" BUILD_TIME="$(date -u +%FT%TZ)" \
               docker compose up -d --no-deps --build api worker scheduler
             docker compose ps
@@ -77,6 +146,15 @@ jobs:
             if ! echo "$VERSION" | grep -q "\"sha\": \"$DEPLOYED_SHA\"" \
                && ! echo "$VERSION" | grep -q "\"sha\":\"$DEPLOYED_SHA\""; then
               echo "❌ /version sha does not match the deployed commit $DEPLOYED_SHA"
+              exit 1
+            fi
+
+            READY_STATUS="$(curl -s -o /dev/null -w '%{http_code}' https://api.techitnetwork.com/ready || true)"
+            echo "/ready status: $READY_STATUS"
+            if [ "$READY_STATUS" != "200" ]; then
+              curl -s https://api.techitnetwork.com/ready || true
+              echo
+              echo "❌ AI Router /ready is $READY_STATUS"
               exit 1
             fi
             echo "✅ AI Router deployed $DEPLOYED_SHA"

@@ -8,7 +8,7 @@ services:
       dockerfile: Dockerfile.api
     command: alembic upgrade head
     environment:
-      - DATABASE_URL=postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db
+      - DATABASE_URL=${DATABASE_URL:-postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db}
       - PYTHONPATH=/app
     depends_on:
       postgres:
@@ -24,8 +24,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db
-      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=${DATABASE_URL:-postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_API_KEY_2=${OPENAI_API_KEY_2}
       - OPENAI_API_KEY_3=${OPENAI_API_KEY_3}
@@ -74,7 +74,7 @@ services:
       - JWT_ALLOWED_ALGORITHMS=${JWT_ALLOWED_ALGORITHMS:-HS256,RS256}
       - ALLOW_DEMO_AUTH=${ALLOW_DEMO_AUTH:-false}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
-      - MCP_BASE_URL=${MCP_BASE_URL:-http://host.docker.internal:3000/api/mcp}
+      - MCP_BASE_URL=${MCP_BASE_URL:-https://backend.techitnetwork.com/api/mcp}
       - MCP_TIMEOUT=${MCP_TIMEOUT:-10}
       - SENTRY_DSN=${SENTRY_DSN}
       # Build identity for /health and /version. The deploy workflow passes the
@@ -106,9 +106,9 @@ services:
       --concurrency=4
       -Q default,ai_heavy,ai_light,scheduled
     environment:
-      - DATABASE_URL=postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db
-      - REDIS_URL=redis://redis:6379
-      - CELERY_BROKER=redis://redis:6379
+      - DATABASE_URL=${DATABASE_URL:-postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - CELERY_BROKER=${CELERY_BROKER:-redis://redis:6379}
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_API_KEY_2=${OPENAI_API_KEY_2}
@@ -148,9 +148,9 @@ services:
       dockerfile: Dockerfile.worker
     command: celery -A workers.workers beat --loglevel=info
     environment:
-      - DATABASE_URL=postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db
-      - CELERY_BROKER=redis://redis:6379
-      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=${DATABASE_URL:-postgresql://techit:${POSTGRES_PASSWORD}@postgres:5432/techit_db}
+      - CELERY_BROKER=${CELERY_BROKER:-redis://redis:6379}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - PYTHONPATH=/app
     depends_on:
@@ -169,7 +169,7 @@ services:
       dockerfile: Dockerfile.worker
     command: celery -A workers.workers flower --port=5555
     environment:
-      - CELERY_BROKER=redis://redis:6379
+      - CELERY_BROKER=${CELERY_BROKER:-redis://redis:6379}
       - PYTHONPATH=/app
     depends_on:
       redis:
