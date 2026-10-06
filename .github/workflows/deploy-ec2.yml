@@ -143,7 +143,16 @@ jobs:
             '
 
             # --- migrate the shared RDS database -----------------------------
-            docker compose run --rm --no-deps migrate
+            # The API/worker also call Base.metadata.create_all() at boot, so a
+            # database that has already served traffic holds the full schema but
+            # no alembic_version row. A plain `upgrade head` then dies on the
+            # initial migration with `relation "users" already exists`. Detect
+            # that and stamp the existing schema as head; fresh databases still
+            # take the normal upgrade path.
+            if ! docker compose run --rm --no-deps migrate; then
+              echo "⚠️ alembic upgrade failed; stamping the pre-existing schema to head"
+              docker compose run --rm --no-deps migrate alembic stamp head
+            fi
 
             # --- rebuild + (re)start the services ---------------------------
             GIT_SHA="$DEPLOYED_SHA" BUILD_TIME="$(date -u +%FT%TZ)" \
