@@ -43,6 +43,10 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
+          # The Python image build on this memory-tight box can exceed the 10m
+          # appleboy default and get killed mid-build ("Run Command Timeout"),
+          # leaving the router down. Give it room to finish (swap-backed).
+          command_timeout: 45m
           envs: JWT_PUBLIC_KEY,DATABASE_URL,REDIS_URL,CELERY_BROKER,OPENAI_API_KEY,ANTHROPIC_API_KEY
           # Fail the job on the first failed command so a blocked pull can never
           # be reported as a successful deploy.
