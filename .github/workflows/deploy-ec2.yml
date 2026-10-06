@@ -62,6 +62,17 @@ jobs:
             DEPLOYED_SHA="$(git rev-parse HEAD)"
             echo "deploying $DEPLOYED_SHA"
 
+            # DevOps-managed RDS credential wins over the (possibly stale) repo
+            # secret. This service is Python/libpq, so it needs sslmode=require
+            # (the node-pg platform uses no-verify under pg 8.23).
+            if [ -s "$HOME/.techit/platform-database-url" ]; then
+              DATABASE_URL="$(CRED="$(cat "$HOME/.techit/platform-database-url")" node -e '
+                const u = new URL(process.env.CRED);
+                u.searchParams.set("sslmode", "require");
+                process.stdout.write(u.toString());
+              ')"
+            fi
+
             if [ -z "$DATABASE_URL" ]; then
               echo "❌ DATABASE_URL secret is not set (AI Router must use RDS PostgreSQL)"; exit 1
             fi
