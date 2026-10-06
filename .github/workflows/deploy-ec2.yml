@@ -102,11 +102,35 @@ jobs:
             if [ -z "$AI_ROUTER_SETTLEMENT_SECRET" ]; then
               echo "⚠️ AI_ROUTER_SETTLEMENT_SECRET not found in ~/BACKEND/backend/.env; settlement may be disabled"
             fi
+            ADMIN_AI_ROUTER_TELEMETRY_SECRET="$(node -e '
+              const fs = require("fs");
+              try {
+                const t = fs.readFileSync("../BACKEND/backend/.env", "utf8");
+                const m = t.match(/^ADMIN_AI_ROUTER_TELEMETRY_SECRET=(.*)$/m);
+                process.stdout.write(m ? m[1].replace(/^"|"$/g, "") : "");
+              } catch { process.stdout.write(""); }
+            ')"
+            AI_EXECUTION_GRANT_SECRET="$(node -e '
+              const fs = require("fs");
+              try {
+                const t = fs.readFileSync("../BACKEND/backend/.env", "utf8");
+                const m = t.match(/^AI_EXECUTION_GRANT_SECRET=(.*)$/m);
+                process.stdout.write(m ? m[1].replace(/^"|"$/g, "") : "");
+              } catch { process.stdout.write(""); }
+            ')"
+            if [ -z "$ADMIN_AI_ROUTER_TELEMETRY_SECRET" ]; then
+              echo "❌ ADMIN_AI_ROUTER_TELEMETRY_SECRET not found in ~/BACKEND/backend/.env"; exit 1
+            fi
+            if [ -z "$AI_EXECUTION_GRANT_SECRET" ]; then
+              echo "❌ AI_EXECUTION_GRANT_SECRET not found in ~/BACKEND/backend/.env"; exit 1
+            fi
 
             DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" CELERY_BROKER="$CELERY_BROKER" \
             JWT_PUBLIC_KEY="$JWT_PUBLIC_KEY" \
             OPENAI_API_KEY="$OPENAI_API_KEY" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             AI_ROUTER_SETTLEMENT_SECRET="$AI_ROUTER_SETTLEMENT_SECRET" \
+            ADMIN_AI_ROUTER_TELEMETRY_SECRET="$ADMIN_AI_ROUTER_TELEMETRY_SECRET" \
+            AI_EXECUTION_GRANT_SECRET="$AI_EXECUTION_GRANT_SECRET" \
             node -e '
               const fs = require("fs");
               let s = fs.readFileSync(".env", "utf8");
@@ -124,9 +148,10 @@ jobs:
                 MCP_BASE_URL: "https://backend.techitnetwork.com/api/mcp",
                 MCP_TIMEOUT: "10",
                 BACKEND_USAGE_SETTLEMENT_URL: "https://backend.techitnetwork.com/internal/usage-settlement",
+                REQUIRE_AI_EXECUTION_GRANT: "true",
               };
               for (const [k, v] of Object.entries(constants)) upsert(k, v);
-              for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AI_ROUTER_SETTLEMENT_SECRET"]) {
+              for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AI_ROUTER_SETTLEMENT_SECRET", "ADMIN_AI_ROUTER_TELEMETRY_SECRET", "AI_EXECUTION_GRANT_SECRET"]) {
                 if (process.env[k]) upsert(k, process.env[k]);
               }
               const pk = process.env.JWT_PUBLIC_KEY || "";
