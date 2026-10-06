@@ -5,6 +5,7 @@
     "pytest": "Development-only finding; upgrade with test-suite review.",
     "starlette": "Upgrade with FastAPI and API contract validation.",
     "ecdsa": "Transitive cryptography advisory; monitor python-jose dependency resolution.",
+    "python-jose": "GHSA-3qf3-8w2g-rqmx / CVE-2024-33663 algorithm confusion (no patched release exists as of 2026-10-05, affects through 3.5.0). Mitigated here: main.py selects the verification key per-algorithm, so the RS256 public key is never used as an HMAC secret. Replace or upgrade when a fixed version ships.",
     "pyasn1": "Transitive ASN.1 advisory; upgrade with authentication compatibility tests."
   }
 }
