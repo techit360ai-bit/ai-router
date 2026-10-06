@@ -165,6 +165,14 @@ jobs:
               if curl -fsS https://api.techitnetwork.com/health >/dev/null 2>&1; then break; fi
               sleep 3
             done
+            if ! curl -fsS https://api.techitnetwork.com/health >/dev/null 2>&1; then
+              echo "--- local api probe ---"
+              curl -s -o /dev/null -w 'localhost:8000/health=%{http_code}\n' http://localhost:8000/health || true
+              echo "--- api logs (last 120) ---"
+              docker compose logs --no-color --tail=120 api || true
+              echo "--- worker logs (last 40) ---"
+              docker compose logs --no-color --tail=40 worker || true
+            fi
             VERSION="$(curl -fsS https://api.techitnetwork.com/version)"
             echo "version: $VERSION"
             if ! echo "$VERSION" | grep -q "\"sha\": \"$DEPLOYED_SHA\"" \
