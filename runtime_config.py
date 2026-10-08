@@ -255,8 +255,14 @@ def database_engine_options(database_url: str, env: Mapping[str, str] | None = N
     connect_timeout = read_positive_int(values, "DATABASE_CONNECT_TIMEOUT_SECONDS", 5, 60)
     options: dict[str, object] = {
         "pool_pre_ping": True,
-        "pool_size": 5,
-        "max_overflow": 5,
+        # Keep the whole platform under the shared RDS max_connections budget.
+        # The AI router runs several SQLAlchemy engines per process and the
+        # uvicorn + celery processes together previously held ~60 of the 81
+        # connections, which starved the backend with "remaining connection
+        # slots are reserved for roles with privileges of the rds_reserved
+        # role". Override per deployment if more headroom is ever needed.
+        "pool_size": read_positive_int(values, "DATABASE_POOL_SIZE", 2, 20),
+        "max_overflow": read_positive_int(values, "DATABASE_MAX_OVERFLOW", 2, 20),
         "pool_timeout": read_positive_int(values, "DATABASE_POOL_TIMEOUT_SECONDS", 5, 60),
     }
     options["connect_args"] = {"connect_timeout": connect_timeout}
