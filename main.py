@@ -710,6 +710,23 @@ async def ready():
     except Exception as exc:  # noqa: BLE001
         checks.append(RuntimeCheck("ai.registry", False, str(exc)))
 
+    # Live provider credential validation. The static runtime check above only
+    # rejects placeholder-shaped values, so a wrong-but-present key passes while
+    # every AI call fails with 401. Probe each configured provider (cached) and
+    # fail readiness on a genuine auth error so this can never ship silently.
+    provider_reports: dict = {}
+    try:
+        from provider_key_health import provider_key_health
+        provider_reports = provider_key_health()
+        for provider, report in provider_reports.items():
+            checks.append(RuntimeCheck(
+                f"provider.{provider}.credentials",
+                bool(report.get("ok")),
+                str(report.get("detail", "")),
+            ))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(RuntimeCheck("provider.credentials", False, str(exc)))
+
     db_ok = True
     db_detail = "ok"
     try:
@@ -741,6 +758,7 @@ async def ready():
     body = {
         "status": "ready" if ok else "not_ready",
         "ai_router_mode": ai_router_mode(),
+        "provider_credentials": provider_reports,
         "checks": [
             {"name": check.name, "ok": check.ok, "detail": check.detail}
             for check in checks
