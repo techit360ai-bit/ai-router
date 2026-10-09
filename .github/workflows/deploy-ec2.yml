@@ -168,6 +168,12 @@ jobs:
                 MCP_TIMEOUT: "10",
                 BACKEND_USAGE_SETTLEMENT_URL: "https://backend.techitnetwork.com/internal/usage-settlement",
                 REQUIRE_AI_EXECUTION_GRANT: "true",
+                // Bound every engine per process. main.py builds more than one
+                // engine (identity + platform) and Celery forks, so a per-engine
+                // cap is what keeps the router from filling RDS on its own; the
+                // PgBouncer proxy then collapses all of it into one small pool.
+                DATABASE_POOL_SIZE: "2",
+                DATABASE_MAX_OVERFLOW: "2",
               };
               for (const [k, v] of Object.entries(constants)) upsert(k, v);
               for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AI_ROUTER_SETTLEMENT_SECRET", "ADMIN_AI_ROUTER_TELEMETRY_SECRET", "AI_EXECUTION_GRANT_SECRET"]) {
