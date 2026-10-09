@@ -69,12 +69,31 @@ jobs:
             # DevOps-managed RDS credential wins over the (possibly stale) repo
             # secret. This service is Python/libpq, so it needs sslmode=require
             # (the node-pg platform uses no-verify under pg 8.23).
+            #
+            # Prefer the in-box PgBouncer transaction proxy when the backend
+            # deploy has provisioned it: all AI-router processes and Celery
+            # workers then share one small server-side pool instead of each
+            # opening its own. Falls back to a direct RDS connection if the
+            # proxy is not listening.
             if [ -s "$HOME/.techit/platform-database-url" ]; then
-              DATABASE_URL="$(CRED="$(cat "$HOME/.techit/platform-database-url")" node -e '
-                const u = new URL(process.env.CRED);
-                u.searchParams.set("sslmode", "require");
-                process.stdout.write(u.toString());
-              ')"
+              if node -e 'const n=require("net");const s=n.connect(6432,"127.0.0.1");s.on("connect",()=>{s.end();process.exit(0)});s.on("error",()=>process.exit(1));setTimeout(()=>process.exit(1),2000)'; then
+                DATABASE_URL="$(CRED="$(cat "$HOME/.techit/platform-database-url")" node -e '
+                  const u = new URL(process.env.CRED);
+                  u.hostname = "127.0.0.1";
+                  u.port = "6432";
+                  // Loopback hop is plain; PgBouncer terminates TLS to RDS.
+                  u.searchParams.set("sslmode", "disable");
+                  process.stdout.write(u.toString());
+                ')"
+                echo "ℹ️ AI Router using in-box PgBouncer proxy 127.0.0.1:6432"
+              else
+                DATABASE_URL="$(CRED="$(cat "$HOME/.techit/platform-database-url")" node -e '
+                  const u = new URL(process.env.CRED);
+                  u.searchParams.set("sslmode", "require");
+                  process.stdout.write(u.toString());
+                ')"
+                echo "ℹ️ PgBouncer not listening; AI Router using direct RDS"
+              fi
             fi
 
             if [ -z "$DATABASE_URL" ]; then
