@@ -79,10 +79,10 @@ jobs:
               if node -e 'const n=require("net");const s=n.connect(6432,"127.0.0.1");s.on("connect",()=>{s.end();process.exit(0)});s.on("error",()=>process.exit(1));setTimeout(()=>process.exit(1),2000)'; then
                 DATABASE_URL="$(CRED="$(cat "$HOME/.techit/platform-database-url")" node -e '
                   const u = new URL(process.env.CRED);
-                  // The api/worker/scheduler run in docker bridge networks, so
-                  // they reach the host's PgBouncer via host.docker.internal
-                  // (mapped to the bridge gateway by extra_hosts), not the
-                  // container's own loopback.
+                  // api/worker/scheduler run on docker bridge networks and
+                  // reach the host PgBouncer through host.docker.internal
+                  // (mapped to the bridge gateway by extra_hosts), not their
+                  // own loopback.
                   u.hostname = "host.docker.internal";
                   u.port = "6432";
                   // Loopback hop is plain; PgBouncer terminates TLS to RDS.
