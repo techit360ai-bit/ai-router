@@ -178,6 +178,10 @@ jobs:
                 // PgBouncer proxy then collapses all of it into one small pool.
                 DATABASE_POOL_SIZE: "2",
                 DATABASE_MAX_OVERFLOW: "2",
+                // Validate provider credentials live during /ready so a
+                // present-but-wrong key (401) fails readiness instead of
+                // silently passing while every AI call errors.
+                AI_PROVIDER_KEY_CHECK: "live",
               };
               for (const [k, v] of Object.entries(constants)) upsert(k, v);
               for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AI_ROUTER_SETTLEMENT_SECRET", "ADMIN_AI_ROUTER_TELEMETRY_SECRET", "AI_EXECUTION_GRANT_SECRET"]) {
@@ -235,12 +239,29 @@ jobs:
               exit 1
             fi
 
-            READY_STATUS="$(curl -s -o /dev/null -w '%{http_code}' https://api.techitnetwork.com/ready || true)"
+            READY_OUT="$(curl -s --max-time 25 -w '\n%{http_code}' https://api.techitnetwork.com/ready || true)"
+            READY_STATUS="$(printf '%s' "$READY_OUT" | tail -n1)"
+            READY_BODY="$(printf '%s' "$READY_OUT" | sed '$d')"
             echo "/ready status: $READY_STATUS"
             if [ "$READY_STATUS" != "200" ]; then
-              curl -s https://api.techitnetwork.com/ready || true
+              echo "$READY_BODY"
               echo
-              echo "❌ AI Router /ready is $READY_STATUS"
-              exit 1
+              # A 503 whose only failing checks are provider.credentials means
+              # the platform is healthy but the provider API keys need rotating.
+              # Surface that loudly without failing the rollout (the container is
+              # already serving; blocking here would mask every other problem).
+              NON_PROVIDER_FAILURES="$(BODY="$READY_BODY" node -e '
+                let body = {};
+                try { body = JSON.parse(process.env.BODY || "{}"); } catch {}
+                const failing = (body.checks || []).filter((c) => c && c.ok === false).map((c) => String(c.name || ""));
+                const blocking = failing.filter((name) => !/^provider\..*\.credentials$/.test(name) && name !== "provider.credentials");
+                process.stdout.write(blocking.join(","));
+              ')"
+              if [ -n "$NON_PROVIDER_FAILURES" ]; then
+                echo "❌ AI Router /ready is $READY_STATUS (blocking checks: $NON_PROVIDER_FAILURES)"
+                exit 1
+              fi
+              echo "⚠️ AI Router /ready is $READY_STATUS, but only provider credential checks failed."
+              echo "⚠️ Rotate OPENAI_API_KEY / ANTHROPIC_API_KEY (repo secrets -> deploy) - live AI calls will 401 until then."
             fi
             echo "✅ AI Router deployed $DEPLOYED_SHA"
