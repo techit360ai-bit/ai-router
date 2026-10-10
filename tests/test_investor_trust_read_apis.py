@@ -28,7 +28,7 @@ from main import (  # noqa: E402
     investor_trust_search,
     investor_trust_startups,
 )
-from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound  # noqa: E402
+from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound, consented_sources_for_scopes  # noqa: E402
 
 
 class FakeQuery:
@@ -373,6 +373,49 @@ def test_selected_dashboard_matches_frontend_contract_without_sensitive_fields()
     _assert_no_sensitive_payload(result)
 
 
+def test_new_sources_are_fail_closed_until_scopes_are_granted() -> None:
+    db = _db()
+    now = datetime(2026, 7, 6, 10, 0, 0)
+    db.rows_by_table["trust_verification_history"].extend([
+        SimpleNamespace(
+            id="h3", verification_id="ver_revenue_001", project_id="startup_001",
+            source=SimpleNamespace(value="revenue"), status=SimpleNamespace(value="verified"),
+            confidence=0.92, metadata_hash="hidden", reference_id="hidden",
+            event_type="trust_verified", expires_at=now + timedelta(days=10), created_at=now - timedelta(hours=1),
+        ),
+        SimpleNamespace(
+            id="h4", verification_id="ver_identity_001", project_id="startup_001",
+            source=SimpleNamespace(value="identity"), status=SimpleNamespace(value="verified"),
+            confidence=0.97, metadata_hash="hidden", reference_id="hidden",
+            event_type="trust_verified", expires_at=now + timedelta(days=200), created_at=now - timedelta(hours=4),
+        ),
+    ])
+    service = InvestorTrustReadService()
+
+    baseline = {item["source"] for item in service.get_dashboard(_investor(), "startup_001", db)["verificationItems"]}
+    assert "milestone" in baseline  # baseline outcome source is always visible
+    assert "revenue" not in baseline  # sensitive: no consent scope granted
+    assert "identity" not in baseline
+
+    revenue_only = {
+        item["source"]
+        for item in service.get_dashboard(
+            _investor(), "startup_001", db, consented_sources_for_scopes("revenue_metrics")
+        )["verificationItems"]
+    }
+    assert "revenue" in revenue_only
+    assert "identity" not in revenue_only  # a revenue scope must not unlock identity
+
+    both = {
+        item["source"]
+        for item in service.get_dashboard(
+            _investor(), "startup_001", db, consented_sources_for_scopes("revenue_metrics,founder_identity")
+        )["verificationItems"]
+    }
+    assert {"revenue", "identity"}.issubset(both)
+    _assert_no_sensitive_payload(service.get_dashboard(_investor(), "startup_001", db, consented_sources_for_scopes("revenue_metrics")))
+
+
 def test_missing_startup_returns_explicit_not_found_state() -> None:
     try:
         InvestorTrustReadService().get_dashboard(_investor(), "startup_missing", FakeSession({}))
@@ -533,6 +576,7 @@ def main() -> int:
         test_startup_list_is_current_investor_scoped_and_search_ready,
         test_directory_search_finds_non_watchlist_and_returns_not_found_state,
         test_selected_dashboard_matches_frontend_contract_without_sensitive_fields,
+        test_new_sources_are_fail_closed_until_scopes_are_granted,
         test_missing_startup_returns_explicit_not_found_state,
         test_private_notes_persist_by_investor_and_sync_bookmark_watchlist,
         test_private_notes_cannot_be_read_or_mutated_by_other_roles,

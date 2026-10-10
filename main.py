@@ -94,7 +94,7 @@ from runtime_config import (
     ai_router_mode,
 )
 from async_jobs import async_jobs_enabled, job_status, submit_incubation_job
-from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
+from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound, consented_sources_for_scopes
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
 from live_domain_repository import LiveDomainRepository
 from hardening_metrics import METRICS
@@ -2432,13 +2432,21 @@ async def investor_trust_search(
 @app.get("/api/v1/investor/trust/{startup_id}", tags=["Investor"])
 async def investor_trust_dashboard(
     startup_id: str,
+    scopes: str = "",
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Investor-safe Trust dashboard read model. 0 execution budget units, Investor only."""
+    """Investor-safe Trust dashboard read model. 0 execution budget units, Investor only.
+
+    `scopes` is a comma-separated list of consent scopes the investor has been
+    granted. Sensitive sources (revenue metrics, founder identity/screening) are
+    only returned when their scope is present; the baseline evidence scope never
+    unlocks them.
+    """
     _require_investor_role(user)
+    consented = consented_sources_for_scopes(scopes)
     try:
-        return InvestorTrustReadService().get_dashboard(user, startup_id, db)
+        return InvestorTrustReadService().get_dashboard(user, startup_id, db, consented)
     except InvestorTrustStartupNotFound as exc:
         raise HTTPException(status_code=404, detail=exc.state) from exc
 
