@@ -13,6 +13,14 @@ from typing import Any, Dict, List, Optional
 from execution_controls import ProviderCircuitBreaker
 from model_registry import ModelDefinition, ModelRegistry, RegistryError, TaskPolicy
 
+def _exclude_unconfigured() -> bool:
+    """Whether to drop credential-less providers from the attempt chain.
+
+    Defaults on; set ``AI_ROUTER_EXCLUDE_UNCONFIGURED=false`` to restore the old
+    behaviour of appending unconfigured providers as last-resort attempts.
+    """
+    return os.getenv("AI_ROUTER_EXCLUDE_UNCONFIGURED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
 
 class ComplexityTier(Enum):
     REASONING = "reasoning"
@@ -282,7 +290,14 @@ class ModelRouter:
             and self.circuit_breaker.is_available(f"{config.provider}:{config.model_name}")
         ]
         unconfigured = [config for config in candidates if config not in configured]
-        chain = configured + unconfigured
+        # Prefer providers that actually have credentials so the router never
+        # attempts a model that can only fail with a missing-key error. When no
+        # provider is configured (e.g. local dev) fall back to the full ranked
+        # chain so behaviour and error messages stay unchanged.
+        if configured and _exclude_unconfigured():
+            chain = configured
+        else:
+            chain = configured + unconfigured
         if not chain:
             raise RegistryError(f"no eligible model chain for {request.task_type.value}")
         return chain[: policy.max_attempts]
