@@ -94,6 +94,7 @@ from runtime_config import (
     ai_router_mode,
 )
 from async_jobs import async_jobs_enabled, job_status, submit_incubation_job
+from stage_inference import infer_product_stage
 from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound, consented_sources_for_scopes
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
 from live_domain_repository import LiveDomainRepository
@@ -981,9 +982,20 @@ async def fast_track_run(
                 + f"| README: {codebase_context.get('readme_snippet', 'N/A')[:200]}]"
             )
 
-    # Mark the stage from the intake (so agents can calibrate expectations)
-    if venture_data.get("stage"):
-        enriched["current_stage"] = venture_data["stage"]
+    # Infer the product stage from evidence (repo activity, docs, traction) so
+    # the platform can tell MVP code apart from an already-launched product. The
+    # founder's explicit choice is kept as an override; the resolved stage is
+    # what the agents calibrate to, and the detection is returned to the UI.
+    detection = infer_product_stage(
+        venture_data,
+        enriched.get("codebase_context"),
+        has_revenue=bool(getattr(user, "has_revenue", False)),
+        beta_users_count=int(getattr(user, "beta_users_count", 0) or 0),
+    )
+    enriched["current_stage"] = detection["stage"]
+    enriched["detected_stage"] = detection["inferred"]
+    enriched["stage_source"] = detection["source"]
+    enriched["stage_detection"] = detection
 
     if _async_requested(request):
         try:
