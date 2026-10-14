@@ -129,6 +129,13 @@ class InvestorTrustReadService:
     # the empty set (the default evidence scope) unlocks nothing sensitive.
     SCOPE_SOURCES: Dict[str, frozenset] = {
         "approved_evidence_metadata": frozenset(),
+        # Phase C: execution/cohort scopes are known so a granted set that names
+        # them is never treated as unknown. They currently unlock nothing
+        # SENSITIVE on this read model (execution/cohort enforcement lives on the
+        # platform investor-intelligence service); the mapping stays empty so the
+        # behavior is fail-closed and forward-compatible.
+        "execution_metrics": frozenset(),
+        "cohort_benchmarks": frozenset(),
         "revenue_metrics": frozenset({"revenue"}),
         "founder_identity": frozenset({"identity"}),
         "sanctions_screening": frozenset({"identity"}),

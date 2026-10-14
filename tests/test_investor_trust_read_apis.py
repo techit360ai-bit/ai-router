@@ -413,6 +413,18 @@ def test_new_sources_are_fail_closed_until_scopes_are_granted() -> None:
         )["verificationItems"]
     }
     assert {"revenue", "identity"}.issubset(both)
+
+    # Phase C: execution/cohort scopes are known but unlock nothing sensitive
+    # here — a granted execution/cohort scope must not expose revenue/identity.
+    execution_only = {
+        item["source"]
+        for item in service.get_dashboard(
+            _investor(), "startup_001", db,
+            consented_sources_for_scopes("execution_metrics,cohort_benchmarks"),
+        )["verificationItems"]
+    }
+    assert "revenue" not in execution_only
+    assert "identity" not in execution_only
     _assert_no_sensitive_payload(service.get_dashboard(_investor(), "startup_001", db, consented_sources_for_scopes("revenue_metrics")))
 
 
