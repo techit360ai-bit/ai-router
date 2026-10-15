@@ -339,7 +339,9 @@ def test_directory_search_finds_non_watchlist_and_returns_not_found_state() -> N
 
 
 def test_selected_dashboard_matches_frontend_contract_without_sensitive_fields() -> None:
-    result = InvestorTrustReadService().get_dashboard(_investor(), "startup_001", _db())
+    # Baseline consent granted (approved_evidence_metadata): the source metrics
+    # are visible, but sensitive revenue/identity sources are still withheld.
+    result = InvestorTrustReadService().get_dashboard(_investor(), "startup_001", _db(), consented_sources_for_scopes("approved_evidence_metadata"), True)
 
     expected_keys = {
         "startup",
@@ -392,7 +394,15 @@ def test_new_sources_are_fail_closed_until_scopes_are_granted() -> None:
     ])
     service = InvestorTrustReadService()
 
-    baseline = {item["source"] for item in service.get_dashboard(_investor(), "startup_001", db)["verificationItems"]}
+    # Every Trust Center metric is gated: with NO baseline approval the investor
+    # sees no source metrics at all.
+    assert service.get_dashboard(_investor(), "startup_001", db)["verificationItems"] == []
+    assert service.get_dashboard(_investor(), "startup_001", db, consented_sources_for_scopes("execution_metrics,cohort_benchmarks"), False)["verificationItems"] == []
+
+    baseline = {
+        item["source"]
+        for item in service.get_dashboard(_investor(), "startup_001", db, consented_sources_for_scopes("approved_evidence_metadata"), True)["verificationItems"]
+    }
     assert "milestone" in baseline  # baseline outcome source is always visible
     assert "revenue" not in baseline  # sensitive: no consent scope granted
     assert "identity" not in baseline
@@ -400,7 +410,7 @@ def test_new_sources_are_fail_closed_until_scopes_are_granted() -> None:
     revenue_only = {
         item["source"]
         for item in service.get_dashboard(
-            _investor(), "startup_001", db, consented_sources_for_scopes("revenue_metrics")
+            _investor(), "startup_001", db, consented_sources_for_scopes("approved_evidence_metadata,revenue_metrics"), True
         )["verificationItems"]
     }
     assert "revenue" in revenue_only
@@ -409,23 +419,24 @@ def test_new_sources_are_fail_closed_until_scopes_are_granted() -> None:
     both = {
         item["source"]
         for item in service.get_dashboard(
-            _investor(), "startup_001", db, consented_sources_for_scopes("revenue_metrics,founder_identity")
+            _investor(), "startup_001", db, consented_sources_for_scopes("approved_evidence_metadata,revenue_metrics,founder_identity"), True
         )["verificationItems"]
     }
     assert {"revenue", "identity"}.issubset(both)
 
-    # Phase C: execution/cohort scopes are known but unlock nothing sensitive
-    # here — a granted execution/cohort scope must not expose revenue/identity.
+    # Phase C (revised): execution/cohort are non-sensitive and unlock nothing
+    # sensitive here — a granted execution/cohort scope must not expose
+    # revenue/identity.
     execution_only = {
         item["source"]
         for item in service.get_dashboard(
             _investor(), "startup_001", db,
-            consented_sources_for_scopes("execution_metrics,cohort_benchmarks"),
+            consented_sources_for_scopes("approved_evidence_metadata,execution_metrics,cohort_benchmarks"), True
         )["verificationItems"]
     }
     assert "revenue" not in execution_only
     assert "identity" not in execution_only
-    _assert_no_sensitive_payload(service.get_dashboard(_investor(), "startup_001", db, consented_sources_for_scopes("revenue_metrics")))
+    _assert_no_sensitive_payload(service.get_dashboard(_investor(), "startup_001", db, consented_sources_for_scopes("approved_evidence_metadata,revenue_metrics"), True))
 
 
 def test_missing_startup_returns_explicit_not_found_state() -> None:

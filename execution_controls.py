@@ -55,8 +55,21 @@ class ExecutionGrantVerifier:
     """Verify short-lived backend grants without interpreting billing state."""
 
     def __init__(self, secret: Optional[str] = None) -> None:
-        self.secret = secret or os.getenv("AI_EXECUTION_GRANT_SECRET") or os.getenv("JWT_PUBLIC_KEY") or os.getenv("JWT_SECRET")
         self.algorithm = os.getenv("AI_EXECUTION_GRANT_ALGORITHM", "RS256" if os.getenv("ENVIRONMENT", "development").lower() in {"production", "staging"} else "HS256")
+        # Pick the verification material that matches the algorithm so the
+        # signer (backend) and verifier (router) can never disagree: RSA
+        # algorithms verify with the platform JWT public key, HMAC algorithms
+        # verify with the shared grant secret. An explicit `secret` override
+        # still wins for tests/embedding.
+        if secret:
+            self.secret = secret
+        elif str(self.algorithm).upper().startswith("RS"):
+            self.secret = (
+                os.getenv("AI_EXECUTION_GRANT_PUBLIC_KEY")
+                or os.getenv("JWT_PUBLIC_KEY")
+            )
+        else:
+            self.secret = os.getenv("AI_EXECUTION_GRANT_SECRET") or os.getenv("JWT_SECRET")
         self.issuer = os.getenv("AI_EXECUTION_GRANT_ISSUER", "techit-backend")
         self.audience = os.getenv("AI_EXECUTION_GRANT_AUDIENCE", "techit-ai-router")
 

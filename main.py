@@ -95,7 +95,7 @@ from runtime_config import (
 )
 from async_jobs import async_jobs_enabled, job_status, submit_incubation_job
 from stage_inference import infer_product_stage
-from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound, consented_sources_for_scopes
+from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound, consented_sources_for_scopes, scopes_include_baseline
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
 from live_domain_repository import LiveDomainRepository
 from hardening_metrics import METRICS
@@ -2451,14 +2451,16 @@ async def investor_trust_dashboard(
     """Investor-safe Trust dashboard read model. 0 execution budget units, Investor only.
 
     `scopes` is a comma-separated list of consent scopes the investor has been
-    granted. Sensitive sources (revenue metrics, founder identity/screening) are
-    only returned when their scope is present; the baseline evidence scope never
-    unlocks them.
+    granted. Every Trust Center metric is gated behind the baseline
+    `approved_evidence_metadata` scope (no approval -> no source metrics), and
+    the sensitive sources (revenue metrics, founder identity/screening) are only
+    returned when their own scope is present.
     """
     _require_investor_role(user)
     consented = consented_sources_for_scopes(scopes)
+    metrics_consented = scopes_include_baseline(scopes)
     try:
-        return InvestorTrustReadService().get_dashboard(user, startup_id, db, consented)
+        return InvestorTrustReadService().get_dashboard(user, startup_id, db, consented, metrics_consented)
     except InvestorTrustStartupNotFound as exc:
         raise HTTPException(status_code=404, detail=exc.state) from exc
 

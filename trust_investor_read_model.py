@@ -25,18 +25,33 @@ class InvestorTrustStartupNotFound(LookupError):
         self.state = state
 
 
+BASELINE_SCOPE = "approved_evidence_metadata"
+
+
+def _scope_list(scopes: Any) -> List[str]:
+    if isinstance(scopes, str):
+        return [part.strip() for part in scopes.split(",") if part.strip()]
+    if scopes is None:
+        return []
+    return [str(part).strip() for part in scopes if str(part).strip()]
+
+
 def consented_sources_for_scopes(scopes: Any) -> set:
     """Map investor consent scopes to the sensitive sources they unlock."""
-    if isinstance(scopes, str):
-        scope_list = [part.strip() for part in scopes.split(",")]
-    elif scopes is None:
-        scope_list = []
-    else:
-        scope_list = [str(part).strip() for part in scopes]
     granted: set = set()
-    for scope in scope_list:
+    for scope in _scope_list(scopes):
         granted |= set(InvestorTrustReadService.SCOPE_SOURCES.get(scope, frozenset()))
     return granted
+
+
+def scopes_include_baseline(scopes: Any) -> bool:
+    """True when the investor holds the baseline evidence-metadata consent.
+
+    Every Trust Center metric is gated: no source, sensitive or not, is returned
+    until the founder has approved a request carrying the baseline scope. Revenue
+    additionally requires the sensitive `revenue_metrics` scope.
+    """
+    return BASELINE_SCOPE in _scope_list(scopes)
 
 
 class InvestorTrustReadService:
@@ -197,7 +212,7 @@ class InvestorTrustReadService:
             "privacy": dict(self.PRIVACY),
         }
 
-    def get_dashboard(self, investor_context: UserContext, startup_id: str, db: Any = None, consented_sources: Any = None) -> Dict[str, Any]:
+    def get_dashboard(self, investor_context: UserContext, startup_id: str, db: Any = None, consented_sources: Any = None, metrics_consented: bool = False) -> Dict[str, Any]:
         """GET /api/v1/investor/trust/{startupId} -- selected startup read model."""
         self._require_investor(investor_context)
         startup_id = str(startup_id)
@@ -218,7 +233,7 @@ class InvestorTrustReadService:
         computed = TrustEngineComputer.compute(profile)
         active_badges = self._badge_records(profile, badges)
         summary = self._startup_summary(project, profile_row, startup_id, watchlist_ids, computed)
-        verification_items = self._verification_items(profile, histories, consented_sources)
+        verification_items = self._verification_items(profile, histories, consented_sources, metrics_consented)
         risk = self._risk_status(verification_items)
         latest_history = histories[0] if histories else None
 
@@ -640,6 +655,7 @@ class InvestorTrustReadService:
         profile: FounderTrustProfile,
         histories: List[Any],
         consented_sources: Any = None,
+        metrics_consented: bool = False,
     ) -> List[Dict[str, Any]]:
         latest = self._latest_by_source(histories)
         granted = set(consented_sources or ())
@@ -674,7 +690,12 @@ class InvestorTrustReadService:
             item("revenue", bool(revenue_row) and self._value(getattr(revenue_row, "status", "")) == VerificationStatus.VERIFIED.value, 90),
             item("identity", bool(identity_row) and self._value(getattr(identity_row, "status", "")) == VerificationStatus.VERIFIED.value, 93),
         ]
-        # Only return a sensitive source when the investor's granted scopes include it.
+        # Every Trust Center metric is gated: without the baseline approved
+        # consent no source (sensitive or not) is returned. When the baseline is
+        # present, a sensitive source still requires its own scope, so only
+        # revenue/identity are withheld until explicitly granted.
+        if not metrics_consented:
+            return []
         return [entry for entry in items if entry["source"] not in self.SENSITIVE_SOURCES or entry["source"] in granted]
 
     def _founder_overview(self, profile: FounderTrustProfile, project: Any) -> Dict[str, Any]:
