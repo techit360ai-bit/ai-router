@@ -9,10 +9,14 @@
     {"id": "anthropic", "adapter": "anthropic_messages", "api_key_env": "ANTHROPIC_API_KEY", "api_key_envs": ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_2", "ANTHROPIC_API_KEY_3", "ANTHROPIC_API_KEY_4"]},
     {"id": "google", "adapter": "gemini_generate", "api_key_env": "GEMINI_API_KEY"},
     {"id": "cohere", "adapter": "cohere_embed", "api_key_env": "COHERE_API_KEY"},
-    {"id": "openrouter", "adapter": "openai_compatible", "api_key_env": "OPENROUTER_API_KEY", "base_url": "https://openrouter.ai/api/v1/chat/completions"},
+    {"id": "openrouter", "adapter": "openai_compatible", "api_key_env": "OPENROUTER_API_KEY", "auth": "bearer", "base_url": "https://openrouter.ai/api/v1/chat/completions"},
     {"id": "moonshot", "adapter": "openai_compatible", "api_key_env": "MOONSHOT_API_KEY", "base_url": "https://api.moonshot.ai/v1/chat/completions"},
     {"id": "mistral", "adapter": "openai_compatible", "api_key_env": "MISTRAL_API_KEY", "base_url": "https://api.mistral.ai/v1/chat/completions"},
-    {"id": "custom_openai_compatible", "adapter": "openai_compatible", "api_key_env": "CUSTOM_LLM_API_KEY", "base_url": "${CUSTOM_LLM_BASE_URL}", "enabled": false}
+    {"id": "custom_openai_compatible", "adapter": "openai_compatible", "api_key_env": "CUSTOM_LLM_API_KEY", "base_url": "${CUSTOM_LLM_BASE_URL}", "enabled": false},
+    {"id": "bedrock", "adapter": "bedrock_converse", "api_key_env": "", "auth": "sigv4", "region": "us-east-1", "region_env": "BEDROCK_REGION", "enabled_env": "BEDROCK_ENABLED"},
+    {"id": "bedrock_bearer", "adapter": "bedrock_bearer", "api_key_env": "BEDROCK_API_KEY", "auth": "bedrock_bearer", "base_url": "${BEDROCK_BASE_URL}", "enabled_env": "BEDROCK_BEARER_ENABLED", "enabled": false},
+    {"id": "azure_openai", "adapter": "openai_compatible", "api_key_env": "AZURE_OPENAI_API_KEY", "auth": "azure", "base_url": "${AZURE_OPENAI_BASE_URL}", "enabled": false},
+    {"id": "google_vertex", "adapter": "openai_compatible", "api_key_env": "GOOGLE_VERTEX_ACCESS_TOKEN", "auth": "bearer", "base_url": "${GOOGLE_VERTEX_BASE_URL}", "enabled": false}
   ],
   "models": [
     {
@@ -185,7 +189,42 @@
       "latency_score": 60, "context_window": 128000, "max_output_tokens": 8192,
       "input_cost_per_million": 0.0, "output_cost_per_million": 0.0,
       "capabilities": ["text", "structured_output", "long_context"],
-      "priority": 70, "tags": ["openrouter", "free"]
+      "priority": 70, "tags": ["openrouter", "free"], "billing_class": "free"
+    },
+    {
+      "id": "openrouter-free", "provider": "openrouter", "upstream_model": "openrouter/free",
+      "enabled": true, "user_selectable": true, "quality_tier": "economy", "quality_score": 62,
+      "latency_score": 55, "context_window": 128000, "max_output_tokens": 8192,
+      "input_cost_per_million": 0.0, "output_cost_per_million": 0.0,
+      "capabilities": ["text", "structured_output", "long_context"],
+      "priority": 80, "tags": ["openrouter", "free"], "billing_class": "free",
+      "health_status": "unknown"
+    },
+    {
+      "id": "openrouter-claude-sonnet", "provider": "openrouter", "upstream_model": "anthropic/claude-sonnet-4.6",
+      "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 90,
+      "latency_score": 70, "context_window": 200000, "max_output_tokens": 64000,
+      "input_cost_per_million": 3.0, "output_cost_per_million": 15.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "vision", "tool_calling"],
+      "priority": 61, "tags": ["openrouter", "paid"], "billing_class": "paid"
+    },
+    {
+      "id": "bedrock-claude-sonnet", "provider": "bedrock", "upstream_model": "us.anthropic.claude-sonnet-4-6-v1:0",
+      "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 90,
+      "latency_score": 70, "context_window": 200000, "max_output_tokens": 64000,
+      "input_cost_per_million": 3.0, "output_cost_per_million": 15.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "vision", "tool_calling"],
+      "priority": 63, "tags": ["bedrock", "anthropic", "claude"], "billing_class": "paid",
+      "supported_regions": ["us-east-1", "us-west-2", "eu-central-1"], "data_handling": "retention_bounded",
+      "structured_output": true, "tool_calling": true, "vision": true
+    },
+    {
+      "id": "bedrock-gpt-oss-120b", "provider": "bedrock", "upstream_model": "openai.gpt-oss-120b-1:0",
+      "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 87,
+      "latency_score": 74, "context_window": 131072, "max_output_tokens": 32768,
+      "capabilities": ["text", "reasoning", "coding", "structured_output"],
+      "priority": 66, "tags": ["bedrock", "openai", "oss"], "billing_class": "paid",
+      "supported_regions": ["us-east-1", "us-west-2"], "data_handling": "retention_bounded"
     }
   ]
 }

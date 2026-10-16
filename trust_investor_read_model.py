@@ -25,6 +25,35 @@ class InvestorTrustStartupNotFound(LookupError):
         self.state = state
 
 
+BASELINE_SCOPE = "approved_evidence_metadata"
+
+
+def _scope_list(scopes: Any) -> List[str]:
+    if isinstance(scopes, str):
+        return [part.strip() for part in scopes.split(",") if part.strip()]
+    if scopes is None:
+        return []
+    return [str(part).strip() for part in scopes if str(part).strip()]
+
+
+def consented_sources_for_scopes(scopes: Any) -> set:
+    """Map investor consent scopes to the sensitive sources they unlock."""
+    granted: set = set()
+    for scope in _scope_list(scopes):
+        granted |= set(InvestorTrustReadService.SCOPE_SOURCES.get(scope, frozenset()))
+    return granted
+
+
+def scopes_include_baseline(scopes: Any) -> bool:
+    """True when the investor holds the baseline evidence-metadata consent.
+
+    Every Trust Center metric is gated: no source, sensitive or not, is returned
+    until the founder has approved a request carrying the baseline scope. Revenue
+    additionally requires the sensitive `revenue_metrics` scope.
+    """
+    return BASELINE_SCOPE in _scope_list(scopes)
+
+
 class InvestorTrustReadService:
     """Builds investor-facing Trust read models from existing metadata rows."""
 
@@ -94,6 +123,37 @@ class InvestorTrustReadService:
             "provider": "Admin Review",
             "origin": "Admin Review",
         },
+        "revenue": {
+            "label": "Revenue",
+            "provider": "Billing Provider",
+            "origin": "Provider-observed Revenue",
+        },
+        "identity": {
+            "label": "Founder Identity",
+            "provider": "KYC / Sanctions",
+            "origin": "KYC + Screening",
+        },
+    }
+
+    # WS10: financial and identity sources require an explicit consent scope; the
+    # baseline evidence-metadata scope must not silently unlock them. Absent a
+    # granted scope they are never returned (fail-closed).
+    SENSITIVE_SOURCES = frozenset({"revenue", "identity"})
+
+    # Investor scopes -> the sensitive sources they unlock. A scope that maps to
+    # the empty set (the default evidence scope) unlocks nothing sensitive.
+    SCOPE_SOURCES: Dict[str, frozenset] = {
+        "approved_evidence_metadata": frozenset(),
+        # Phase C: execution/cohort scopes are known so a granted set that names
+        # them is never treated as unknown. They currently unlock nothing
+        # SENSITIVE on this read model (execution/cohort enforcement lives on the
+        # platform investor-intelligence service); the mapping stays empty so the
+        # behavior is fail-closed and forward-compatible.
+        "execution_metrics": frozenset(),
+        "cohort_benchmarks": frozenset(),
+        "revenue_metrics": frozenset({"revenue"}),
+        "founder_identity": frozenset({"identity"}),
+        "sanctions_screening": frozenset({"identity"}),
     }
 
     ORDERED_VERIFICATION_SOURCES = [
@@ -104,6 +164,9 @@ class InvestorTrustReadService:
         VerificationSource.TEAM.value,
         VerificationSource.DEPLOYMENT.value,
         VerificationSource.PRODUCT_ANALYTICS.value,
+        VerificationSource.MILESTONE.value,
+        "revenue",
+        "identity",
     ]
 
     DEFAULT_CHECKLIST = [
@@ -149,7 +212,7 @@ class InvestorTrustReadService:
             "privacy": dict(self.PRIVACY),
         }
 
-    def get_dashboard(self, investor_context: UserContext, startup_id: str, db: Any = None) -> Dict[str, Any]:
+    def get_dashboard(self, investor_context: UserContext, startup_id: str, db: Any = None, consented_sources: Any = None, metrics_consented: bool = False) -> Dict[str, Any]:
         """GET /api/v1/investor/trust/{startupId} -- selected startup read model."""
         self._require_investor(investor_context)
         startup_id = str(startup_id)
@@ -170,7 +233,7 @@ class InvestorTrustReadService:
         computed = TrustEngineComputer.compute(profile)
         active_badges = self._badge_records(profile, badges)
         summary = self._startup_summary(project, profile_row, startup_id, watchlist_ids, computed)
-        verification_items = self._verification_items(profile, histories)
+        verification_items = self._verification_items(profile, histories, consented_sources, metrics_consented)
         risk = self._risk_status(verification_items)
         latest_history = histories[0] if histories else None
 
@@ -587,8 +650,15 @@ class InvestorTrustReadService:
             "expiresAt": self._iso(getattr(badge, "expires_at", None)),
         }
 
-    def _verification_items(self, profile: FounderTrustProfile, histories: List[Any]) -> List[Dict[str, Any]]:
+    def _verification_items(
+        self,
+        profile: FounderTrustProfile,
+        histories: List[Any],
+        consented_sources: Any = None,
+        metrics_consented: bool = False,
+    ) -> List[Dict[str, Any]]:
         latest = self._latest_by_source(histories)
+        granted = set(consented_sources or ())
 
         def item(source: str, verified: bool, confidence: int = 90) -> Dict[str, Any]:
             row = latest.get(source)
@@ -606,7 +676,9 @@ class InvestorTrustReadService:
             }
 
         founder_verified = profile.email_verified or profile.phone_verified or profile.linkedin_connected
-        return [
+        revenue_row = latest.get("revenue")
+        identity_row = latest.get("identity")
+        items = [
             item(VerificationSource.EMAIL.value, founder_verified, 100 if founder_verified else 50),
             item(VerificationSource.ORGANIZATION.value, profile.organization_verified, 92),
             item(VerificationSource.DOMAIN.value, profile.domain_verified, 98),
@@ -614,7 +686,17 @@ class InvestorTrustReadService:
             item(VerificationSource.TEAM.value, profile.team_verified_count > 0, 88),
             item(VerificationSource.DEPLOYMENT.value, profile.deployment_live, 96),
             item(VerificationSource.PRODUCT_ANALYTICS.value, profile.product_activity_verified or profile.mau > 0 or profile.dau > 0, 91),
+            item(VerificationSource.MILESTONE.value, profile.milestone_count > 0, 85),
+            item("revenue", bool(revenue_row) and self._value(getattr(revenue_row, "status", "")) == VerificationStatus.VERIFIED.value, 90),
+            item("identity", bool(identity_row) and self._value(getattr(identity_row, "status", "")) == VerificationStatus.VERIFIED.value, 93),
         ]
+        # Every Trust Center metric is gated: without the baseline approved
+        # consent no source (sensitive or not) is returned. When the baseline is
+        # present, a sensitive source still requires its own scope, so only
+        # revenue/identity are withheld until explicitly granted.
+        if not metrics_consented:
+            return []
+        return [entry for entry in items if entry["source"] not in self.SENSITIVE_SOURCES or entry["source"] in granted]
 
     def _founder_overview(self, profile: FounderTrustProfile, project: Any) -> Dict[str, Any]:
         founder_verified = profile.email_verified or profile.phone_verified or profile.linkedin_connected

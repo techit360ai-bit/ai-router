@@ -177,6 +177,30 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
                 env_name,
             ))
 
+        if bool_env(values.get("BEDROCK_ENABLED"), default=False):
+            # SigV4 uses the AWS credential chain (env keys or an IAM/task role),
+            # so only the region is a hard requirement here.
+            checks.append(RuntimeCheck(
+                "provider.bedrock_region",
+                bool(values.get("BEDROCK_REGION") or values.get("AWS_REGION")),
+                "BEDROCK_REGION or AWS_REGION is required when Bedrock is enabled",
+            ))
+        if bool_env(values.get("BEDROCK_BEARER_ENABLED"), default=False):
+            bedrock_bearer_key = values.get("BEDROCK_API_KEY", "")
+            checks.append(RuntimeCheck(
+                "provider.bedrock_bearer",
+                bool(bedrock_bearer_key) and not _is_placeholder(bedrock_bearer_key),
+                "BEDROCK_API_KEY is required when Bedrock bearer auth is enabled",
+            ))
+
+        openrouter_key = values.get("OPENROUTER_API_KEY", "")
+        if openrouter_key:
+            checks.append(RuntimeCheck(
+                "provider.openrouter",
+                not _is_placeholder(openrouter_key),
+                "OPENROUTER_API_KEY must not be a placeholder",
+            ))
+
         if bool_env(values.get("REQUIRE_AI_EXECUTION_GRANT"), default=False):
             grant_secret = values.get("AI_EXECUTION_GRANT_SECRET") or secret
             checks.append(RuntimeCheck(

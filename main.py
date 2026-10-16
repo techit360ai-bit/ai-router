@@ -94,7 +94,8 @@ from runtime_config import (
     ai_router_mode,
 )
 from async_jobs import async_jobs_enabled, job_status, submit_incubation_job
-from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
+from stage_inference import infer_product_stage
+from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound, consented_sources_for_scopes, scopes_include_baseline
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
 from live_domain_repository import LiveDomainRepository
 from hardening_metrics import METRICS
@@ -262,6 +263,17 @@ def _session_revocation_check_enabled() -> bool:
 
 def _session_revocation_check_strict() -> bool:
     return os.getenv("AI_ROUTER_SESSION_REVOCATION_STRICT", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _enrichment_model_id() -> str:
+    """Model used for internal enrichment jobs.
+
+    This used to be hardcoded to a single free OpenRouter model at three call
+    sites, which bypassed routing policy. It is configuration now, so operators
+    can move enrichment to an approved model without a code change; the default
+    stays the free model so behaviour is unchanged until it is set.
+    """
+    return os.getenv("AI_ROUTER_ENRICHMENT_MODEL", "openrouter-llama-free").strip()
 
 
 # Startup guardrails are enforced in lifespan via runtime_config.assert_runtime_ready.
@@ -981,9 +993,20 @@ async def fast_track_run(
                 + f"| README: {codebase_context.get('readme_snippet', 'N/A')[:200]}]"
             )
 
-    # Mark the stage from the intake (so agents can calibrate expectations)
-    if venture_data.get("stage"):
-        enriched["current_stage"] = venture_data["stage"]
+    # Infer the product stage from evidence (repo activity, docs, traction) so
+    # the platform can tell MVP code apart from an already-launched product. The
+    # founder's explicit choice is kept as an override; the resolved stage is
+    # what the agents calibrate to, and the detection is returned to the UI.
+    detection = infer_product_stage(
+        venture_data,
+        enriched.get("codebase_context"),
+        has_revenue=bool(getattr(user, "has_revenue", False)),
+        beta_users_count=int(getattr(user, "beta_users_count", 0) or 0),
+    )
+    enriched["current_stage"] = detection["stage"]
+    enriched["detected_stage"] = detection["inferred"]
+    enriched["stage_source"] = detection["source"]
+    enriched["stage_detection"] = detection
 
     if _async_requested(request):
         try:
@@ -2224,7 +2247,7 @@ async def enrich_training_modules(
         max_tokens=3000,
         require_structured_output=True,
         ip_protected=True,
-        requested_model="openrouter-llama-free",
+        requested_model=_enrichment_model_id(),
         output_schema={"type": "object", "required": ["modules"]}
     ))
     try:
@@ -2299,7 +2322,7 @@ async def generate_training_modules(
             max_tokens=5000,
             require_structured_output=True,
             ip_protected=True,
-            requested_model="openrouter-llama-free",
+            requested_model=_enrichment_model_id(),
             output_schema={"type": "object", "required": ["modules"]}
         ))
     except Exception:
@@ -2348,7 +2371,7 @@ async def review_training_exercise(
         max_tokens=1800,
         require_structured_output=True,
         ip_protected=True,
-        requested_model="openrouter-llama-free",
+        requested_model=_enrichment_model_id(),
         output_schema={"type": "object", "required": ["score", "passed", "feedback"], "properties": {"score": {"type": "number"}, "passed": {"type": "boolean"}, "feedback": {"type": "string"}}},
     ))
     try:
@@ -2432,13 +2455,23 @@ async def investor_trust_search(
 @app.get("/api/v1/investor/trust/{startup_id}", tags=["Investor"])
 async def investor_trust_dashboard(
     startup_id: str,
+    scopes: str = "",
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Investor-safe Trust dashboard read model. 0 execution budget units, Investor only."""
+    """Investor-safe Trust dashboard read model. 0 execution budget units, Investor only.
+
+    `scopes` is a comma-separated list of consent scopes the investor has been
+    granted. Every Trust Center metric is gated behind the baseline
+    `approved_evidence_metadata` scope (no approval -> no source metrics), and
+    the sensitive sources (revenue metrics, founder identity/screening) are only
+    returned when their own scope is present.
+    """
     _require_investor_role(user)
+    consented = consented_sources_for_scopes(scopes)
+    metrics_consented = scopes_include_baseline(scopes)
     try:
-        return InvestorTrustReadService().get_dashboard(user, startup_id, db)
+        return InvestorTrustReadService().get_dashboard(user, startup_id, db, consented, metrics_consented)
     except InvestorTrustStartupNotFound as exc:
         raise HTTPException(status_code=404, detail=exc.state) from exc
 

@@ -46,17 +46,45 @@ class ExecutionGrant:
     max_input_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
     max_provider_cost_usd: Optional[float] = None
+    allowed_billing_classes: tuple[str, ...] = ()
+    required_data_handling: str = ""
+    workflow_id: Optional[str] = None
+    max_workflow_cost_usd: Optional[float] = None
     grant_id: Optional[str] = None
     reservation_id: Optional[str] = None
     claims: Dict[str, Any] = field(default_factory=dict)
+
+    def permits_billing_class(self, billing_class: str) -> bool:
+        """An empty allow-list means the grant does not restrict billing class."""
+        if not self.allowed_billing_classes:
+            return True
+        return str(billing_class or "") in self.allowed_billing_classes
+
+    def permits_data_handling(self, data_handling: str) -> bool:
+        if not self.required_data_handling:
+            return True
+        return str(data_handling or "") == self.required_data_handling
 
 
 class ExecutionGrantVerifier:
     """Verify short-lived backend grants without interpreting billing state."""
 
     def __init__(self, secret: Optional[str] = None) -> None:
-        self.secret = secret or os.getenv("AI_EXECUTION_GRANT_SECRET") or os.getenv("JWT_PUBLIC_KEY") or os.getenv("JWT_SECRET")
         self.algorithm = os.getenv("AI_EXECUTION_GRANT_ALGORITHM", "RS256" if os.getenv("ENVIRONMENT", "development").lower() in {"production", "staging"} else "HS256")
+        # Pick the verification material that matches the algorithm so the
+        # signer (backend) and verifier (router) can never disagree: RSA
+        # algorithms verify with the platform JWT public key, HMAC algorithms
+        # verify with the shared grant secret. An explicit `secret` override
+        # still wins for tests/embedding.
+        if secret:
+            self.secret = secret
+        elif str(self.algorithm).upper().startswith("RS"):
+            self.secret = (
+                os.getenv("AI_EXECUTION_GRANT_PUBLIC_KEY")
+                or os.getenv("JWT_PUBLIC_KEY")
+            )
+        else:
+            self.secret = os.getenv("AI_EXECUTION_GRANT_SECRET") or os.getenv("JWT_SECRET")
         self.issuer = os.getenv("AI_EXECUTION_GRANT_ISSUER", "techit-backend")
         self.audience = os.getenv("AI_EXECUTION_GRANT_AUDIENCE", "techit-ai-router")
 
@@ -81,6 +109,10 @@ class ExecutionGrantVerifier:
         request_id = str(claims.get("request_id") or claims.get("jti") or "")
         if not subject or not request_id:
             raise ExecutionAuthorizationError("Execution grant requires sub and request_id")
+        allowed_billing = claims.get("allowed_billing_classes")
+        if allowed_billing in (None, ""):
+            single = claims.get("billing_class")
+            allowed_billing = [single] if single else []
         return ExecutionGrant(
             subject=subject,
             workspace_id=claims.get("workspace_id") or claims.get("workspaceId"),
@@ -91,6 +123,14 @@ class ExecutionGrantVerifier:
             max_input_tokens=_optional_int(claims.get("max_input_tokens")),
             max_output_tokens=_optional_int(claims.get("max_output_tokens")),
             max_provider_cost_usd=_optional_float(claims.get("max_provider_cost_usd")),
+            allowed_billing_classes=tuple(str(item).strip().lower() for item in allowed_billing if str(item).strip()),
+            required_data_handling=str(
+                claims.get("required_data_handling") or claims.get("data_handling") or ""
+            ),
+            workflow_id=claims.get("workflow_id") or claims.get("workflowId"),
+            max_workflow_cost_usd=_optional_float(
+                claims.get("max_workflow_cost_usd") or claims.get("maxWorkflowCostUsd")
+            ),
             grant_id=claims.get("jti"),
             reservation_id=claims.get("reservation_id") or claims.get("reservationId"),
             claims=dict(claims),
@@ -344,6 +384,118 @@ class ProviderSpendBudget:
             return
         with self._lock:
             self._local_spend[reservation.key] = max(0.0, self._local_spend[reservation.key] + delta)
+
+
+@dataclass(frozen=True)
+class WorkflowReservation:
+    """A reservation against a workflow-scoped cumulative budget."""
+
+    workflow_id: str
+    reserved_cost_usd: float
+
+
+class WorkflowBudget:
+    """Cumulative cost/call budget across every sub-request of one workflow.
+
+    The provider spend guard is per-provider per-minute and the grant cap covers
+    a single request. Neither bounds the *sum* across the many calls a workflow
+    (or a trusted-worker fan-out that carries no grant) issues. This control
+    reserves against a ``workflow_id`` so total workflow cost and call count
+    cannot silently exceed the authorized ceiling.
+    """
+
+    def __init__(self) -> None:
+        self.enabled = os.getenv("AI_WORKFLOW_BUDGET_ENABLED", "true").lower() not in {"0", "false", "no"}
+        self.default_max_cost_usd = _env_float("AI_WORKFLOW_MAX_COST_USD", 0.0)
+        self.default_max_calls = _env_int("AI_WORKFLOW_MAX_CALLS", 0)
+        self.ttl_seconds = max(60, _env_int("AI_WORKFLOW_BUDGET_TTL_SECONDS", 3600))
+        self._redis = _redis_client()
+        self._state: Dict[str, Dict[str, float]] = defaultdict(dict)
+        self._lock = threading.Lock()
+
+    def reserve(
+        self,
+        *,
+        workflow_id: Optional[str],
+        estimated_cost_usd: float,
+        max_cost_usd: Optional[float] = None,
+        max_calls: Optional[int] = None,
+    ) -> Optional[WorkflowReservation]:
+        if not self.enabled or not workflow_id:
+            return None
+        cost_ceiling = self.default_max_cost_usd if max_cost_usd is None else float(max_cost_usd or 0.0)
+        call_ceiling = self.default_max_calls if max_calls is None else int(max_calls or 0)
+        estimated = max(0.0, float(estimated_cost_usd or 0.0))
+        if self._redis is not None:
+            cost_key = f"techit:ai:workflow:{workflow_id}:cost"
+            calls_key = f"techit:ai:workflow:{workflow_id}:calls"
+            calls = int(self._redis.incr(calls_key))
+            self._redis.expire(calls_key, self.ttl_seconds)
+            if call_ceiling and calls > call_ceiling:
+                raise ExecutionAuthorizationError(
+                    f"workflow call budget exceeded for {workflow_id}: {calls} > {call_ceiling}"
+                )
+            if cost_ceiling and estimated > 0:
+                current = float(self._redis.incrbyfloat(cost_key, estimated))
+                self._redis.expire(cost_key, self.ttl_seconds)
+                if current > cost_ceiling:
+                    self._redis.incrbyfloat(cost_key, -estimated)
+                    raise ExecutionAuthorizationError(
+                        f"workflow spend budget exceeded for {workflow_id}: "
+                        f"{current:.6f} > {cost_ceiling:.6f} USD"
+                    )
+            return WorkflowReservation(workflow_id=str(workflow_id), reserved_cost_usd=estimated)
+        with self._lock:
+            state = self._state[str(workflow_id)]
+            calls = int(state.get("calls", 0)) + 1
+            if call_ceiling and calls > call_ceiling:
+                raise ExecutionAuthorizationError(
+                    f"workflow call budget exceeded for {workflow_id}: {calls} > {call_ceiling}"
+                )
+            current = float(state.get("cost", 0.0)) + estimated
+            if cost_ceiling and current > cost_ceiling:
+                raise ExecutionAuthorizationError(
+                    f"workflow spend budget exceeded for {workflow_id}: "
+                    f"{current:.6f} > {cost_ceiling:.6f} USD"
+                )
+            state["calls"] = calls
+            state["cost"] = current
+        return WorkflowReservation(workflow_id=str(workflow_id), reserved_cost_usd=estimated)
+
+    def settle(self, reservation: Optional[WorkflowReservation], actual_cost_usd: float = 0.0) -> None:
+        if reservation is None:
+            return
+        delta = float(actual_cost_usd or 0.0) - reservation.reserved_cost_usd
+        if self._redis is not None:
+            if delta:
+                self._redis.incrbyfloat(f"techit:ai:workflow:{reservation.workflow_id}:cost", delta)
+            return
+        with self._lock:
+            state = self._state[reservation.workflow_id]
+            state["cost"] = max(0.0, float(state.get("cost", 0.0)) + delta)
+
+    def snapshot(self, workflow_id: str) -> Dict[str, float]:
+        if self._redis is not None:
+            return {
+                "calls": float(self._redis.get(f"techit:ai:workflow:{workflow_id}:calls") or 0),
+                "cost": float(self._redis.get(f"techit:ai:workflow:{workflow_id}:cost") or 0),
+            }
+        with self._lock:
+            return dict(self._state.get(str(workflow_id), {}))
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 class ProviderCredentialPool:

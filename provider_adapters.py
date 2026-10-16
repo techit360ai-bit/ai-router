@@ -39,6 +39,30 @@ class ProviderResponseError(ProviderError):
     """Provider returned an invalid or unusable response."""
 
 
+# Transport features each adapter actually implements. This is a declaration of
+# verified behaviour, not of provider marketing: the router never claims a
+# capability (streaming, tools, structured output) it cannot honour.
+_ADAPTER_FEATURES: Dict[str, frozenset[str]] = {
+    "openai_responses": frozenset({"text", "structured_output", "embeddings"}),
+    "openai_compatible": frozenset({"text", "structured_output"}),
+    "anthropic_messages": frozenset({"text"}),
+    "gemini_generate": frozenset({"text"}),
+    "cohere_embed": frozenset({"embeddings"}),
+    "bedrock_converse": frozenset({"text"}),
+    "bedrock_bearer": frozenset({"text"}),
+}
+
+
+def adapter_features(adapter: str) -> set[str]:
+    """Declared transport features for an adapter (verified by this module's tests)."""
+    return set(_ADAPTER_FEATURES.get(str(adapter or ""), frozenset()))
+
+
+def supports_streaming(adapter: str) -> bool:
+    """Whether the adapter has a verified streaming path. None do yet."""
+    return "streaming" in _ADAPTER_FEATURES.get(str(adapter or ""), frozenset())
+
+
 @dataclass
 class ProviderResponse:
     text: str
@@ -71,11 +95,54 @@ def _adapter_value(model_config: Any) -> str:
     return str(_value(model_config, "adapter", "") or "")
 
 
+def _auth_mode(model_config: Any) -> str:
+    """Declared auth mode, falling back to the adapter's registry default."""
+    declared = str(_value(model_config, "auth", "") or "").strip().lower()
+    if declared:
+        return declared
+    from model_registry import DEFAULT_AUTH_BY_ADAPTER
+
+    return DEFAULT_AUTH_BY_ADAPTER.get(_adapter_value(model_config), "bearer")
+
+
+def _region(model_config: Any) -> str:
+    region = str(_value(model_config, "region", "") or "")
+    region_env = str(_value(model_config, "region_env", "") or "")
+    if region_env:
+        region = os.getenv(region_env, "") or region
+    return region or os.getenv("AWS_REGION", "us-east-1")
+
+
 def _base_url(model_config: Any) -> str:
     value = os.path.expandvars(str(_value(model_config, "base_url", "") or ""))
     if not value or "${" in value:
         raise ProviderConfigError("openai-compatible provider is missing a valid base_url")
     return value
+
+
+def _openai_compatible_headers(model_config: Any, api_key: str) -> Dict[str, str]:
+    """Auth headers for OpenAI-compatible providers, chosen by declared auth mode.
+
+    Azure OpenAI authenticates with an ``api-key`` header (or AAD bearer); every
+    other compatible provider uses ``Authorization: Bearer``. The mode is declared
+    in the registry, never sniffed from the key.
+    """
+    if _auth_mode(model_config) == "azure":
+        return {"api-key": api_key, "Content-Type": "application/json"}
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+
+def _openai_compatible_url(model_config: Any) -> str:
+    """Resolve the chat-completions URL, preserving any query string.
+
+    Azure deployments embed ``?api-version=...`` after ``/chat/completions``; a
+    naive ``endswith`` check would miss it and append a second path segment.
+    """
+    base_url = _base_url(model_config).rstrip("/")
+    path, _, query = base_url.partition("?")
+    if path.endswith("/chat/completions"):
+        return base_url
+    return f"{path}/chat/completions" + (f"?{query}" if query else "")
 
 
 def _capabilities(model_config: Any) -> set[str]:
@@ -217,6 +284,15 @@ def _gemini_payload(prompt: str, request: Any) -> Dict[str, Any]:
     }
 
 
+def _bedrock_converse_payload(model: str, prompt: str, request: Any) -> Dict[str, Any]:
+    """Bedrock Converse API request body, shared by the SigV4 and bearer transports."""
+    return {
+        "modelId": model,
+        "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        "inferenceConfig": {"maxTokens": _max_tokens(request)},
+    }
+
+
 async def _openai_client(api_key: str, timeout: float, base_url: str = "") -> Any:
     try:
         from openai import AsyncOpenAI  # type: ignore
@@ -252,6 +328,25 @@ async def _http_client(timeout: float) -> Any:
     except ImportError as exc:
         raise ProviderConfigError("httpx is not installed") from exc
     return httpx.AsyncClient(timeout=timeout)
+
+
+async def _bedrock_client(region: str, timeout: float) -> Any:
+    """AWS SDK client using the default credential chain (env, profile, IAM role).
+
+    No static key is embedded: boto3 resolves AWS_ACCESS_KEY_ID/SECRET/TOKEN, the
+    shared AWS profile, or the instance/task role at call time.
+    """
+    try:
+        import boto3  # type: ignore
+        from botocore.config import Config  # type: ignore
+    except ImportError as exc:
+        raise ProviderConfigError("boto3 is not installed") from exc
+    config = Config(
+        connect_timeout=max(1.0, timeout),
+        read_timeout=max(1.0, timeout),
+        retries={"max_attempts": 2},
+    )
+    return boto3.client("bedrock-runtime", region_name=region or None, config=config)
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -404,6 +499,26 @@ def _normalize_gemini(response: Mapping[str, Any], duration_ms: int) -> Provider
     )
 
 
+def _normalize_bedrock_converse(response: Any, duration_ms: int) -> ProviderResponse:
+    output = _value(response, "output", {})
+    message = _value(output, "message", {})
+    content = _value(message, "content", []) or []
+    text = "".join(str(_value(part, "text", "") or "") for part in content)
+    usage = _value(response, "usage", {})
+    prompt_tokens = int(_value(usage, "inputTokens", 0) or 0)
+    completion_tokens = int(_value(usage, "outputTokens", 0) or 0)
+    total_tokens = int(_value(usage, "totalTokens", prompt_tokens + completion_tokens) or 0)
+    if not text:
+        raise ProviderResponseError("bedrock response did not include content text")
+    return ProviderResponse(
+        text=text,
+        tokens=total_tokens,
+        confidence=1.0,
+        duration_ms=duration_ms,
+        raw={"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+    )
+
+
 async def _post_json(client: Any, url: str, headers: Dict[str, str],
                      payload: Dict[str, Any], timeout: float,
                      provider: str) -> Mapping[str, Any]:
@@ -493,15 +608,10 @@ async def _call_openai_compatible(model_config: Any, prompt: str, request: Any,
     if created:
         client = await _http_client(timeout)
     try:
-        base_url = _base_url(model_config).rstrip("/")
-        url = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
         data = await _post_json(
             client,
-            url,
-            {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
+            _openai_compatible_url(model_config),
+            _openai_compatible_headers(model_config, api_key),
             _openai_payload(_model_name(model_config), prompt, request),
             timeout,
             provider,
@@ -535,6 +645,55 @@ async def _call_gemini(model_config: Any, prompt: str, request: Any,
         await _close_created_client(client, created)
 
 
+async def _call_bedrock_converse(model_config: Any, prompt: str, request: Any,
+                                 clients: Mapping[str, Any],
+                                 elapsed_ms: Callable[[], int]) -> ProviderResponse:
+    """Bedrock Runtime Converse using the AWS credential chain (SigV4)."""
+    provider = _provider_value(model_config)
+    client = clients.get(provider) or clients.get("bedrock")
+    created = client is None
+    if created:
+        client = await _bedrock_client(_region(model_config), _timeout_seconds(request))
+    try:
+        payload = _bedrock_converse_payload(_model_name(model_config), prompt, request)
+        if created:
+            # boto3 is synchronous; keep the event loop free while it blocks.
+            response = await asyncio.to_thread(client.converse, **payload)
+        else:
+            response = await _maybe_await(client.converse(**payload))
+        return _normalize_bedrock_converse(response, elapsed_ms())
+    finally:
+        if created and hasattr(client, "close"):
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 - closing a probe client must not mask the result
+                pass
+
+
+async def _call_bedrock_bearer(model_config: Any, prompt: str, request: Any,
+                               api_key: str, clients: Mapping[str, Any],
+                               elapsed_ms: Callable[[], int]) -> ProviderResponse:
+    """Bedrock-compatible endpoints that authenticate with a bearer token."""
+    provider = _provider_value(model_config)
+    client = clients.get(provider) or clients.get("bedrock")
+    created = client is None
+    timeout = _timeout_seconds(request)
+    if created:
+        client = await _http_client(timeout)
+    try:
+        data = await _post_json(
+            client,
+            _base_url(model_config),
+            {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            _bedrock_converse_payload(_model_name(model_config), prompt, request),
+            timeout,
+            provider,
+        )
+        return _normalize_bedrock_converse(data, elapsed_ms())
+    finally:
+        await _close_created_client(client, created)
+
+
 async def call_provider_model(model_config: Any, prompt: str, request: Any,
                               *, env: Optional[Mapping[str, str]] = None,
                               clients: Optional[Mapping[str, Any]] = None) -> ProviderResponse:
@@ -561,6 +720,12 @@ async def call_provider_model(model_config: Any, prompt: str, request: Any,
             )
         if adapter == "gemini_generate":
             return await _call_gemini(model_config, prompt, request, api_key, client_map, elapsed_ms)
+        if adapter == "bedrock_converse":
+            return await _call_bedrock_converse(model_config, prompt, request, client_map, elapsed_ms)
+        if adapter == "bedrock_bearer":
+            return await _call_bedrock_bearer(
+                model_config, prompt, request, api_key, client_map, elapsed_ms
+            )
         raise ProviderConfigError(f"unsupported provider adapter: {adapter or provider}")
     except ProviderError:
         raise

@@ -24,6 +24,7 @@ from execution_controls import (
     ExecutionRateLimiter,
     ProviderSpendBudget,
     ProviderCredentialPool,
+    WorkflowBudget,
     AIAdmissionController,
     ResponseCache,
 )
@@ -55,6 +56,7 @@ class ExecutionCommandLayer:
         }
         self.rate_limiter = ExecutionRateLimiter()
         self.spend_budget = ProviderSpendBudget()
+        self.workflow_budget = WorkflowBudget()
         self.credential_pool = ProviderCredentialPool()
         self.admission = AIAdmissionController()
         self.cache = ResponseCache()
@@ -75,6 +77,12 @@ class ExecutionCommandLayer:
         trusted_worker = os.getenv("AI_TRUSTED_WORKER_EXECUTION", "false").lower() in {"1", "true", "yes"}
         if os.getenv("REQUIRE_AI_EXECUTION_GRANT", "false").lower() in {"1", "true", "yes"} and grant is None and not trusted_worker:
             raise ExecutionAuthorizationError("A backend execution grant is required")
+        if grant is None and trusted_worker and not getattr(request, "workflow_id", None):
+            # Trusted workers run without a backend grant, so the workflow budget
+            # is the only cumulative spend ceiling for a fan-out. Scope it per
+            # user when the caller did not supply a workflow id so the spend is
+            # still aggregated and bounded (see AI_TRUSTED_WORKER_MAX_*).
+            request.workflow_id = f"trusted-worker:{request.user_context.user_id}"
         if grant is not None:
             try:
                 ExecutionGrantVerifier.validate_request(
@@ -184,6 +192,17 @@ class ExecutionCommandLayer:
                                      request: Any, policy: Any, request_id: str) -> Any:
         last_exc: Optional[Exception] = None
         attempt_number = 0
+        workflow_denied = False
+        grant = getattr(request.user_context, "execution_grant", None)
+        workflow_id = getattr(request, "workflow_id", None) or getattr(grant, "workflow_id", None)
+        if grant is not None:
+            max_workflow_cost = getattr(grant, "max_workflow_cost_usd", None)
+            max_workflow_calls = None
+        else:
+            # No grant: 0 means "count but do not cap", so an operator can turn
+            # on a ceiling for trusted-worker fan-out without a code change.
+            max_workflow_cost = float(os.getenv("AI_TRUSTED_WORKER_MAX_COST_USD", "0") or 0) or None
+            max_workflow_calls = int(os.getenv("AI_TRUSTED_WORKER_MAX_CALLS", "0") or 0) or None
         for config in chain:
             circuit_key = f"{config.provider}:{config.model_name}"
             retries = max(0, int(policy.same_provider_retries))
@@ -191,6 +210,7 @@ class ExecutionCommandLayer:
                 attempt_number += 1
                 attempt_started = time.perf_counter()
                 reservation = None
+                workflow_reservation = None
                 try:
                     estimated_input_tokens = max(1, len(prompt.encode("utf-8")) // 4)
                     estimated_cost = self._provider_cost_estimate(
@@ -198,7 +218,6 @@ class ExecutionCommandLayer:
                         estimated_input_tokens,
                         int(getattr(request, "max_tokens", 0) or 0),
                     )
-                    grant = getattr(request.user_context, "execution_grant", None)
                     demand_units = None
                     if grant is not None:
                         demand_units = grant.claims.get("platform_demand_units")
@@ -208,6 +227,21 @@ class ExecutionCommandLayer:
                         user_id=request.user_context.user_id,
                         demand_units=demand_units,
                     )
+                    try:
+                        workflow_reservation = self.workflow_budget.reserve(
+                            workflow_id=workflow_id,
+                            estimated_cost_usd=estimated_cost,
+                            max_cost_usd=max_workflow_cost,
+                            max_calls=max_workflow_calls,
+                        )
+                    except ExecutionAuthorizationError:
+                        # A workflow ceiling is global, not provider health. A
+                        # different provider cannot lift it, so abort the chain
+                        # instead of falling through.
+                        self.spend_budget.settle(reservation, 0.0)
+                        reservation = None
+                        workflow_denied = True
+                        raise
                     output = await asyncio.wait_for(
                         self._call_llm(config, prompt, request),
                         timeout=max(1.0, float(policy.timeout_seconds)),
@@ -220,9 +254,13 @@ class ExecutionCommandLayer:
                     output["retry_number"] = retry_number
                     output["provider"] = config.provider
                     output["model"] = config.model_name
+                    output["model_id"] = config.id
+                    output["billing_class"] = config.billing_class
                     output["provider_cost_usd"] = self._provider_cost(config, output)
                     self.spend_budget.settle(reservation, output["provider_cost_usd"] or 0.0)
                     reservation = None
+                    self.workflow_budget.settle(workflow_reservation, output["provider_cost_usd"] or 0.0)
+                    workflow_reservation = None
                     output["request_id"] = request_id
                     output["attempt_latency_ms"] = int((time.perf_counter() - attempt_started) * 1000)
                     await self._record_successful_attempt(
@@ -238,12 +276,18 @@ class ExecutionCommandLayer:
                 except Exception as exc:  # noqa: BLE001 - fallback boundary
                     self.spend_budget.settle(reservation, 0.0)
                     reservation = None
+                    self.workflow_budget.settle(workflow_reservation, 0.0)
+                    workflow_reservation = None
                     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
                         exc = ProviderTimeoutError(
                             f"{config.provider} exceeded task timeout of {policy.timeout_seconds}s"
                         )
                     last_exc = exc
                     if isinstance(exc, ExecutionAuthorizationError):
+                        if workflow_denied:
+                            # Hard stop: a workflow budget denial is account-wide
+                            # for this workflow and must not fall through.
+                            raise
                         # Capacity policy is not provider health. Try the next
                         # eligible provider without opening its circuit.
                         break
@@ -296,8 +340,14 @@ class ExecutionCommandLayer:
             raise
         if model_config.api_key_env and not selected_key:
             if self.allow_placeholder and self.environment not in {"production", "staging"}:
-                return {"text": f"AI placeholder response via {model_config.model_name}", "tokens": 0,
-                        "prompt_tokens": 0, "completion_tokens": 0, "confidence": 0.0, "duration_ms": 0}
+                return {
+                    "text": f"AI placeholder response via {model_config.model_name}",
+                    "tokens": 0, "prompt_tokens": 0, "completion_tokens": 0,
+                    "confidence": 0.0, "duration_ms": 0,
+                    "provider": provider, "model": model_config.model_name,
+                    "model_id": getattr(model_config, "id", ""), "placeholder": True,
+                    "metadata": {"placeholder": True},
+                }
             raise ProviderConfigError(f"{provider} requires a configured provider credential")
         call_config = replace(model_config, api_key_env=selected_key or model_config.api_key_env)
         try:
@@ -325,6 +375,20 @@ class ExecutionCommandLayer:
         prompt_tokens = int(output.get("prompt_tokens") or 0)
         completion_tokens = int(output.get("completion_tokens") or 0)
         total_tokens = int(output.get("tokens") or prompt_tokens + completion_tokens)
+        model_id = str(output.get("model_id") or "")
+        model_def = self.model_router.registry.models.get(model_id)
+        provider_cost = output.get("provider_cost_usd")
+        billing_class = str(output.get("billing_class") or (model_def.billing_class if model_def else "unknown"))
+        if model_def is not None and model_def.is_free:
+            cost_status = "free"
+        elif provider_cost is None:
+            # Never invent a number when the registry has no pricing: the
+            # backend reconciles the real cost, so mark it explicitly.
+            cost_status = "pending_reconciliation"
+        else:
+            cost_status = "estimated"
+        grant = getattr(request.user_context, "execution_grant", None)
+        workflow_id = getattr(request, "workflow_id", None) or getattr(grant, "workflow_id", None)
         response = AIResponse(
             task_type=request.task_type,
             output=str(output.get("text") or ""),
@@ -340,6 +404,12 @@ class ExecutionCommandLayer:
             metadata={
                 **(output.get("metadata") or {}),
                 "request_id": request_id,
+                "model_id": model_id,
+                "billing_class": billing_class,
+                "pricing_version": model_def.pricing_version if model_def else "",
+                "cost_status": cost_status,
+                "workflow_id": workflow_id,
+                "placeholder": bool(output.get("placeholder")),
                 "attempt": output.get("attempt", 0),
                 "retry_number": output.get("retry_number", 0),
                 "cache_hit": cached,
@@ -437,7 +507,18 @@ class ExecutionCommandLayer:
             cache_hit=response.cached,
             grant_id=getattr(grant, "grant_id", None),
             reservation_id=getattr(grant, "reservation_id", None),
-            metadata={"provider_cost_usd": response.provider_cost_usd, "execution_profile": request.execution_profile},
+            metadata={
+                "provider_cost_usd": response.provider_cost_usd,
+                "execution_profile": request.execution_profile,
+                "model_id": response.metadata.get("model_id"),
+                "billing_class": response.metadata.get("billing_class"),
+                "cost_status": response.metadata.get("cost_status"),
+                "pricing_version": response.metadata.get("pricing_version"),
+                "workflow_id": response.metadata.get("workflow_id"),
+            },
+            workflow_id=response.metadata.get("workflow_id"),
+            cost_status=str(response.metadata.get("cost_status") or ""),
+            pricing_version=str(response.metadata.get("pricing_version") or ""),
         )
 
     async def _record_failed_execution(self, request: Any, request_id: str, exc: Exception, started: float) -> None:
@@ -464,5 +545,11 @@ class ExecutionCommandLayer:
             prompt_tokens=0, completion_tokens=0, total_tokens=0, provider_cost_usd=0,
             latency_ms=event["latency_ms"], attempt_count=len(attempts), cache_hit=False,
             grant_id=getattr(grant, "grant_id", None), reservation_id=getattr(grant, "reservation_id", None),
-            metadata={"error_type": type(exc).__name__},
+            workflow_id=getattr(request, "workflow_id", None) or getattr(grant, "workflow_id", None),
+            cost_status="failed",
+            metadata={
+                "error_type": type(exc).__name__,
+                "workflow_id": getattr(request, "workflow_id", None) or getattr(grant, "workflow_id", None),
+                "cost_status": "failed",
+            },
         )

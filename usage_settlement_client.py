@@ -34,12 +34,19 @@ class UsageSettlementClient:
         timestamp = str(int(time.time()))
         encoded = self._encode(body)
         signature = hmac.new(self.secret.encode(), f"{timestamp}.{encoded}".encode(), hashlib.sha256).hexdigest()
-        return {
+        headers = {
             "Content-Type": "application/json",
             "X-TechIT-Service-Id": self.service_id,
             "X-TechIT-Timestamp": timestamp,
             "X-TechIT-Signature": signature,
         }
+        # The request_id is stable across retries of the same execution fact, so
+        # it doubles as the idempotency key: a duplicate delivery must not be
+        # billed or counted twice by the backend.
+        request_id = str(body.get("request_id") or "")
+        if request_id:
+            headers["Idempotency-Key"] = request_id
+        return headers
 
     async def _post(self, path: str, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not self.enabled:
@@ -76,7 +83,9 @@ class UsageSettlementClient:
                      provider: str, model: str, status: str, prompt_tokens: int,
                      completion_tokens: int, total_tokens: int, provider_cost_usd: Optional[float],
                      latency_ms: int, attempt_count: int, cache_hit: bool,
-                     grant_id: Optional[str], reservation_id: Optional[str], metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                     grant_id: Optional[str], reservation_id: Optional[str], metadata: Dict[str, Any],
+                     workflow_id: Optional[str] = None, cost_status: str = "",
+                     pricing_version: str = "") -> Optional[Dict[str, Any]]:
         body = {
             "request_id": request_id, "user_id": user_id, "workspace_id": workspace_id,
             "task_type": task_type, "provider": provider, "model": model, "status": status,
@@ -84,6 +93,8 @@ class UsageSettlementClient:
             "total_tokens": total_tokens, "provider_cost_usd": provider_cost_usd,
             "latency_ms": latency_ms, "attempt_count": attempt_count, "cache_hit": cache_hit,
             "grant_id": grant_id, "reservation_id": reservation_id, "metadata": metadata,
+            "workflow_id": workflow_id, "cost_status": cost_status,
+            "pricing_version": pricing_version,
         }
         if self.outbox.enabled:
             queued = await self.outbox.enqueue(body)

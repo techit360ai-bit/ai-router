@@ -191,6 +191,10 @@ class IncubationHubService:
                 user_context.user_id, str(workspace["id"]), project_id, context_pack
             )
             blueprint["context_version"] = pack.get("version", 1)
+        # FastTrack resolves the product stage from evidence before the pipeline
+        # runs; carry that verdict (sync and async) onto the returned blueprint.
+        if isinstance(venture_data.get("stage_detection"), dict):
+            blueprint["stage_detection"] = venture_data["stage_detection"]
         return blueprint
 
     @staticmethod
