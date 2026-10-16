@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from execution_controls import ProviderCircuitBreaker
+from execution_controls import ExecutionAuthorizationError, ProviderCircuitBreaker
 from model_registry import ModelDefinition, ModelRegistry, RegistryError, TaskPolicy
 
 def _exclude_unconfigured() -> bool:
@@ -100,6 +100,11 @@ class ModelConfig:
     api_key_envs: List[str] = field(default_factory=list)
     adapter: str = ""
     base_url: str = ""
+    region: str = ""
+    region_env: str = ""
+    auth: str = ""
+    billing_class: str = "paid"
+    approval_status: str = "approved"
     quality_score: float = 70
     latency_score: float = 50
     capabilities: List[str] = field(default_factory=list)
@@ -156,6 +161,11 @@ class ModelRouter:
             api_key_envs=list(provider.api_key_envs),
             adapter=provider.adapter,
             base_url=base_url,
+            region=provider.region,
+            region_env=provider.region_env,
+            auth=provider.resolved_auth,
+            billing_class=model.billing_class,
+            approval_status=model.approval_status,
             quality_score=model.quality_score,
             latency_score=model.latency_score,
             capabilities=sorted(model.capabilities),
@@ -191,6 +201,18 @@ class ModelRouter:
     def _is_configured(self, config: ModelConfig) -> bool:
         model = self.registry.models[config.id]
         return self.registry.is_provider_configured(model)
+
+    def _grant_permits(self, grant: Any, config: ModelConfig) -> bool:
+        """Grant-level billing-class and data-handling authorization.
+
+        This is what makes a free-tier grant unable to silently escalate: a
+        candidate the grant does not permit is removed from the chain entirely,
+        so the fallback loop can never cross from a free model into a paid one.
+        """
+        if not grant.permits_billing_class(config.billing_class):
+            return False
+        model = self.registry.models[config.id]
+        return grant.permits_data_handling(model.data_handling)
 
     @staticmethod
     def _economy_score(config: ModelConfig) -> float:
@@ -256,6 +278,15 @@ class ModelRouter:
             getattr(request, "execution_profile", "balanced"),
             assessment,
         )
+        grant = getattr(request.user_context, "execution_grant", None)
+        if grant is not None and candidates:
+            permitted = [item for item in candidates if self._grant_permits(grant, item)]
+            if not permitted:
+                raise ExecutionAuthorizationError(
+                    "no model is permitted by the execution grant billing/data policy for "
+                    f"{request.task_type.value}"
+                )
+            candidates = permitted
         disabled = set(self.runtime_controls.get("disabled_models") or [])
         candidates = [item for item in candidates if item.id not in disabled]
         canary = (self.runtime_controls.get("canaries") or {}).get(request.task_type.value) or {}

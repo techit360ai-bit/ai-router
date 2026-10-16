@@ -265,6 +265,17 @@ def _session_revocation_check_strict() -> bool:
     return os.getenv("AI_ROUTER_SESSION_REVOCATION_STRICT", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _enrichment_model_id() -> str:
+    """Model used for internal enrichment jobs.
+
+    This used to be hardcoded to a single free OpenRouter model at three call
+    sites, which bypassed routing policy. It is configuration now, so operators
+    can move enrichment to an approved model without a code change; the default
+    stays the free model so behaviour is unchanged until it is set.
+    """
+    return os.getenv("AI_ROUTER_ENRICHMENT_MODEL", "openrouter-llama-free").strip()
+
+
 # Startup guardrails are enforced in lifespan via runtime_config.assert_runtime_ready.
 
 # Tolerant aliases so tokens minted by the Node backend map onto our enums.
@@ -2236,7 +2247,7 @@ async def enrich_training_modules(
         max_tokens=3000,
         require_structured_output=True,
         ip_protected=True,
-        requested_model="openrouter-llama-free",
+        requested_model=_enrichment_model_id(),
         output_schema={"type": "object", "required": ["modules"]}
     ))
     try:
@@ -2311,7 +2322,7 @@ async def generate_training_modules(
             max_tokens=5000,
             require_structured_output=True,
             ip_protected=True,
-            requested_model="openrouter-llama-free",
+            requested_model=_enrichment_model_id(),
             output_schema={"type": "object", "required": ["modules"]}
         ))
     except Exception:
@@ -2360,7 +2371,7 @@ async def review_training_exercise(
         max_tokens=1800,
         require_structured_output=True,
         ip_protected=True,
-        requested_model="openrouter-llama-free",
+        requested_model=_enrichment_model_id(),
         output_schema={"type": "object", "required": ["score", "passed", "feedback"], "properties": {"score": {"type": "number"}, "passed": {"type": "boolean"}, "feedback": {"type": "string"}}},
     ))
     try:

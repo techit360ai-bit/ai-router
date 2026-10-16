@@ -178,6 +178,7 @@ class BaseAgent(ABC):
             input_data=input_data, ip_protected=ip_protected, max_tokens=max_tokens,
             requested_model=input_data.get("model_id") or input_data.get("requested_model") or venture.get("model_id") or venture.get("requested_model"),
             execution_profile=str(input_data.get("execution_profile") or venture.get("execution_profile") or "balanced"),
+            workflow_id=input_data.get("workflow_id") or venture.get("workflow_id"),
         ))
 
     @staticmethod
