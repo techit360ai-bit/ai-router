@@ -109,6 +109,28 @@ logger = structlog.get_logger()
 brain: Optional[TechITAIBrain] = None
 
 
+async def _auto_provider_discovery_loop() -> None:
+    """Refresh catalog-backed providers without blocking startup or requests."""
+    from provider_catalog import auto_provision_enabled, refresh_provider_catalog
+
+    startup_delay = max(
+        0.0,
+        float(os.getenv("AI_AUTO_PROVIDER_DISCOVERY_STARTUP_DELAY_SECONDS", "5") or 0),
+    )
+    interval = max(
+        60.0,
+        float(os.getenv("AI_AUTO_PROVIDER_DISCOVERY_INTERVAL_SECONDS", "3600") or 3600),
+    )
+    await asyncio.sleep(startup_delay)
+    while True:
+        if auto_provision_enabled():
+            try:
+                await refresh_provider_catalog()
+            except Exception as exc:  # noqa: BLE001 - discovery is non-blocking
+                logger.warning("auto_provider_discovery_failed", error=str(exc)[:300])
+        await asyncio.sleep(interval)
+
+
 # ============================================================================
 # LIFESPAN -- STARTUP & SHUTDOWN
 # ============================================================================
@@ -121,6 +143,7 @@ async def lifespan(app: FastAPI):
     # Nothing else should call TechITAIBrain() -- it's a singleton.
     """
     global brain
+    discovery_task: Optional[asyncio.Task] = None
     if ENVIRONMENT in PROD_ENVS:
         try:
             assert_runtime_ready()
@@ -130,6 +153,8 @@ async def lifespan(app: FastAPI):
 
     brain = TechITAIBrain()
     await brain.command_layer.settlement.start()
+    if os.getenv("AI_AUTO_PROVIDER_DISCOVERY_INTERVAL_SECONDS", "3600") != "0":
+        discovery_task = asyncio.create_task(_auto_provider_discovery_loop())
     logger.info(
         "techit_ai_brain_ready",
         agents=len(getattr(brain.orchestrator, "agents", {}) or {}),
@@ -138,9 +163,17 @@ async def lifespan(app: FastAPI):
         db_tables=len(Base.registry.mappers),
         version="3.0.0",
     )
-    yield
-    await brain.command_layer.settlement.close()
-    logger.info("techit_shutdown")
+    try:
+        yield
+    finally:
+        if discovery_task is not None:
+            discovery_task.cancel()
+            try:
+                await discovery_task
+            except asyncio.CancelledError:
+                pass
+        await brain.command_layer.settlement.close()
+        logger.info("techit_shutdown")
 
 
 # ============================================================================
@@ -707,6 +740,27 @@ async def version():
     }
 
 
+def _strict_provider_readiness_enabled() -> bool:
+    return str(os.getenv("AI_STRICT_PROVIDER_READINESS", "false")).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _provider_configuration_checks(providers: List[Dict[str, Any]], strict: bool) -> List[RuntimeCheck]:
+    """Report partial provider blocks without failing readiness by default."""
+    checks: List[RuntimeCheck] = []
+    for provider in providers:
+        if not provider.get("detected") or provider.get("configured"):
+            continue
+        missing = provider.get("missing_env") or provider.get("missing_credentials") or []
+        checks.append(RuntimeCheck(
+            f"provider.{provider.get('id')}.configuration",
+            not strict,
+            f"missing: {', '.join(str(item) for item in missing)}",
+        ))
+    return checks
+
+
 @app.get("/ready", tags=["Status"])
 async def ready():
     """Readiness check for runtime config and dependency reachability."""
@@ -719,6 +773,12 @@ async def ready():
             bool(registry.models) and set(registry.task_policies) == {task.value for task in TaskType},
             f"version={registry.version}; models={len(registry.models)}; tasks={len(registry.task_policies)}",
         ))
+        eligible_models = [model for model in registry.models.values() if model.enabled]
+        checks.append(RuntimeCheck(
+            "ai.models.eligible",
+            bool(eligible_models),
+            f"eligible={len(eligible_models)}",
+        ))
     except Exception as exc:  # noqa: BLE001
         checks.append(RuntimeCheck("ai.registry", False, str(exc)))
 
@@ -727,6 +787,7 @@ async def ready():
     # every AI call fails with 401. Probe each configured provider (cached) and
     # fail readiness on a genuine auth error so this can never ship silently.
     provider_reports: dict = {}
+    provider_status_body: dict = {}
     try:
         from provider_key_health import provider_key_health
         provider_reports = provider_key_health()
@@ -736,8 +797,24 @@ async def ready():
                 bool(report.get("ok")),
                 str(report.get("detail", "")),
             ))
+        verified = [name for name, report in provider_reports.items() if report.get("ok")]
+        checks.append(RuntimeCheck(
+            "provider.available",
+            bool(verified),
+            f"verified={len(verified)}",
+        ))
     except Exception as exc:  # noqa: BLE001
         checks.append(RuntimeCheck("provider.credentials", False, str(exc)))
+    try:
+        from provider_catalog import provider_status
+
+        provider_status_body = provider_status(credential_reports=provider_reports)
+        checks.extend(_provider_configuration_checks(
+            provider_status_body.get("providers", []),
+            _strict_provider_readiness_enabled(),
+        ))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(RuntimeCheck("provider.catalog", False, str(exc)))
 
     db_ok = True
     db_detail = "ok"
@@ -771,6 +848,11 @@ async def ready():
         "status": "ready" if ok else "not_ready",
         "ai_router_mode": ai_router_mode(),
         "provider_credentials": provider_reports,
+        "provider_catalog": {
+            "catalogVersion": provider_status_body.get("catalogVersion"),
+            "policy": provider_status_body.get("policy"),
+            "providers": provider_status_body.get("providers", []),
+        },
         "checks": [
             {"name": check.name, "ok": check.ok, "detail": check.detail}
             for check in checks
@@ -821,6 +903,93 @@ async def internal_admin_telemetry(
     db=Depends(get_db),
 ):
     return _hardening_metrics_snapshot(db)
+
+
+def _provider_credential_reports(force: bool = False) -> Dict[str, Any]:
+    try:
+        from provider_key_health import provider_key_health
+
+        return provider_key_health(force=force)
+    except Exception as exc:  # noqa: BLE001 - status must fail closed, not crash
+        return {"_error": {"ok": False, "detail": str(exc)[:200]}}
+
+
+@app.get("/internal/admin/provider-status", tags=["Internal"])
+async def internal_admin_provider_status(
+    refresh_credentials: bool = False,
+    _service_id: str = Depends(require_admin_telemetry_service),
+):
+    from provider_catalog import provider_status
+
+    reports = _provider_credential_reports(refresh_credentials)
+    reports.pop("_error", None)
+    return provider_status(credential_reports=reports)
+
+
+@app.post("/internal/admin/provider-refresh", tags=["Internal"])
+async def internal_admin_provider_refresh(
+    body: Optional[Dict[str, Any]] = Body(default=None),
+    _service_id: str = Depends(require_admin_telemetry_service),
+):
+    from provider_catalog import refresh_provider_catalog
+
+    payload = body or {}
+    provider_ids = payload.get("provider_ids") or payload.get("providerIds")
+    if provider_ids is not None and not isinstance(provider_ids, list):
+        raise HTTPException(status_code=400, detail="provider_ids must be a list")
+    result = await refresh_provider_catalog(provider_ids=provider_ids)
+    result["credentialReports"] = _provider_credential_reports(
+        bool(payload.get("refresh_credentials") or payload.get("refreshCredentials"))
+    )
+    result.pop("_error", None)
+    return result
+
+
+@app.patch("/internal/admin/provider-policy", tags=["Internal"])
+async def internal_admin_provider_policy(
+    body: Dict[str, Any] = Body(...),
+    _service_id: str = Depends(require_admin_telemetry_service),
+):
+    from provider_catalog import set_auto_provision
+
+    if "enabled" not in body:
+        raise HTTPException(status_code=400, detail="enabled is required")
+    reason = str(body.get("reason") or "").strip()
+    result = set_auto_provision(
+        bool(body.get("enabled")),
+        actor=str(body.get("actor") or "platform-backend")[:200],
+        reason=reason,
+        expected_version=body.get("expected_version", body.get("expectedVersion")),
+        settings=body.get("settings") if isinstance(body.get("settings"), dict) else None,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=int(result.get("status") or 400), detail=result)
+    return result
+
+
+@app.patch("/internal/admin/model-leases/{provider_id}/{model_id}", tags=["Internal"])
+async def internal_admin_model_lease(
+    provider_id: str,
+    model_id: str,
+    body: Dict[str, Any] = Body(...),
+    _service_id: str = Depends(require_admin_telemetry_service),
+):
+    from provider_catalog import update_model_lease
+
+    result = update_model_lease(
+        provider_id,
+        model_id,
+        str(body.get("action") or ""),
+        reason=str(body.get("reason") or ""),
+        input_cost_per_million=body.get("input_cost_per_million", body.get("inputCostPerMillion")),
+        output_cost_per_million=body.get("output_cost_per_million", body.get("outputCostPerMillion")),
+        actor=str(body.get("actor") or "platform-backend")[:200],
+        override=bool(body.get("override", False)),
+        expected_version=body.get("expected_version", body.get("expectedVersion")),
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=int(result.get("status") or 400), detail=result)
+    return result
 
 
 @app.get("/api/v1/admin/hardening-metrics", tags=["Admin"], include_in_schema=False)

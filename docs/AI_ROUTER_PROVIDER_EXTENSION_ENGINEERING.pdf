@@ -1,0 +1,218 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R 12 0 R] /Count 4 >>
+endobj
+5 0 obj
+<< /Length 809 >>
+stream
+BT /F2 17 Tf 54 748.0 Td (AI Router Provider Extension) Tj ET
+BT /F2 13.5 Tf 54 715.0 Td (Engineering Report: Registry v2, Bedrock/Azure/Google Credential Formats, Billing Policy) Tj ET
+BT /F2 13.5 Tf 54 697.5 Td (& Workflow Budgets) Tj ET
+BT /F1 9.5 Tf 54 674.0 Td (Generated 2026-10-16 from the ai-router source-of-truth documents.) Tj ET
+BT /F1 9.5 Tf 54 657.8 Td (Commits: ai-router 85324be, BACKEND 40cc56b \(branch fix/provider-key-readiness\).) Tj ET
+BT /F1 9.5 Tf 54 641.6 Td (Verified: ai-router 335 passed / 1 skipped; BACKEND executionGrant 7, workflowBudget 6, usageSettlement) Tj ET
+BT /F1 9.5 Tf 54 629.4 Td (8.) Tj ET
+BT /F3 7.4 Tf 54 609.2 Td (----------------------------------------------------------------------------------------------------) Tj ET
+BT /F1 8 Tf 522 30 Td (Page 1 of 4) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 4 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 5 0 R >>
+endobj
+7 0 obj
+<< /Length 5170 >>
+stream
+BT /F2 17 Tf 54 748.0 Td (AI Router Provider Extension - Engineering Report) Tj ET
+BT /F1 9.5 Tf 54 721.0 Td (Date: 2026-10-16 Repos: ai-router \(branch fix/provider-key-readiness\), BACKEND Commits: ai-router) Tj ET
+BT /F1 9.5 Tf 54 708.8 Td (85324be, BACKEND 40cc56b) Tj ET
+BT /F2 13.5 Tf 54 686.6 Td (1. Summary) Tj ET
+BT /F1 9.5 Tf 54 663.1 Td (The router was already a policy-driven, config-first gateway. This work extends it additively --) Tj ET
+BT /F1 9.5 Tf 54 650.9 Td (onboarding a new OpenAI-compatible provider is still configuration only, while genuinely new) Tj ET
+BT /F1 9.5 Tf 54 638.7 Td (capabilities \(Bedrock, Azure/Google credential formats, per-model billing policy, workflow budgets\) are) Tj ET
+BT /F1 9.5 Tf 54 626.5 Td (declared in the registry and enforced in routing. Nothing was re-architected, no destructive migrations) Tj ET
+BT /F1 9.5 Tf 54 614.3 Td (were run, and no production deploy was performed.) Tj ET
+BT /F1 9.5 Tf 54 598.1 Td (Scope delivered:) Tj ET
+BT /F1 9.5 Tf 54 581.9 Td (- Registry schema v2 with declared billing class, approval status, capability) Tj ET
+BT /F1 9.5 Tf 54 568.7 Td (flags, regions, and data handling.) Tj ET
+BT /F1 9.5 Tf 54 552.5 Td (- Amazon Bedrock adapter \(SigV4 credential chain\) plus an optional bearer) Tj ET
+BT /F1 9.5 Tf 54 539.3 Td (gateway, and provider-verified credential formats for Azure OpenAI and Google \(Gemini query key, Vertex) Tj ET
+BT /F1 9.5 Tf 54 527.1 Td (bearer\).) Tj ET
+BT /F1 9.5 Tf 54 510.9 Td (- OpenRouter free/paid split with billing-class routing policy.) Tj ET
+BT /F1 9.5 Tf 54 497.7 Td (- Execution-grant claims for billing class, data handling, and workflow budget.) Tj ET
+BT /F1 9.5 Tf 54 484.5 Td (- Workflow budgets enforced in the router and persisted/reconciled in the) Tj ET
+BT /F1 9.5 Tf 54 471.3 Td (backend.) Tj ET
+BT /F1 9.5 Tf 54 455.1 Td (- Model discovery is inert until an administrator approves a model.) Tj ET
+BT /F1 9.5 Tf 54 441.9 Td (Verification: ai-router full suite 335 passed, 1 skipped. BACKEND executionGrant \(7\), workflowBudget) Tj ET
+BT /F1 9.5 Tf 54 429.7 Td (\(6\), and usageSettlement \(8\) all pass.) Tj ET
+BT /F2 13.5 Tf 54 407.5 Td (2. Registry schema v2) Tj ET
+BT /F1 9.5 Tf 54 384.0 Td (Source: ai-router/model_registry.py, config/model_registry.json, docs/MODEL_REGISTRY.md.) Tj ET
+BT /F1 9.5 Tf 54 367.8 Td (Two principles govern every field: values are *declared, never inferred* \(nothing is sniffed from an API) Tj ET
+BT /F1 9.5 Tf 54 355.6 Td (key prefix, a model name, or a provider name\), and *discovery is not approval*.) Tj ET
+BT /F1 9.5 Tf 54 339.4 Td (Provider fields add auth, region/region_env, and base_url_env. Model fields add billing_class,) Tj ET
+BT /F1 9.5 Tf 54 327.2 Td (approval_status, supported_regions, data_handling, health_status, pricing_version, and explicit) Tj ET
+BT /F1 9.5 Tf 54 315.0 Td (capability booleans \(streaming, tool calling, structured output, vision\).) Tj ET
+BT /F1 9.5 Tf 54 298.8 Td (enabled is always derived from approval_status, so the two can never diverge. The registry fails closed) Tj ET
+BT /F1 9.5 Tf 54 286.6 Td (on an unknown billing class, auth mode, adapter, or approval status; a free model that declares a) Tj ET
+BT /F1 9.5 Tf 54 274.4 Td (non-zero price; a capability flag set true without the matching capability; a model referencing an) Tj ET
+BT /F1 9.5 Tf 54 262.2 Td (unknown provider; and duplicate ids.) Tj ET
+BT /F2 11.5 Tf 54 240.0 Td (Billing class is per model, not per provider) Tj ET
+BT /F1 9.5 Tf 54 221.5 Td (OpenRouter serves both free and paid models; Bedrock Claude is paid while an OpenRouter :free model is) Tj ET
+BT /F1 9.5 Tf 54 209.3 Td (free. Classification is therefore per model. Billing class is derived as free only when both input and) Tj ET
+BT /F1 9.5 Tf 54 197.1 Td (output prices are exactly 0.0, and unknown pricing is treated as paid so an unpriced model can never be) Tj ET
+BT /F1 9.5 Tf 54 184.9 Td (treated as free by accident.) Tj ET
+BT /F2 13.5 Tf 54 162.7 Td (3. Provider-verified credential formats) Tj ET
+BT /F1 9.5 Tf 54 139.2 Td (Source: ai-router/provider_adapters.py, provider_key_health.py, runtime_config.py,) Tj ET
+BT /F1 9.5 Tf 54 127.0 Td (tests/test_provider_auth_formats.py.) Tj ET
+BT /F1 9.5 Tf 54 110.8 Td (Each provider verifies credentials with its own wire format. The registry declares which one, and the) Tj ET
+BT /F1 9.5 Tf 54 98.6 Td (adapter, the readiness probe, and the tests all read that single declaration -- so they cannot disagree.) Tj ET
+BT /F3 7.4 Tf 58 82.4 Td (Provider | auth | Credential is sent as | Verified by) Tj ET
+BT /F3 7.4 Tf 58 72.8 Td (------------------------------------------------------------------------------------------------------------------------) Tj ET
+BT /F3 7.4 Tf 58 66.8 Td (OpenAI / OpenRouter / Moonshot / Mistral | bearer | Authorization: Bearer <key> | adapter + /models probe) Tj ET
+BT /F3 7.4 Tf 58 57.2 Td (Anthropic | anthropic | x-api-key + anthropic-version | adapter + /v1/models probe) Tj ET
+BT /F3 7.4 Tf 58 47.6 Td (Google Gemini | query | ?key=<key> query parameter | adapter + /v1beta/models probe) Tj ET
+BT /F1 8 Tf 522 30 Td (Page 2 of 4) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 4 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 7 0 R >>
+endobj
+9 0 obj
+<< /Length 5377 >>
+stream
+BT /F3 7.4 Tf 58 748.0 Td (Google Vertex | bearer | Authorization: Bearer <access token> | adapter + probe) Tj ET
+BT /F3 7.4 Tf 58 738.4 Td (Azure OpenAI | azure | api-key header \(no Authorization\) | adapter + resource probe) Tj ET
+BT /F3 7.4 Tf 58 728.8 Td (Amazon Bedrock | sigv4 | AWS SigV4 credential chain \(no static key\) | credential-chain report) Tj ET
+BT /F3 7.4 Tf 58 719.2 Td (Bedrock gateway | bedrock_bearer | Authorization: Bearer <key> | adapter + probe) Tj ET
+BT /F1 9.5 Tf 54 709.6 Td (Azure OpenAI details: requests carry the api-key header and no Authorization header, and the deployment) Tj ET
+BT /F1 9.5 Tf 54 697.4 Td (URL keeps its ?api-version= query rather than getting a second /chat/completions segment appended. The) Tj ET
+BT /F1 9.5 Tf 54 685.2 Td (readiness probe targets the resource-level /openai/models?api-version=... endpoint.) Tj ET
+BT /F1 9.5 Tf 54 669.0 Td (Google details: Gemini API keys ride in the query string \(?key=\), while Vertex AI uses a refreshed OAuth) Tj ET
+BT /F1 9.5 Tf 54 656.8 Td (access token as a bearer credential.) Tj ET
+BT /F1 9.5 Tf 54 640.6 Td (AWS Bedrock details: SigV4 resolves keys from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, a shared) Tj ET
+BT /F1 9.5 Tf 54 628.4 Td (profile, or an IAM/task role, so Bedrock carries no static key \(requires_api_key == false\). Readiness) Tj ET
+BT /F1 9.5 Tf 54 616.2 Td (checks the credential chain and, only when opted in via AI_BEDROCK_LIVE_PROBE, an actual) Tj ET
+BT /F1 9.5 Tf 54 604.0 Td (ListFoundationModels call -- so readiness never flips on a valid-but-restricted IAM policy. Enabling) Tj ET
+BT /F1 9.5 Tf 54 591.8 Td (Bedrock requires BEDROCK_REGION or AWS_REGION; an optional bearer gateway \(BEDROCK_BEARER_ENABLED /) Tj ET
+BT /F1 9.5 Tf 54 579.6 Td (BEDROCK_API_KEY\) is supported for self-hosted OpenAI-compatible Bedrock front-ends.) Tj ET
+BT /F2 13.5 Tf 54 557.4 Td (4. OpenRouter free/paid routing policy and fallback guard) Tj ET
+BT /F1 9.5 Tf 54 533.9 Td (Source: ai-router/routing_engine.py, config/model_registry.json, tests/test_openrouter_policy.py.) Tj ET
+BT /F1 9.5 Tf 54 517.7 Td (- Models such as openrouter/free \(free\) and openrouter-claude-sonnet \(paid\)) Tj ET
+BT /F1 9.5 Tf 54 504.5 Td (are distinct registry entries with independent billing classes.) Tj ET
+BT /F1 9.5 Tf 54 488.3 Td (- Task policy allowed_billing_classes and grant) Tj ET
+BT /F1 9.5 Tf 54 475.1 Td (allowed_billing_classes restrict the candidate chain to permitted classes.) Tj ET
+BT /F1 9.5 Tf 54 458.9 Td (- Disallowed models are removed from the chain, not merely deprioritized, so a) Tj ET
+BT /F1 9.5 Tf 54 445.7 Td (free-tier request can never silently fall back into a paid model.) Tj ET
+BT /F1 9.5 Tf 54 429.5 Td (- The three previously hardcoded openrouter-llama-free call sites in main.py) Tj ET
+BT /F1 9.5 Tf 54 416.3 Td (now resolve through AI_ROUTER_ENRICHMENT_MODEL \(default unchanged\).) Tj ET
+BT /F2 13.5 Tf 54 394.1 Td (5. Execution-grant claims and routing filters) Tj ET
+BT /F1 9.5 Tf 54 370.6 Td (Source: ai-router/execution_controls.py, routing_engine.py;) Tj ET
+BT /F1 9.5 Tf 54 358.4 Td (BACKEND/backend/src/services/usageGrantService.js.) Tj ET
+BT /F1 9.5 Tf 54 342.2 Td (The signed execution grant is the sole authority for entitlement; client input is inert and the router) Tj ET
+BT /F1 9.5 Tf 54 330.0 Td (never reads balances. New claims:) Tj ET
+BT /F1 9.5 Tf 54 313.8 Td (- allowed_billing_classes \(or billing_class\) -- restricts routing to those) Tj ET
+BT /F1 9.5 Tf 54 300.6 Td (billing classes.) Tj ET
+BT /F1 9.5 Tf 54 284.4 Td (- required_data_handling \(or data_handling\) -- restricts routing to models) Tj ET
+BT /F1 9.5 Tf 54 271.2 Td (with that data-handling policy.) Tj ET
+BT /F1 9.5 Tf 54 255.0 Td (- workflow_id \(or workflowId\) -- groups sub-requests under one budget.) Tj ET
+BT /F1 9.5 Tf 54 241.8 Td (- max_workflow_cost_usd \(or maxWorkflowCostUsd\) -- cumulative ceiling.) Tj ET
+BT /F1 9.5 Tf 54 228.6 Td (routing_engine.select_chain applies the task policy, grant model ids, billing class, data handling,) Tj ET
+BT /F1 9.5 Tf 54 216.4 Td (circuit breaker, configured-provider filter, and the per-request cost budget. When no candidate is) Tj ET
+BT /F1 9.5 Tf 54 204.2 Td (permitted by the grant it raises ExecutionAuthorizationError rather than silently downgrading.) Tj ET
+BT /F1 9.5 Tf 54 188.0 Td (The backend grant issuer emits and validates these fields and stamps them into reservation metadata) Tj ET
+BT /F1 9.5 Tf 54 175.8 Td (\(workflowId, maxWorkflowCostUsd, allowedBillingClasses, requiredDataHandling\).) Tj ET
+BT /F2 13.5 Tf 54 153.6 Td (6. Workflow budgets) Tj ET
+BT /F2 11.5 Tf 54 124.1 Td (Router enforcement) Tj ET
+BT /F1 9.5 Tf 54 105.6 Td (Source: ai-router/execution_controls.py, ai_command_layer_impl.py.) Tj ET
+BT /F1 9.5 Tf 54 89.4 Td (WorkflowBudget sums cost and call count across every sub-request of one workflow, including grant-less) Tj ET
+BT /F1 9.5 Tf 54 77.2 Td (trusted-worker fan-out. A workflow denial aborts the whole chain \(hard stop\) rather than falling through) Tj ET
+BT /F1 9.5 Tf 54 65.0 Td (to the next candidate. Trusted workers are scoped per user \(trusted-worker:<user_id>\) when no) Tj ET
+BT /F1 9.5 Tf 54 52.8 Td (workflow_id is supplied and bounded by AI_TRUSTED_WORKER_MAX_COST_USD / AI_TRUSTED_WORKER_MAX_CALLS. A) Tj ET
+BT /F1 8 Tf 522 30 Td (Page 3 of 4) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 4 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 9 0 R >>
+endobj
+11 0 obj
+<< /Length 3941 >>
+stream
+BT /F1 9.5 Tf 54 748.0 Td (ceiling of 0 counts without capping.) Tj ET
+BT /F2 11.5 Tf 54 725.8 Td (Backend persistence and reconciliation \(previously deferred\)) Tj ET
+BT /F1 9.5 Tf 54 707.3 Td (Source: BACKEND/backend/src/services/workflowBudgetService.js, usageSettlementService.js,) Tj ET
+BT /F1 9.5 Tf 54 695.1 Td (financeRepository.js; commit 40cc56b.) Tj ET
+BT /F1 9.5 Tf 54 678.9 Td (Settlement facts that carry a workflow_id are accumulated backend-side in the workflowBudgets platform) Tj ET
+BT /F1 9.5 Tf 54 666.7 Td (collection \(JSONB records via platform_collection_records -- no schema migration\). The service tracks) Tj ET
+BT /F1 9.5 Tf 54 654.5 Td (calls, failed calls, settled provider cost, settled credits, the ceiling, remaining budget, cost_status,) Tj ET
+BT /F1 9.5 Tf 54 642.3 Td (pricing_version, and a within/exceeded verdict. Idempotent replays \(same Idempotency-Key\) return the) Tj ET
+BT /F1 9.5 Tf 54 630.1 Td (existing snapshot instead of double counting, and the Postgres path mirrors the accumulation. This lets) Tj ET
+BT /F1 9.5 Tf 54 617.9 Td (finance confirm that the router's enforced ceilings match what was actually settled, without the router) Tj ET
+BT /F1 9.5 Tf 54 605.7 Td (ever reading a balance.) Tj ET
+BT /F2 13.5 Tf 54 583.5 Td (7. Model discovery) Tj ET
+BT /F1 9.5 Tf 54 560.0 Td (Source: ai-router/model_discovery.py, config/discovered_models.json, tests/test_model_discovery.py.) Tj ET
+BT /F1 9.5 Tf 54 543.8 Td (Discovery is operator-run and writes proposed models with approval_status: discovered, which is inert) Tj ET
+BT /F1 9.5 Tf 54 531.6 Td (\(enabled is derived to false\). An administrator approves a model by promoting it into the registry with) Tj ET
+BT /F1 9.5 Tf 54 519.4 Td (pricing, capabilities, billing class, and approval_status: approved. Only approved models are routable.) Tj ET
+BT /F2 13.5 Tf 54 497.2 Td (8. Verification and test coverage) Tj ET
+BT /F1 9.5 Tf 54 473.7 Td (ai-router new tests: registry v2, Bedrock adapter, OpenRouter free/paid policy, workflow budgets, router) Tj ET
+BT /F1 9.5 Tf 54 461.5 Td (policy integration, model discovery, and per-provider credential formats. Full suite: 335 passed, 1) Tj ET
+BT /F1 9.5 Tf 54 449.3 Td (skipped.) Tj ET
+BT /F1 9.5 Tf 54 433.1 Td (BACKEND: executionGrant.test.js \(7\), workflowBudget.test.js \(6\), and usageSettlement.test.js \(8, binds a) Tj ET
+BT /F1 9.5 Tf 54 420.9 Td (local port and so must run unsandboxed\).) Tj ET
+BT /F1 9.5 Tf 54 404.7 Td (Diff totals: ai-router 24 files, +2124/-33; BACKEND 6 files, +336/-8.) Tj ET
+BT /F2 13.5 Tf 54 382.5 Td (9. Deferred and known limitations) Tj ET
+BT /F1 9.5 Tf 54 359.0 Td (- Live Bedrock readiness probing is opt-in \(AI_BEDROCK_LIVE_PROBE\) and off by) Tj ET
+BT /F1 9.5 Tf 54 345.8 Td (default, by design, so a restricted-but-valid IAM policy cannot fail readiness.) Tj ET
+BT /F1 9.5 Tf 54 329.6 Td (- The unauthenticated provider-model-listing discovery path is operator-run and) Tj ET
+BT /F1 9.5 Tf 54 316.4 Td (deliberately not wired into approval.) Tj ET
+BT /F1 9.5 Tf 54 300.2 Td (- Azure OpenAI and Google Vertex ship disabled \(enabled: false\) in the) Tj ET
+BT /F1 9.5 Tf 54 287.0 Td (registry; enabling them is a registry edit plus environment variables, and no code change.) Tj ET
+BT /F1 9.5 Tf 54 270.8 Td (- Prices and credits remain backend-owned; the router only records estimates) Tj ET
+BT /F1 9.5 Tf 54 257.6 Td (and marks unpriced executions pending_reconciliation.) Tj ET
+BT /F2 13.5 Tf 54 235.4 Td (10. North star) Tj ET
+BT /F1 9.5 Tf 54 211.9 Td (Keep config-only onboarding as the goal. Adding an OpenAI-compatible provider should remain a) Tj ET
+BT /F1 9.5 Tf 54 199.7 Td (providers[] and models[] entry, with new *behaviour* \(a new wire protocol or auth scheme\) added only) Tj ET
+BT /F1 9.5 Tf 54 187.5 Td (when a provider genuinely requires it -- as Bedrock, Azure, and Vertex did.) Tj ET
+BT /F1 8 Tf 522 30 Td (Page 4 of 4) Tj ET
+endstream
+endobj
+12 0 obj
+<< /Type /Page /Parent 4 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 11 0 R >>
+endobj
+13 0 obj
+<< /Type /Catalog /Pages 4 0 R >>
+endobj
+14 0 obj
+<< /Title (AI Router Provider Extension - Engineering Report) /Producer (docs/tools/make_engineering_pdf.py) >>
+endobj
+xref
+0 15
+0000000000 65535 f 
+0000000015 00000 n 
+0000000112 00000 n 
+0000000214 00000 n 
+0000000309 00000 n 
+0000000386 00000 n 
+0000001246 00000 n 
+0000001392 00000 n 
+0000006614 00000 n 
+0000006760 00000 n 
+0000012189 00000 n 
+0000012336 00000 n 
+0000016330 00000 n 
+0000016478 00000 n 
+0000016528 00000 n 
+trailer
+<< /Size 15 /Root 13 0 R /Info 14 0 R >>
+startxref
+16656
+%%EOF

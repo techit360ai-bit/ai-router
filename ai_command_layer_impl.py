@@ -40,6 +40,7 @@ from provider_adapters import (
 )
 from usage_settlement_client import UsageSettlementClient
 from hardening_metrics import METRICS
+from provider_catalog import lease_budget
 
 
 class ExecutionCommandLayer:
@@ -210,6 +211,7 @@ class ExecutionCommandLayer:
                 attempt_number += 1
                 attempt_started = time.perf_counter()
                 reservation = None
+                lease_reservation = None
                 workflow_reservation = None
                 try:
                     estimated_input_tokens = max(1, len(prompt.encode("utf-8")) // 4)
@@ -227,6 +229,8 @@ class ExecutionCommandLayer:
                         user_id=request.user_context.user_id,
                         demand_units=demand_units,
                     )
+                    if getattr(config, "lease_id", "") and getattr(config, "approval_status", "") == "auto_canary":
+                        lease_reservation = lease_budget.reserve(config.lease_id, estimated_cost)
                     try:
                         workflow_reservation = self.workflow_budget.reserve(
                             workflow_id=workflow_id,
@@ -259,6 +263,8 @@ class ExecutionCommandLayer:
                     output["provider_cost_usd"] = self._provider_cost(config, output)
                     self.spend_budget.settle(reservation, output["provider_cost_usd"] or 0.0)
                     reservation = None
+                    lease_budget.settle(lease_reservation, output["provider_cost_usd"] or 0.0)
+                    lease_reservation = None
                     self.workflow_budget.settle(workflow_reservation, output["provider_cost_usd"] or 0.0)
                     workflow_reservation = None
                     output["request_id"] = request_id
@@ -276,6 +282,8 @@ class ExecutionCommandLayer:
                 except Exception as exc:  # noqa: BLE001 - fallback boundary
                     self.spend_budget.settle(reservation, 0.0)
                     reservation = None
+                    lease_budget.settle(lease_reservation, 0.0, success=False)
+                    lease_reservation = None
                     self.workflow_budget.settle(workflow_reservation, 0.0)
                     workflow_reservation = None
                     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
@@ -379,9 +387,14 @@ class ExecutionCommandLayer:
         model_def = self.model_router.registry.models.get(model_id)
         provider_cost = output.get("provider_cost_usd")
         billing_class = str(output.get("billing_class") or (model_def.billing_class if model_def else "unknown"))
+        pricing_source = str(output.get("pricing_source") or (model_def.pricing_source if model_def else "registry"))
+        pending_reconciliation = bool(
+            output.get("pending_reconciliation")
+            or (model_def.pending_reconciliation if model_def else False)
+        )
         if model_def is not None and model_def.is_free:
             cost_status = "free"
-        elif provider_cost is None:
+        elif provider_cost is None or pending_reconciliation:
             # Never invent a number when the registry has no pricing: the
             # backend reconciles the real cost, so mark it explicitly.
             cost_status = "pending_reconciliation"
@@ -407,6 +420,10 @@ class ExecutionCommandLayer:
                 "model_id": model_id,
                 "billing_class": billing_class,
                 "pricing_version": model_def.pricing_version if model_def else "",
+                "pricing_source": pricing_source,
+                "pending_reconciliation": pending_reconciliation,
+                "lease_id": model_def.lease_id if model_def else "",
+                "approval_status": model_def.approval_status if model_def else "",
                 "cost_status": cost_status,
                 "workflow_id": workflow_id,
                 "placeholder": bool(output.get("placeholder")),
@@ -514,6 +531,9 @@ class ExecutionCommandLayer:
                 "billing_class": response.metadata.get("billing_class"),
                 "cost_status": response.metadata.get("cost_status"),
                 "pricing_version": response.metadata.get("pricing_version"),
+                "pricing_source": response.metadata.get("pricing_source"),
+                "pending_reconciliation": response.metadata.get("pending_reconciliation"),
+                "lease_id": response.metadata.get("lease_id"),
                 "workflow_id": response.metadata.get("workflow_id"),
             },
             workflow_id=response.metadata.get("workflow_id"),

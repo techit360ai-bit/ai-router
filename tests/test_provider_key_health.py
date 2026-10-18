@@ -97,6 +97,7 @@ def test_every_enabled_registry_provider_has_a_probe_spec():
 
 def test_required_provider_missing_key_fails(monkeypatch):
     monkeypatch.setenv("AI_PROVIDER_KEY_CHECK", "live")
+    monkeypatch.setenv("AI_REQUIRED_PROVIDERS", "openai,anthropic")
     module = _reload()
     monkeypatch.setenv("OPENAI_API_KEY", "sk-good")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -105,3 +106,21 @@ def test_required_provider_missing_key_fails(monkeypatch):
     report = module.provider_key_health(force=True)
     assert report["anthropic"]["ok"] is False
     assert report["anthropic"]["required"] is True
+
+
+def test_bedrock_or_azure_only_deployment_has_no_implicit_openai_requirement(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDER_KEY_CHECK", "live")
+    monkeypatch.delenv("AI_REQUIRED_PROVIDERS", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-secret")
+    monkeypatch.setenv("AZURE_OPENAI_BASE_URL", "https://example.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENTS", "gpt-4.1")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    module = _reload()
+    monkeypatch.setattr(module, "_probe_status", lambda provider, key: 200)
+    report = module.provider_key_health(force=True)
+    assert "openai" not in report
+    assert "anthropic" not in report
+    assert report["azure_openai"]["ok"] is True
+    assert report["azure_openai"]["required"] is False

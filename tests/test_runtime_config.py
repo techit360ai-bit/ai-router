@@ -34,6 +34,7 @@ BASE_PROD_ENV = {
     "REDIS_URL": "rediss://redis.example:6379",
     "CELERY_BROKER": "rediss://redis.example:6379",
     "MCP_BASE_URL": "https://api.techit.example/api/mcp",
+    "AI_REQUIRED_PROVIDERS": "openai,anthropic",
     "OPENAI_API_KEY": "sk-live-openai",
     "ANTHROPIC_API_KEY": "sk-ant-live",
     "BACKEND_USAGE_SETTLEMENT_URL": "https://api.techit.example/internal/usage-settlement",
@@ -78,6 +79,21 @@ def test_production_requires_provider_keys() -> None:
     failed = _failed_names(env)
     assert "provider.openai" in failed
     assert "provider.anthropic" in failed
+
+
+def test_production_provider_requirement_is_deployment_selected() -> None:
+    env = {
+        **BASE_PROD_ENV,
+        "AI_REQUIRED_PROVIDERS": "bedrock",
+        "OPENAI_API_KEY": "",
+        "ANTHROPIC_API_KEY": "",
+        "BEDROCK_ENABLED": "true",
+        "AWS_REGION": "eu-central-1",
+    }
+    failed = _failed_names(env)
+    assert "provider.openai" not in failed
+    assert "provider.anthropic" not in failed
+    assert "provider.bedrock_region" not in failed
 
 
 def test_optional_agentrouter_requires_secure_configuration_only_when_enabled() -> None:

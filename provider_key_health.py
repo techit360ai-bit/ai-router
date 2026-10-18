@@ -7,10 +7,10 @@ module performs a cheap authenticated probe against each provider, caches the
 verdict for a short TTL, and exposes it as a readiness signal.
 
 Providers are sourced from the model registry, so every provider the router can
-route to is validated -- not just OpenAI and Anthropic. OpenAI and Anthropic are
-mandatory (readiness fails when their keys are missing or rejected); every other
-provider is optional and is probed only when a key is present, so an operator who
-only configures one provider never sees readiness flap on the others.
+route to is validated. Providers listed in ``AI_REQUIRED_PROVIDERS`` are
+mandatory; every other provider is optional and is probed only when a key is
+present, so a Bedrock-, Azure-, or OpenRouter-only deployment does not fail
+readiness merely because OpenAI or Anthropic is absent.
 
 Transient failures (timeout, DNS, 5xx) are deliberately treated as *unknown*
 rather than *invalid*: readiness must not flap on a probe glitch, but a genuine
@@ -27,8 +27,10 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Mapping, Sequence
 
-# Mandatory providers: absent or invalid credentials fail readiness.
-DEFAULT_REQUIRED_PROVIDERS = ("openai", "anthropic")
+# No provider is mandatory unless the operator names it explicitly. The global
+# readiness contract still requires at least one verified provider plus one
+# eligible model, so an empty list does not make a providerless deployment ready.
+DEFAULT_REQUIRED_PROVIDERS: tuple[str, ...] = ()
 
 # Probe endpoints for providers whose adapter does not publish a base_url we can
 # derive an OpenAI-compatible ``/models`` path from. OpenAI-compatible providers
@@ -318,8 +320,8 @@ def _credential_chain_report(provider: str, region: str = "", live: bool = False
 def provider_key_health(force: bool = False) -> Dict[str, Dict[str, Any]]:
     """Return per-provider credential validity, cached for a short TTL.
 
-    Mandatory providers (OpenAI, Anthropic by default) always appear; optional
-    providers appear only when a key is configured for them.
+    Mandatory providers always appear; optional providers appear only when a key
+    is configured for them.
     """
     if not _enabled():
         return {}

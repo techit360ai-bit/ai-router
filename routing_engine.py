@@ -111,6 +111,11 @@ class ModelConfig:
     input_cost_per_million: Optional[float] = None
     output_cost_per_million: Optional[float] = None
     user_selectable: bool = False
+    lease_id: str = ""
+    traffic_percent: float = 0.0
+    daily_spend_cap_usd: Optional[float] = None
+    pricing_source: str = "registry"
+    pending_reconciliation: bool = False
 
 
 class ModelRouter:
@@ -172,6 +177,11 @@ class ModelRouter:
             input_cost_per_million=model.input_cost_per_million,
             output_cost_per_million=model.output_cost_per_million,
             user_selectable=model.user_selectable,
+            lease_id=model.lease_id,
+            traffic_percent=model.traffic_percent,
+            daily_spend_cap_usd=model.daily_spend_cap_usd,
+            pricing_source=model.pricing_source,
+            pending_reconciliation=model.pending_reconciliation,
         )
 
     def _validate_coverage(self) -> None:
@@ -197,6 +207,34 @@ class ModelRouter:
             allowed_models=grant.allowed_model_ids if grant else (),
         )
         return [self.model_configs[model.id] for model in models]
+
+    def _canary_config(self, request: Any) -> Optional[ModelConfig]:
+        """Choose at most one bounded auto-canary model for this request.
+
+        The bucket is stable for a user/task/model tuple. That keeps a canary
+        cohort stable across retries while ensuring a new model cannot receive
+        traffic merely because it was discovered first.
+        """
+        grant = getattr(request.user_context, "execution_grant", None)
+        allowed = {str(item) for item in getattr(grant, "allowed_model_ids", ()) or ()}
+        identity = str(getattr(request.user_context, "user_id", ""))
+        selected: List[tuple[float, float, str, ModelConfig]] = []
+        for model in self.registry.auto_canary_models(request.task_type.value):
+            config = self.model_configs.get(model.id)
+            if config is None or (allowed and model.id not in allowed):
+                continue
+            bucket = int(
+                hashlib.sha256(
+                    f"{identity}:{request.task_type.value}:{model.id}".encode()
+                ).hexdigest()[:8],
+                16,
+            ) % 10_000 / 100
+            if bucket < max(0.0, min(100.0, float(model.traffic_percent or 0))):
+                selected.append((bucket, -model.priority, model.id, config))
+        if not selected:
+            return None
+        selected.sort()
+        return selected[0][3]
 
     def _is_configured(self, config: ModelConfig) -> bool:
         model = self.registry.models[config.id]
@@ -272,6 +310,7 @@ class ModelRouter:
     def select_chain(self, request: Any) -> List[ModelConfig]:
         policy = self.policy_for(request)
         assessment = self.classify_request(request)
+        canary_config = self._canary_config(request)
         candidates = self._rank(
             self._candidate_configs(request),
             policy,
@@ -289,6 +328,14 @@ class ModelRouter:
             candidates = permitted
         disabled = set(self.runtime_controls.get("disabled_models") or [])
         candidates = [item for item in candidates if item.id not in disabled]
+        if canary_config is not None:
+            if (
+                (grant is None or self._grant_permits(grant, canary_config))
+                and canary_config.id not in disabled
+            ):
+                candidates = [canary_config] + [
+                    item for item in candidates if item.id != canary_config.id
+                ]
         canary = (self.runtime_controls.get("canaries") or {}).get(request.task_type.value) or {}
         canary_id = canary.get("model_id")
         canary_pct = max(0.0, min(100.0, float(canary.get("percentage") or 0)))
