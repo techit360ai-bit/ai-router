@@ -30,7 +30,7 @@ class RegistryError(RuntimeError):
 # class, and approval are always *declared* here - never inferred from an API
 # key prefix, a model name, or a provider name.
 BILLING_CLASSES = {"free", "paid", "metered"}
-APPROVAL_STATUSES = {"discovered", "approved", "disabled"}
+APPROVAL_STATUSES = {"discovered", "auto_canary", "approved", "disabled"}
 AUTH_MODES = {"bearer", "anthropic", "query", "sigv4", "bedrock_bearer", "azure", "none"}
 CAPABILITY_FLAGS = ("streaming", "tool_calling", "structured_output", "vision")
 
@@ -100,6 +100,11 @@ class ModelDefinition:
     data_handling: str = ""
     health_status: str = "unknown"
     pricing_version: str = ""
+    pricing_source: str = "registry"
+    pending_reconciliation: bool = False
+    lease_id: str = ""
+    traffic_percent: float = 0.0
+    daily_spend_cap_usd: Optional[float] = None
     streaming: bool = False
     tool_calling: bool = False
     structured_output: bool = False
@@ -200,6 +205,14 @@ class ModelRegistry:
 
     def _load(self) -> None:
         registry = self._read_json(self.model_registry_path)
+        try:
+            from provider_catalog import apply_registry_overlay
+
+            registry = apply_registry_overlay(registry)
+        except Exception:
+            # The optional catalog must never make an existing static registry
+            # unloadable. A missing/read-only runtime overlay is simply ignored.
+            pass
         policies = self._read_json(self.task_policy_path)
         self._validate_document_metadata(registry, "model registry")
         self._validate_document_metadata(policies, "task policy registry")
@@ -255,14 +268,15 @@ class ModelRegistry:
             if approval_status not in APPROVAL_STATUSES:
                 raise RegistryError(f"model {raw.get('id')} declares unknown approval_status: {approval_status}")
             # `enabled` is the effective gate and is derived from approval status
-            # so the two can never diverge. Discovered/disabled models are inert.
-            enabled = approval_status == "approved" and bool(raw.get("enabled", True))
+            # so the two can never diverge. Auto-canary models are executable only
+            # through the bounded canary path and are never user-selectable.
+            enabled = approval_status in {"approved", "auto_canary"} and bool(raw.get("enabled", True))
             model = ModelDefinition(
                 id=str(raw["id"]),
                 provider=str(raw["provider"]),
                 upstream_model=str(raw["upstream_model"]),
                 enabled=enabled,
-                user_selectable=bool(raw.get("user_selectable", False)) and enabled,
+                user_selectable=bool(raw.get("user_selectable", False)) and approval_status == "approved" and enabled,
                 quality_tier=str(raw.get("quality_tier") or "standard"),
                 quality_score=float(raw.get("quality_score", 50)),
                 latency_score=float(raw.get("latency_score", 50)),
@@ -282,6 +296,11 @@ class ModelRegistry:
                 data_handling=str(raw.get("data_handling") or ""),
                 health_status=str(raw.get("health_status") or "unknown"),
                 pricing_version=str(raw.get("pricing_version") or self.version),
+                pricing_source=str(raw.get("pricing_source") or "registry"),
+                pending_reconciliation=bool(raw.get("pending_reconciliation", False)),
+                lease_id=str(raw.get("lease_id") or ""),
+                traffic_percent=max(0.0, min(100.0, float(raw.get("traffic_percent") or 0.0))),
+                daily_spend_cap_usd=self._optional_float(raw.get("daily_spend_cap_usd")),
                 **self._flag_declarations(raw, capabilities),
             )
             if model.provider not in self.providers:
@@ -478,11 +497,23 @@ class ModelRegistry:
         ))
         return candidates
 
+    def auto_canary_models(self, task_type: str) -> List[ModelDefinition]:
+        """Models eligible for bounded canary traffic, never the normal pool."""
+        policy = self.task_policy(task_type)
+        return [
+            model
+            for model in self.models.values()
+            if model.approval_status == "auto_canary"
+            and model.enabled
+            and model.traffic_percent > 0
+            and self._meets_policy(model, policy, allow_auto_canary=True)
+        ]
+
     @staticmethod
-    def _meets_policy(model: ModelDefinition, policy: TaskPolicy) -> bool:
+    def _meets_policy(model: ModelDefinition, policy: TaskPolicy, *, allow_auto_canary: bool = False) -> bool:
         if (
             model.id in policy.forbidden_models
-            or not model.approved
+            or (not model.approved and not (allow_auto_canary and model.approval_status == "auto_canary"))
             or model.quality_score < policy.minimum_quality_score
             or not policy.required_capabilities.issubset(model.capabilities)
             or model.context_window < policy.max_input_tokens
