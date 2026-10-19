@@ -73,10 +73,29 @@ jobs:
             # Prefer the in-box PgBouncer transaction proxy when the backend
             # deploy has provisioned it: all AI-router processes and Celery
             # workers then share one small server-side pool instead of each
-            # opening its own. Falls back to a direct RDS connection if the
-            # proxy is not listening.
+            # opening its own. PgBouncer must be reachable through a Docker
+            # bridge gateway, not merely on host loopback; otherwise the API
+            # container gets ECONNREFUSED on host.docker.internal:6432. Repair
+            # the shared proxy best-effort, probe the container-facing path,
+            # and fall back to direct RDS if that path is not healthy.
             if [ -s "$HOME/.techit/platform-database-url" ]; then
-              if node -e 'const n=require("net");const s=n.connect(6432,"127.0.0.1");s.on("connect",()=>{s.end();process.exit(0)});s.on("error",()=>process.exit(1));setTimeout(()=>process.exit(1),2000)'; then
+              if [ -f ../BACKEND/ops/ec2/pgbouncer/setup.sh ]; then
+                sudo bash ../BACKEND/ops/ec2/pgbouncer/setup.sh --credential-file "$HOME/.techit/platform-database-url" >/tmp/ai-router-pgbouncer.log 2>&1 \
+                  || { echo "⚠️ shared PgBouncer provisioning failed"; tail -n 30 /tmp/ai-router-pgbouncer.log || true; }
+              fi
+              PGBOUNCER_REACHABLE=0
+              # Compose maps host.docker.internal:host-gateway to the default
+              # Docker bridge gateway. Probe that exact route, not an arbitrary
+              # compose-network gateway that the container cannot use.
+              HOST_GATEWAY="$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{"\n"}}{{end}}' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+              for _ in $(seq 1 10); do
+                if [ -n "$HOST_GATEWAY" ] && GW="$HOST_GATEWAY" node -e 'const n=require("net");const s=n.connect(6432,process.env.GW);s.on("connect",()=>{s.end();process.exit(0)});s.on("error",()=>process.exit(1));setTimeout(()=>process.exit(1),2000)'; then
+                  PGBOUNCER_REACHABLE=1
+                  break
+                fi
+                sleep 1
+              done
+              if [ "$PGBOUNCER_REACHABLE" = "1" ]; then
                 DATABASE_URL="$(CRED="$(cat "$HOME/.techit/platform-database-url")" node -e '
                   const u = new URL(process.env.CRED);
                   // api/worker/scheduler run on docker bridge networks and
@@ -89,14 +108,14 @@ jobs:
                   u.searchParams.set("sslmode", "disable");
                   process.stdout.write(u.toString());
                 ')"
-                echo "ℹ️ AI Router using in-box PgBouncer proxy 127.0.0.1:6432"
+                echo "ℹ️ AI Router using in-box PgBouncer proxy through host.docker.internal:6432"
               else
                 DATABASE_URL="$(CRED="$(cat "$HOME/.techit/platform-database-url")" node -e '
                   const u = new URL(process.env.CRED);
                   u.searchParams.set("sslmode", "require");
                   process.stdout.write(u.toString());
                 ')"
-                echo "ℹ️ PgBouncer not listening; AI Router using direct RDS"
+                echo "⚠️ PgBouncer is not reachable from a Docker bridge gateway; AI Router using direct RDS"
               fi
             fi
 
