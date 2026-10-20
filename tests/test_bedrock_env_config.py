@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -62,3 +65,45 @@ def test_sigv4_adapter_does_not_embed_static_aws_credentials() -> None:
     source = (ROOT / "provider_adapters.py").read_text(encoding="utf-8")
     assert "aws_access_key_id=" not in source
     assert "aws_secret_access_key=" not in source
+
+
+def test_sync_helper_does_not_copy_aws_secrets(tmp_path: Path) -> None:
+    credentials = tmp_path / "credentials"
+    credentials.write_text(
+        "[techit]\n"
+        "aws_access_key_id = test-access-key\n"
+        "aws_secret_access_key = test-secret-key\n"
+        "aws_session_token = test-session-token\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "config"
+    config.write_text("[profile techit]\nregion = eu-west-1\n", encoding="utf-8")
+    env_file = tmp_path / ".env"
+    env = {
+        **os.environ,
+        "AWS_SHARED_CREDENTIALS_FILE": str(credentials),
+        "AWS_CONFIG_FILE": str(config),
+    }
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "sync_aws_env.py"),
+            "--profile",
+            "techit",
+            "--env-file",
+            str(env_file),
+            "--enable-bedrock",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    synced = env_file.read_text(encoding="utf-8")
+    assert "AWS_REGION=eu-west-1" in synced
+    assert "BEDROCK_REGION=eu-west-1" in synced
+    assert "test-access-key" not in synced
+    assert "test-secret-key" not in synced
+    assert "test-session-token" not in synced

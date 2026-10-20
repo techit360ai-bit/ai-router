@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Copy a shared AWS profile into an env file without printing secrets.
+"""Configure non-secret Bedrock settings from a shared AWS profile.
 
-Docker Compose does not automatically mount ``~/.aws``. This keeps the router
-on the standard AWS credential chain while making the profile available to the
-container through environment variables. Prefer a dedicated IAM principal.
+Docker Compose does not automatically mount ``~/.aws``. This helper copies only
+the profile's region and Bedrock feature flags into an env file. Credentials
+stay in the runtime environment, deployment secret store, or IAM role and are
+never written to the repository working tree by this script.
 """
 
 from __future__ import annotations
@@ -49,10 +50,9 @@ def main() -> int:
     if not credentials.has_section(args.profile):
         parser.error(f"profile '{args.profile}' is missing from {credentials_path}")
 
-    access_key = credentials.get(args.profile, "aws_access_key_id", fallback="").strip()
-    secret_key = credentials.get(args.profile, "aws_secret_access_key", fallback="").strip()
-    session_token = credentials.get(args.profile, "aws_session_token", fallback="").strip()
-    if not access_key or not secret_key:
+    if not credentials.has_option(args.profile, "aws_access_key_id") or not credentials.has_option(
+        args.profile, "aws_secret_access_key"
+    ):
         parser.error(f"profile '{args.profile}' is missing AWS access or secret key")
 
     config_section = _section_for_profile(args.profile)
@@ -60,12 +60,7 @@ def main() -> int:
 
     env_path = Path(args.env_file)
     text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-    updates: dict[str, str | None] = {
-        "AWS_ACCESS_KEY_ID": access_key,
-        "AWS_SECRET_ACCESS_KEY": secret_key,
-        "AWS_SESSION_TOKEN": session_token or None,
-        "AWS_REGION": region,
-    }
+    updates: dict[str, str | None] = {"AWS_REGION": region}
     if args.enable_bedrock:
         updates.update({
             "BEDROCK_ENABLED": "true",
@@ -77,8 +72,12 @@ def main() -> int:
     env_path.write_text(text, encoding="utf-8")
     env_path.chmod(0o600)
 
-    print(f"updated {env_path} from AWS profile '{args.profile}' in {region}")
+    print(
+        f"updated non-secret settings in {env_path} from AWS profile "
+        f"'{args.profile}' in {region}"
+    )
     print("keys: " + ", ".join(updates))
+    print("AWS credentials were not copied; keep them in the runtime secret store or IAM role")
     return 0
 
 

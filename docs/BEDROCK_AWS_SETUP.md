@@ -22,11 +22,16 @@ profile. For host-only runs, `aws configure` is also accepted; boto3 reads the
 resulting `~/.aws/credentials` and `~/.aws/config`. Docker containers do not
 automatically inherit the host profile.
 
-To copy a shared profile into the git-ignored `.env` without printing secrets:
+To copy the shared profile's non-secret region and Bedrock flags into the
+git-ignored `.env` without copying credentials:
 
 ```bash
 python scripts/sync_aws_env.py --profile default --enable-bedrock
 ```
+
+The helper never writes `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, or
+`AWS_SESSION_TOKEN`. Supply those through the deployment secret store, an IAM
+role, or the runtime environment. Avoid committing credentials to an env file.
 
 ## Required IAM policy
 
