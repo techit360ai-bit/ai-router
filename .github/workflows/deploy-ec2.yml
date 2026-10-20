@@ -39,6 +39,16 @@ jobs:
           # AI_ROUTER_MODE=llm.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Bedrock is authenticated by the standard AWS credential chain. Set
+          # a dedicated IAM user's keys as repository secrets, or attach the
+          # required policy to the EC2 instance role instead.
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          BEDROCK_ENABLED: ${{ secrets.BEDROCK_ENABLED || 'true' }}
+          BEDROCK_REGION: ${{ secrets.BEDROCK_REGION || 'us-east-1' }}
+          AI_BEDROCK_LIVE_PROBE: ${{ secrets.AI_BEDROCK_LIVE_PROBE || 'true' }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
@@ -47,7 +57,7 @@ jobs:
           # appleboy default and get killed mid-build ("Run Command Timeout"),
           # leaving the router down. Give it room to finish (swap-backed).
           command_timeout: 45m
-          envs: JWT_PUBLIC_KEY,DATABASE_URL,REDIS_URL,CELERY_BROKER,OPENAI_API_KEY,ANTHROPIC_API_KEY
+          envs: JWT_PUBLIC_KEY,DATABASE_URL,REDIS_URL,CELERY_BROKER,OPENAI_API_KEY,ANTHROPIC_API_KEY,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,AWS_REGION,BEDROCK_ENABLED,BEDROCK_REGION,AI_BEDROCK_LIVE_PROBE
           # Fail the job on the first failed command so a blocked pull can never
           # be reported as a successful deploy.
           script_stop: true
@@ -142,7 +152,8 @@ jobs:
               } catch { process.stdout.write(""); }
             ')"
             if [ -z "$AI_ROUTER_SETTLEMENT_SECRET" ]; then
-              echo "⚠️ AI_ROUTER_SETTLEMENT_SECRET not found in ~/BACKEND/backend/.env; settlement may be disabled"
+              echo "❌ AI_ROUTER_SETTLEMENT_SECRET not found in ~/BACKEND/backend/.env; refusing a deploy that cannot settle usage"
+              exit 1
             fi
             ADMIN_AI_ROUTER_TELEMETRY_SECRET="$(node -e '
               const fs = require("fs");
@@ -203,7 +214,7 @@ jobs:
                 AI_PROVIDER_KEY_CHECK: "live",
               };
               for (const [k, v] of Object.entries(constants)) upsert(k, v);
-              for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AI_ROUTER_SETTLEMENT_SECRET", "ADMIN_AI_ROUTER_TELEMETRY_SECRET", "AI_EXECUTION_GRANT_SECRET"]) {
+              for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "BEDROCK_ENABLED", "BEDROCK_REGION", "AI_BEDROCK_LIVE_PROBE", "AI_ROUTER_SETTLEMENT_SECRET", "ADMIN_AI_ROUTER_TELEMETRY_SECRET", "AI_EXECUTION_GRANT_SECRET"]) {
                 if (process.env[k]) upsert(k, process.env[k]);
               }
               const pk = process.env.JWT_PUBLIC_KEY || "";

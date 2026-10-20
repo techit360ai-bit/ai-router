@@ -65,7 +65,16 @@ services:
       - AWS_S3_BUCKET=${AWS_S3_BUCKET}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
       - AWS_REGION=${AWS_REGION:-us-east-1}
+      # Bedrock uses the standard AWS credential chain. These flags are kept in
+      # the environment so containers never pin credentials in source code.
+      - BEDROCK_ENABLED=${BEDROCK_ENABLED:-false}
+      - BEDROCK_REGION=${BEDROCK_REGION:-us-east-1}
+      - BEDROCK_BEARER_ENABLED=${BEDROCK_BEARER_ENABLED:-false}
+      - BEDROCK_API_KEY=${BEDROCK_API_KEY}
+      - BEDROCK_BASE_URL=${BEDROCK_BASE_URL}
+      - AI_BEDROCK_LIVE_PROBE=${AI_BEDROCK_LIVE_PROBE:-false}
       - AWS_S3_ENDPOINT=${AWS_S3_ENDPOINT}
       - AWS_S3_SERVER_SIDE_ENCRYPTION=${AWS_S3_SERVER_SIDE_ENCRYPTION:-AES256}
       - ENVIRONMENT=${ENVIRONMENT:-development}
