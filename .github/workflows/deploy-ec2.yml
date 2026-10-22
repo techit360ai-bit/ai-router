@@ -39,16 +39,6 @@ jobs:
           # AI_ROUTER_MODE=llm.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Bedrock is authenticated by the standard AWS credential chain. Set
-          # a dedicated IAM user's keys as repository secrets, or attach the
-          # required policy to the EC2 instance role instead.
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
-          BEDROCK_ENABLED: ${{ secrets.BEDROCK_ENABLED || 'true' }}
-          BEDROCK_REGION: ${{ secrets.BEDROCK_REGION || 'us-east-1' }}
-          AI_BEDROCK_LIVE_PROBE: ${{ secrets.AI_BEDROCK_LIVE_PROBE || 'true' }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
@@ -79,6 +69,82 @@ jobs:
             # DevOps-managed RDS credential wins over the (possibly stale) repo
             # secret. This service is Python/libpq, so it needs sslmode=require
             # (the node-pg platform uses no-verify under pg 8.23).
+            if [ -s "$HOME/.techit/platform-database-url" ]; then
+              DATABASE_URL="$(CRED="$(cat "$HOME/.techit/platform-database-url")" node -e '
+                const u = new URL(process.env.CRED);
+                u.searchParams.set("sslmode", "require");
+                process.stdout.write(u.toString());
+              ')"
+            fi
+
+            if [ -z "$DATABASE_URL" ]; then
+              echo "❌ DATABASE_URL secret is not set (AI Router must use RDS PostgreSQL)"; exit 1
+            fi
+            if [ -z "$REDIS_URL" ]; then
+              echo "❌ REDIS_URL secret is not set (AI Router must use ElastiCache)"; exit 1
+            fi
+
+            # --- provision ~/ai-router/.env ----------------------------------
+            # Non-secret production constants + the RS256 public key. Values are
+            # idempotent upserts so the env never accumulates duplicates.
+            touch .env && chmod 600 .env
+            # The settlement secret is shared with the backend; read it from
+            # the backend env on this same box rather than duplicating it in a
+            # second secret store.
+            AI_ROUTER_SETTLEMENT_SECRET="$(node -e '
+              const fs = require("fs");
+              try {
+                const t = fs.readFileSync("../BACKEND/backend/.env", "utf8");
+                const m = t.match(/^AI_ROUTER_SETTLEMENT_SECRET=(.*)$/m);
+                process.stdout.write(m ? m[1].replace(/^"|"$/g, "") : "");
+              } catch { process.stdout.write(""); }
+            ')"
+            if [ -z "$AI_ROUTER_SETTLEMENT_SECRET" ]; then
+              echo "⚠️ AI_ROUTER_SETTLEMENT_SECRET not found in ~/BACKEND/backend/.env; settlement may be disabled"
+            fi
+
+            DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" CELERY_BROKER="$CELERY_BROKER" \
+            JWT_PUBLIC_KEY="$JWT_PUBLIC_KEY" \
+            OPENAI_API_KEY="$OPENAI_API_KEY" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            AI_ROUTER_SETTLEMENT_SECRET="$AI_ROUTER_SETTLEMENT_SECRET" \
+            node -e '
+              const fs = require("fs");
+              let s = fs.readFileSync(".env", "utf8");
+              const upsert = (k, v) => {
+                const re = new RegExp("^" + k + "=.*$", "m");
+                s = re.test(s) ? s.replace(re, () => k + "=" + v) : s.replace(/\s*$/, "") + "\n" + k + "=" + v + "\n";
+              };
+              const constants = {
+                ENVIRONMENT: "production",
+                ALLOW_DEMO_AUTH: "false",
+                ALLOWED_ORIGINS: "https://beta.techitnetwork.com",
+                JWT_ISSUER: "techit-backend",
+                JWT_AUDIENCE: "techit-platform",
+                JWT_ALGORITHM: "RS256",
+                MCP_BASE_URL: "https://backend.techitnetwork.com/api/mcp",
+                MCP_TIMEOUT: "10",
+                BACKEND_USAGE_SETTLEMENT_URL: "https://backend.techitnetwork.com/internal/usage-settlement",
+              };
+              for (const [k, v] of Object.entries(constants)) upsert(k, v);
+              for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AI_ROUTER_SETTLEMENT_SECRET"]) {
+                if (process.env[k]) upsert(k, process.env[k]);
+              }
+              const pk = process.env.JWT_PUBLIC_KEY || "";
+              if (pk) {
+                // Single quoted line with \n escapes: docker compose decodes it
+                // back to a real PEM, and a raw multi-line value can never
+                // corrupt the .env.
+                const escaped = pk.includes("\n") ? pk.replace(/\r?\n/g, "\\n") : pk;
+                upsert("JWT_PUBLIC_KEY", JSON.stringify(escaped));
+              }
+              fs.writeFileSync(".env", s);
+              fs.chmodSync(".env", 0o600);
+              console.log(JSON.stringify({ event: "ai_router_env_ready", keys: s.split("\n").filter((l) => l.includes("=")).length }));
+            '
+
+            # --- migrate the shared RDS database -----------------------------
+            docker compose run --rm --no-deps migrate
+
             #
             # Prefer the in-box PgBouncer transaction proxy when the backend
             # deploy has provisioned it: all AI-router processes and Celery
@@ -269,6 +335,13 @@ jobs:
               exit 1
             fi
 
+            READY_STATUS="$(curl -s -o /dev/null -w '%{http_code}' https://api.techitnetwork.com/ready || true)"
+            echo "/ready status: $READY_STATUS"
+            if [ "$READY_STATUS" != "200" ]; then
+              curl -s https://api.techitnetwork.com/ready || true
+              echo
+              echo "❌ AI Router /ready is $READY_STATUS"
+              exit 1
             READY_OUT="$(curl -s --max-time 25 -w '\n%{http_code}' https://api.techitnetwork.com/ready || true)"
             READY_STATUS="$(printf '%s' "$READY_OUT" | tail -n1)"
             READY_BODY="$(printf '%s' "$READY_OUT" | sed '$d')"
