@@ -76,7 +76,7 @@ async def test_bedrock_converse_uses_upstream_model_and_normalizes_usage() -> No
     assert result.text == "bedrock says hi"
     assert result.tokens == 10
     assert result.raw == {"prompt_tokens": 4, "completion_tokens": 6}
-    assert client.calls[0]["modelId"] == "us.anthropic.claude-sonnet-4-6-v1:0"
+    assert client.calls[0]["modelId"] == "us.anthropic.claude-sonnet-4-6"
     assert client.calls[0]["messages"] == [{"role": "user", "content": [{"text": "prompt"}]}]
     assert client.calls[0]["inferenceConfig"] == {"maxTokens": 111}
 

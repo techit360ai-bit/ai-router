@@ -209,7 +209,7 @@
       "priority": 61, "tags": ["openrouter", "paid"], "billing_class": "paid"
     },
     {
-      "id": "bedrock-claude-sonnet", "provider": "bedrock", "upstream_model": "us.anthropic.claude-sonnet-4-6-v1:0",
+      "id": "bedrock-claude-sonnet", "provider": "bedrock", "upstream_model": "us.anthropic.claude-sonnet-4-6",
       "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 90,
       "latency_score": 70, "context_window": 200000, "max_output_tokens": 64000,
       "input_cost_per_million": 3.0, "output_cost_per_million": 15.0,
