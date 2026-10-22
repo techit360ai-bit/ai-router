@@ -115,7 +115,14 @@
         "GEMINI_API_KEY",
         "OPENROUTER_API_KEY",
         "PINECONE_API_KEY",
-        "ELEVENLABS_API_KEY"
+        "ELEVENLABS_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_REGION",
+        "BEDROCK_ENABLED",
+        "BEDROCK_REGION",
+        "AI_BEDROCK_LIVE_PROBE"
       ]
     },
     {

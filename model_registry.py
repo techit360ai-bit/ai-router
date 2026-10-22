@@ -25,6 +25,30 @@ class RegistryError(RuntimeError):
     """Configuration cannot produce a safe execution route."""
 
 
+# --- schema v2 vocabularies -------------------------------------------------
+# Explicit, closed vocabularies. Provider identity, authentication, billing
+# class, and approval are always *declared* here - never inferred from an API
+# key prefix, a model name, or a provider name.
+BILLING_CLASSES = {"free", "paid", "metered"}
+APPROVAL_STATUSES = {"discovered", "auto_canary", "approved", "disabled"}
+AUTH_MODES = {"bearer", "anthropic", "query", "sigv4", "bedrock_bearer", "azure", "none"}
+CAPABILITY_FLAGS = ("streaming", "tool_calling", "structured_output", "vision")
+
+# Adapter -> default auth mode. Only used when a provider does not declare
+# `auth` explicitly, so existing registry files keep working unchanged.
+DEFAULT_AUTH_BY_ADAPTER = {
+    "openai_responses": "bearer",
+    "openai_compatible": "bearer",
+    "anthropic_messages": "anthropic",
+    "gemini_generate": "query",
+    "cohere_embed": "bearer",
+    "bedrock_converse": "sigv4",
+    "bedrock_bearer": "bedrock_bearer",
+}
+
+SUPPORTED_ADAPTERS = frozenset(DEFAULT_AUTH_BY_ADAPTER)
+
+
 @dataclass(frozen=True)
 class ProviderDefinition:
     id: str
@@ -36,7 +60,19 @@ class ProviderDefinition:
     enabled_env: str = ""
     enabled: bool = True
     region: str = "global"
+    region_env: str = ""
+    auth: str = ""
     headers: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def resolved_auth(self) -> str:
+        """Declared auth mode, or the adapter's documented default."""
+        return self.auth or DEFAULT_AUTH_BY_ADAPTER.get(self.adapter, "bearer")
+
+    @property
+    def requires_api_key(self) -> bool:
+        """AWS credential-chain providers carry no static API key."""
+        return self.resolved_auth != "sigv4"
 
 
 @dataclass(frozen=True)
@@ -57,6 +93,22 @@ class ModelDefinition:
     output_cost_per_million: Optional[float] = None
     priority: int = 100
     tags: Set[str] = field(default_factory=set)
+    # --- schema v2 metadata (all optional; safe defaults for v1 documents) ---
+    billing_class: str = "paid"
+    approval_status: str = "approved"
+    supported_regions: Sequence[str] = field(default_factory=tuple)
+    data_handling: str = ""
+    health_status: str = "unknown"
+    pricing_version: str = ""
+    pricing_source: str = "registry"
+    pending_reconciliation: bool = False
+    lease_id: str = ""
+    traffic_percent: float = 0.0
+    daily_spend_cap_usd: Optional[float] = None
+    streaming: bool = False
+    tool_calling: bool = False
+    structured_output: bool = False
+    vision: bool = False
 
     def estimated_provider_cost(self, input_tokens: int, output_tokens: int) -> Optional[float]:
         if self.input_cost_per_million is None or self.output_cost_per_million is None:
@@ -65,6 +117,28 @@ class ModelDefinition:
             (max(0, input_tokens) / 1_000_000) * self.input_cost_per_million
             + (max(0, output_tokens) / 1_000_000) * self.output_cost_per_million
         )
+
+    @property
+    def is_free(self) -> bool:
+        return self.billing_class == "free"
+
+    @property
+    def billable(self) -> bool:
+        """Anything that is not classed `free` must be explicitly authorized."""
+        return self.billing_class != "free"
+
+    @property
+    def approved(self) -> bool:
+        return self.approval_status == "approved"
+
+    def capability_flags(self) -> Dict[str, bool]:
+        return {flag: bool(getattr(self, flag)) for flag in CAPABILITY_FLAGS}
+
+    def supports_region(self, region: str) -> bool:
+        if not self.supported_regions:
+            return True
+        candidate = (region or "").strip().lower()
+        return candidate in {str(item).lower() for item in self.supported_regions}
 
 
 @dataclass(frozen=True)
@@ -85,6 +159,10 @@ class TaskPolicy:
     output_schema: Optional[Dict[str, Any]] = None
     preferred_models: Sequence[str] = field(default_factory=tuple)
     forbidden_models: Set[str] = field(default_factory=set)
+    # --- schema v2 policy dimensions (optional) ---
+    allowed_billing_classes: Set[str] = field(default_factory=set)
+    required_data_handling: str = ""
+    max_latency_ms: Optional[float] = None
 
 
 class ModelRegistry:
@@ -127,6 +205,14 @@ class ModelRegistry:
 
     def _load(self) -> None:
         registry = self._read_json(self.model_registry_path)
+        try:
+            from provider_catalog import apply_registry_overlay
+
+            registry = apply_registry_overlay(registry)
+        except Exception:
+            # The optional catalog must never make an existing static registry
+            # unloadable. A missing/read-only runtime overlay is simply ignored.
+            pass
         policies = self._read_json(self.task_policy_path)
         self._validate_document_metadata(registry, "model registry")
         self._validate_document_metadata(policies, "task policy registry")
@@ -150,8 +236,18 @@ class ModelRegistry:
                 enabled_env=str(raw.get("enabled_env") or ""),
                 enabled=bool(raw.get("enabled", True)),
                 region=str(raw.get("region") or "global"),
+                region_env=str(raw.get("region_env") or ""),
+                auth=str(raw.get("auth") or "").strip().lower(),
                 headers={str(k): str(v) for k, v in (raw.get("headers") or {}).items()},
             )
+            if provider.auth and provider.auth not in AUTH_MODES:
+                raise RegistryError(
+                    f"provider {provider.id} declares unsupported auth mode: {provider.auth}"
+                )
+            if provider.adapter not in SUPPORTED_ADAPTERS:
+                raise RegistryError(
+                    f"provider {provider.id} declares unsupported adapter: {provider.adapter}"
+                )
             if provider.id in self.providers:
                 raise RegistryError(f"duplicate provider id: {provider.id}")
             self.providers[provider.id] = provider
@@ -165,23 +261,47 @@ class ModelRegistry:
             missing_model = [field for field in required_model_fields if field not in raw]
             if missing_model:
                 raise RegistryError(f"model metadata is incomplete: {', '.join(missing_model)}")
+            capabilities = {str(item) for item in raw.get("capabilities", ["text"])}
+            approval_status = str(raw.get("approval_status") or "").strip().lower()
+            if not approval_status:
+                approval_status = "disabled" if raw.get("enabled") is False else "approved"
+            if approval_status not in APPROVAL_STATUSES:
+                raise RegistryError(f"model {raw.get('id')} declares unknown approval_status: {approval_status}")
+            # `enabled` is the effective gate and is derived from approval status
+            # so the two can never diverge. Auto-canary models are executable only
+            # through the bounded canary path and are never user-selectable.
+            enabled = approval_status in {"approved", "auto_canary"} and bool(raw.get("enabled", True))
             model = ModelDefinition(
                 id=str(raw["id"]),
                 provider=str(raw["provider"]),
                 upstream_model=str(raw["upstream_model"]),
-                enabled=bool(raw.get("enabled", True)),
-                user_selectable=bool(raw.get("user_selectable", False)),
+                enabled=enabled,
+                user_selectable=bool(raw.get("user_selectable", False)) and approval_status == "approved" and enabled,
                 quality_tier=str(raw.get("quality_tier") or "standard"),
                 quality_score=float(raw.get("quality_score", 50)),
                 latency_score=float(raw.get("latency_score", 50)),
                 context_window=int(raw.get("context_window", 128_000)),
                 max_output_tokens=int(raw.get("max_output_tokens", 8_192)),
-                capabilities={str(item) for item in raw.get("capabilities", ["text"])},
+                capabilities=capabilities,
                 input_cost_per_million=self._optional_float(raw.get("input_cost_per_million")),
                 cached_input_cost_per_million=self._optional_float(raw.get("cached_input_cost_per_million")),
                 output_cost_per_million=self._optional_float(raw.get("output_cost_per_million")),
                 priority=int(raw.get("priority", 100)),
                 tags={str(item) for item in raw.get("tags", [])},
+                billing_class=self._billing_class(raw),
+                approval_status=approval_status,
+                supported_regions=tuple(
+                    str(item).strip().lower() for item in (raw.get("supported_regions") or []) if str(item).strip()
+                ),
+                data_handling=str(raw.get("data_handling") or ""),
+                health_status=str(raw.get("health_status") or "unknown"),
+                pricing_version=str(raw.get("pricing_version") or self.version),
+                pricing_source=str(raw.get("pricing_source") or "registry"),
+                pending_reconciliation=bool(raw.get("pending_reconciliation", False)),
+                lease_id=str(raw.get("lease_id") or ""),
+                traffic_percent=max(0.0, min(100.0, float(raw.get("traffic_percent") or 0.0))),
+                daily_spend_cap_usd=self._optional_float(raw.get("daily_spend_cap_usd")),
+                **self._flag_declarations(raw, capabilities),
             )
             if model.provider not in self.providers:
                 raise RegistryError(f"model {model.id} references unknown provider {model.provider}")
@@ -213,6 +333,11 @@ class ModelRegistry:
                 output_schema=merged.get("output_schema"),
                 preferred_models=tuple(str(item) for item in merged.get("preferred_models", [])),
                 forbidden_models={str(item) for item in merged.get("forbidden_models", [])},
+                allowed_billing_classes={
+                    str(item).strip().lower() for item in merged.get("allowed_billing_classes", []) if str(item).strip()
+                },
+                required_data_handling=str(merged.get("required_data_handling") or ""),
+                max_latency_ms=self._optional_float(merged.get("max_latency_ms")),
             )
 
         if not self.providers or not self.models or not self.task_policies:
@@ -256,6 +381,48 @@ class ModelRegistry:
         if value is None or value == "":
             return None
         return float(value)
+
+    @staticmethod
+    def _billing_class(raw: Mapping[str, Any]) -> str:
+        """Billing class is declared, or derived from pricing - never inferred
+        from the provider name. Unknown pricing is treated as `paid`, so an
+        unpriced model can never be treated as free by accident."""
+        declared = str(raw.get("billing_class") or "").strip().lower()
+        if declared:
+            if declared not in BILLING_CLASSES:
+                raise RegistryError(f"model {raw.get('id')} declares unknown billing_class: {declared}")
+            if declared == "free":
+                costs = (raw.get("input_cost_per_million"), raw.get("output_cost_per_million"))
+                if any(cost is not None and float(cost) > 0 for cost in costs):
+                    raise RegistryError(
+                        f"model {raw.get('id')} is classed free but declares a non-zero price"
+                    )
+            return declared
+        costs = (raw.get("input_cost_per_million"), raw.get("output_cost_per_million"))
+        if costs[0] is not None and costs[1] is not None and float(costs[0]) == 0.0 and float(costs[1]) == 0.0:
+            return "free"
+        return "paid"
+
+    @staticmethod
+    def _flag_declarations(raw: Mapping[str, Any], capabilities: Set[str]) -> Dict[str, bool]:
+        """Reconcile the explicit capability booleans with the capability set.
+
+        A declared `true` flag must be backed by the capability; an omitted flag
+        is derived from the capability set so this is backward compatible."""
+        declarations: Dict[str, bool] = {}
+        for flag in CAPABILITY_FLAGS:
+            declared = raw.get(flag)
+            present = flag in capabilities
+            if declared is None:
+                declarations[flag] = present
+                continue
+            value = bool(declared)
+            if value and not present:
+                raise RegistryError(
+                    f"model {raw.get('id')} declares {flag}=true but omits the capability"
+                )
+            declarations[flag] = value
+        return declarations
 
     def provider_for(self, model: ModelDefinition) -> ProviderDefinition:
         return self.providers[model.provider]
@@ -330,12 +497,35 @@ class ModelRegistry:
         ))
         return candidates
 
+    def auto_canary_models(self, task_type: str) -> List[ModelDefinition]:
+        """Models eligible for bounded canary traffic, never the normal pool."""
+        policy = self.task_policy(task_type)
+        return [
+            model
+            for model in self.models.values()
+            if model.approval_status == "auto_canary"
+            and model.enabled
+            and model.traffic_percent > 0
+            and self._meets_policy(model, policy, allow_auto_canary=True)
+        ]
+
     @staticmethod
-    def _meets_policy(model: ModelDefinition, policy: TaskPolicy) -> bool:
-        return (
-            model.id not in policy.forbidden_models
-            and model.quality_score >= policy.minimum_quality_score
-            and policy.required_capabilities.issubset(model.capabilities)
-            and model.context_window >= policy.max_input_tokens
-            and model.max_output_tokens >= policy.max_output_tokens
-        )
+    def _meets_policy(model: ModelDefinition, policy: TaskPolicy, *, allow_auto_canary: bool = False) -> bool:
+        if (
+            model.id in policy.forbidden_models
+            or (not model.approved and not (allow_auto_canary and model.approval_status == "auto_canary"))
+            or model.quality_score < policy.minimum_quality_score
+            or not policy.required_capabilities.issubset(model.capabilities)
+            or model.context_window < policy.max_input_tokens
+            or model.max_output_tokens < policy.max_output_tokens
+        ):
+            return False
+        # Billing-class and data-handling policy dimensions are optional. When a
+        # task declares them, a model that does not match is never a candidate -
+        # this is what keeps a free-tier or data-region task from silently
+        # routing to a paid or non-compliant model.
+        if policy.allowed_billing_classes and model.billing_class not in policy.allowed_billing_classes:
+            return False
+        if policy.required_data_handling and model.data_handling != policy.required_data_handling:
+            return False
+        return True

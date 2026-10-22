@@ -41,3 +41,29 @@ def test_check_url_reports_scheme_only():
 def test_check_url_accepts_https():
     check = _check_url("mcp.base_url", "https://backend.techitnetwork.com/api/mcp", {"https"}, "production")
     assert check.ok is True
+
+
+def test_partial_provider_configuration_is_reported_without_failing_by_default(monkeypatch):
+    providers = [{
+        "id": "azure_openai",
+        "detected": True,
+        "configured": False,
+        "missing_env": ["AZURE_OPENAI_BASE_URL"],
+        "missing_credentials": [],
+    }]
+    monkeypatch.delenv("AI_STRICT_PROVIDER_READINESS", raising=False)
+    checks = main_module._provider_configuration_checks(
+        providers,
+        main_module._strict_provider_readiness_enabled(),
+    )
+    assert checks[0].ok is True
+    assert "AZURE_OPENAI_BASE_URL" in checks[0].detail
+
+
+def test_strict_provider_readiness_fails_on_partial_configuration(monkeypatch):
+    monkeypatch.setenv("AI_STRICT_PROVIDER_READINESS", "true")
+    checks = main_module._provider_configuration_checks(
+        [{"id": "azure_openai", "detected": True, "configured": False, "missing_env": ["AZURE_OPENAI_BASE_URL"]}],
+        main_module._strict_provider_readiness_enabled(),
+    )
+    assert checks[0].ok is False

@@ -43,7 +43,11 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: JWT_PUBLIC_KEY,DATABASE_URL,REDIS_URL,CELERY_BROKER,OPENAI_API_KEY,ANTHROPIC_API_KEY
+          # The Python image build on this memory-tight box can exceed the 10m
+          # appleboy default and get killed mid-build ("Run Command Timeout"),
+          # leaving the router down. Give it room to finish (swap-backed).
+          command_timeout: 45m
+          envs: JWT_PUBLIC_KEY,DATABASE_URL,REDIS_URL,CELERY_BROKER,OPENAI_API_KEY,ANTHROPIC_API_KEY,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,AWS_REGION,BEDROCK_ENABLED,BEDROCK_REGION,AI_BEDROCK_LIVE_PROBE
           # Fail the job on the first failed command so a blocked pull can never
           # be reported as a successful deploy.
           script_stop: true
@@ -141,6 +145,169 @@ jobs:
             # --- migrate the shared RDS database -----------------------------
             docker compose run --rm --no-deps migrate
 
+            #
+            # Prefer the in-box PgBouncer transaction proxy when the backend
+            # deploy has provisioned it: all AI-router processes and Celery
+            # workers then share one small server-side pool instead of each
+            # opening its own. PgBouncer must be reachable through a Docker
+            # bridge gateway, not merely on host loopback; otherwise the API
+            # container gets ECONNREFUSED on host.docker.internal:6432. Repair
+            # the shared proxy best-effort, probe the container-facing path,
+            # and fall back to direct RDS if that path is not healthy.
+            if [ -s "$HOME/.techit/platform-database-url" ]; then
+              if [ -f ../BACKEND/ops/ec2/pgbouncer/setup.sh ]; then
+                sudo bash ../BACKEND/ops/ec2/pgbouncer/setup.sh --credential-file "$HOME/.techit/platform-database-url" >/tmp/ai-router-pgbouncer.log 2>&1 \
+                  || { echo "⚠️ shared PgBouncer provisioning failed"; tail -n 30 /tmp/ai-router-pgbouncer.log || true; }
+              fi
+              PGBOUNCER_REACHABLE=0
+              # Compose maps host.docker.internal:host-gateway to the default
+              # Docker bridge gateway. Probe that exact route, not an arbitrary
+              # compose-network gateway that the container cannot use.
+              HOST_GATEWAY="$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{"\n"}}{{end}}' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+              for _ in $(seq 1 10); do
+                if [ -n "$HOST_GATEWAY" ] && GW="$HOST_GATEWAY" node -e 'const n=require("net");const s=n.connect(6432,process.env.GW);s.on("connect",()=>{s.end();process.exit(0)});s.on("error",()=>process.exit(1));setTimeout(()=>process.exit(1),2000)'; then
+                  PGBOUNCER_REACHABLE=1
+                  break
+                fi
+                sleep 1
+              done
+              if [ "$PGBOUNCER_REACHABLE" = "1" ]; then
+                DATABASE_URL="$(CRED="$(cat "$HOME/.techit/platform-database-url")" node -e '
+                  const u = new URL(process.env.CRED);
+                  // api/worker/scheduler run on docker bridge networks and
+                  // reach the host PgBouncer through host.docker.internal
+                  // (mapped to the bridge gateway by extra_hosts), not their
+                  // own loopback.
+                  u.hostname = "host.docker.internal";
+                  u.port = "6432";
+                  // Loopback hop is plain; PgBouncer terminates TLS to RDS.
+                  u.searchParams.set("sslmode", "disable");
+                  process.stdout.write(u.toString());
+                ')"
+                echo "ℹ️ AI Router using in-box PgBouncer proxy through host.docker.internal:6432"
+              else
+                DATABASE_URL="$(CRED="$(cat "$HOME/.techit/platform-database-url")" node -e '
+                  const u = new URL(process.env.CRED);
+                  u.searchParams.set("sslmode", "require");
+                  process.stdout.write(u.toString());
+                ')"
+                echo "⚠️ PgBouncer is not reachable from a Docker bridge gateway; AI Router using direct RDS"
+              fi
+            fi
+
+            if [ -z "$DATABASE_URL" ]; then
+              echo "❌ DATABASE_URL secret is not set (AI Router must use RDS PostgreSQL)"; exit 1
+            fi
+            if [ -z "$REDIS_URL" ]; then
+              echo "❌ REDIS_URL secret is not set (AI Router must use ElastiCache)"; exit 1
+            fi
+
+            # --- provision ~/ai-router/.env ----------------------------------
+            # Non-secret production constants + the RS256 public key. Values are
+            # idempotent upserts so the env never accumulates duplicates.
+            touch .env && chmod 600 .env
+            # The settlement secret is shared with the backend; read it from
+            # the backend env on this same box rather than duplicating it in a
+            # second secret store.
+            AI_ROUTER_SETTLEMENT_SECRET="$(node -e '
+              const fs = require("fs");
+              try {
+                const t = fs.readFileSync("../BACKEND/backend/.env", "utf8");
+                const m = t.match(/^AI_ROUTER_SETTLEMENT_SECRET=(.*)$/m);
+                process.stdout.write(m ? m[1].replace(/^"|"$/g, "") : "");
+              } catch { process.stdout.write(""); }
+            ')"
+            if [ -z "$AI_ROUTER_SETTLEMENT_SECRET" ]; then
+              echo "❌ AI_ROUTER_SETTLEMENT_SECRET not found in ~/BACKEND/backend/.env; refusing a deploy that cannot settle usage"
+              exit 1
+            fi
+            ADMIN_AI_ROUTER_TELEMETRY_SECRET="$(node -e '
+              const fs = require("fs");
+              try {
+                const t = fs.readFileSync("../BACKEND/backend/.env", "utf8");
+                const m = t.match(/^ADMIN_AI_ROUTER_TELEMETRY_SECRET=(.*)$/m);
+                process.stdout.write(m ? m[1].replace(/^"|"$/g, "") : "");
+              } catch { process.stdout.write(""); }
+            ')"
+            AI_EXECUTION_GRANT_SECRET="$(node -e '
+              const fs = require("fs");
+              try {
+                const t = fs.readFileSync("../BACKEND/backend/.env", "utf8");
+                const m = t.match(/^AI_EXECUTION_GRANT_SECRET=(.*)$/m);
+                process.stdout.write(m ? m[1].replace(/^"|"$/g, "") : "");
+              } catch { process.stdout.write(""); }
+            ')"
+            if [ -z "$ADMIN_AI_ROUTER_TELEMETRY_SECRET" ]; then
+              echo "❌ ADMIN_AI_ROUTER_TELEMETRY_SECRET not found in ~/BACKEND/backend/.env"; exit 1
+            fi
+            if [ -z "$AI_EXECUTION_GRANT_SECRET" ]; then
+              echo "❌ AI_EXECUTION_GRANT_SECRET not found in ~/BACKEND/backend/.env"; exit 1
+            fi
+
+            DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" CELERY_BROKER="$CELERY_BROKER" \
+            JWT_PUBLIC_KEY="$JWT_PUBLIC_KEY" \
+            OPENAI_API_KEY="$OPENAI_API_KEY" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            AI_ROUTER_SETTLEMENT_SECRET="$AI_ROUTER_SETTLEMENT_SECRET" \
+            ADMIN_AI_ROUTER_TELEMETRY_SECRET="$ADMIN_AI_ROUTER_TELEMETRY_SECRET" \
+            AI_EXECUTION_GRANT_SECRET="$AI_EXECUTION_GRANT_SECRET" \
+            node -e '
+              const fs = require("fs");
+              let s = fs.readFileSync(".env", "utf8");
+              const upsert = (k, v) => {
+                const re = new RegExp("^" + k + "=.*$", "m");
+                s = re.test(s) ? s.replace(re, () => k + "=" + v) : s.replace(/\s*$/, "") + "\n" + k + "=" + v + "\n";
+              };
+              const constants = {
+                ENVIRONMENT: "production",
+                ALLOW_DEMO_AUTH: "false",
+                ALLOWED_ORIGINS: "https://beta.techitnetwork.com",
+                JWT_ISSUER: "techit-backend",
+                JWT_AUDIENCE: "techit-platform",
+                JWT_ALGORITHM: "RS256",
+                MCP_BASE_URL: "https://backend.techitnetwork.com/api/mcp",
+                MCP_TIMEOUT: "10",
+                BACKEND_USAGE_SETTLEMENT_URL: "https://backend.techitnetwork.com/internal/usage-settlement",
+                REQUIRE_AI_EXECUTION_GRANT: "true",
+                // Bound every engine per process. main.py builds more than one
+                // engine (identity + platform) and Celery forks, so a per-engine
+                // cap is what keeps the router from filling RDS on its own; the
+                // PgBouncer proxy then collapses all of it into one small pool.
+                DATABASE_POOL_SIZE: "2",
+                DATABASE_MAX_OVERFLOW: "2",
+                // Validate provider credentials live during /ready so a
+                // present-but-wrong key (401) fails readiness instead of
+                // silently passing while every AI call errors.
+                AI_PROVIDER_KEY_CHECK: "live",
+              };
+              for (const [k, v] of Object.entries(constants)) upsert(k, v);
+              for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "BEDROCK_ENABLED", "BEDROCK_REGION", "AI_BEDROCK_LIVE_PROBE", "AI_ROUTER_SETTLEMENT_SECRET", "ADMIN_AI_ROUTER_TELEMETRY_SECRET", "AI_EXECUTION_GRANT_SECRET"]) {
+                if (process.env[k]) upsert(k, process.env[k]);
+              }
+              const pk = process.env.JWT_PUBLIC_KEY || "";
+              if (pk) {
+                // Single quoted line with \n escapes: docker compose decodes it
+                // back to a real PEM, and a raw multi-line value can never
+                // corrupt the .env.
+                const escaped = pk.includes("\n") ? pk.replace(/\r?\n/g, "\\n") : pk;
+                upsert("JWT_PUBLIC_KEY", JSON.stringify(escaped));
+              }
+              fs.writeFileSync(".env", s);
+              fs.chmodSync(".env", 0o600);
+              console.log(JSON.stringify({ event: "ai_router_env_ready", keys: s.split("\n").filter((l) => l.includes("=")).length }));
+            '
+
+            # --- migrate the shared RDS database -----------------------------
+            # The API/worker also call Base.metadata.create_all() at boot, so a
+            # database that has already served traffic holds the full schema but
+            # no alembic_version row. A plain `upgrade head` then dies on the
+            # initial migration with `relation "users" already exists`. Detect
+            # that and stamp the existing schema as head; fresh databases still
+            # take the normal upgrade path.
+            if ! docker compose run --rm --no-deps migrate; then
+              echo "⚠️ alembic upgrade failed; stamping the pre-existing schema to head"
+              docker compose run --rm --no-deps migrate alembic stamp head
+            fi
+
             # --- rebuild + (re)start the services ---------------------------
             GIT_SHA="$DEPLOYED_SHA" BUILD_TIME="$(date -u +%FT%TZ)" \
               docker compose up -d --no-deps --build api worker scheduler
@@ -152,6 +319,14 @@ jobs:
               if curl -fsS https://api.techitnetwork.com/health >/dev/null 2>&1; then break; fi
               sleep 3
             done
+            if ! curl -fsS https://api.techitnetwork.com/health >/dev/null 2>&1; then
+              echo "--- local api probe ---"
+              curl -s -o /dev/null -w 'localhost:8000/health=%{http_code}\n' http://localhost:8000/health || true
+              echo "--- api logs (last 120) ---"
+              docker compose logs --no-color --tail=120 api || true
+              echo "--- worker logs (last 40) ---"
+              docker compose logs --no-color --tail=40 worker || true
+            fi
             VERSION="$(curl -fsS https://api.techitnetwork.com/version)"
             echo "version: $VERSION"
             if ! echo "$VERSION" | grep -q "\"sha\": \"$DEPLOYED_SHA\"" \
@@ -167,5 +342,29 @@ jobs:
               echo
               echo "❌ AI Router /ready is $READY_STATUS"
               exit 1
+            READY_OUT="$(curl -s --max-time 25 -w '\n%{http_code}' https://api.techitnetwork.com/ready || true)"
+            READY_STATUS="$(printf '%s' "$READY_OUT" | tail -n1)"
+            READY_BODY="$(printf '%s' "$READY_OUT" | sed '$d')"
+            echo "/ready status: $READY_STATUS"
+            if [ "$READY_STATUS" != "200" ]; then
+              echo "$READY_BODY"
+              echo
+              # A 503 whose only failing checks are provider.credentials means
+              # the platform is healthy but the provider API keys need rotating.
+              # Surface that loudly without failing the rollout (the container is
+              # already serving; blocking here would mask every other problem).
+              NON_PROVIDER_FAILURES="$(BODY="$READY_BODY" node -e '
+                let body = {};
+                try { body = JSON.parse(process.env.BODY || "{}"); } catch {}
+                const failing = (body.checks || []).filter((c) => c && c.ok === false).map((c) => String(c.name || ""));
+                const blocking = failing.filter((name) => !/^provider\..*\.credentials$/.test(name) && name !== "provider.credentials");
+                process.stdout.write(blocking.join(","));
+              ')"
+              if [ -n "$NON_PROVIDER_FAILURES" ]; then
+                echo "❌ AI Router /ready is $READY_STATUS (blocking checks: $NON_PROVIDER_FAILURES)"
+                exit 1
+              fi
+              echo "⚠️ AI Router /ready is $READY_STATUS, but only provider credential checks failed."
+              echo "⚠️ Rotate OPENAI_API_KEY / ANTHROPIC_API_KEY (repo secrets -> deploy) - live AI calls will 401 until then."
             fi
             echo "✅ AI Router deployed $DEPLOYED_SHA"

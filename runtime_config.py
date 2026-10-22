@@ -152,13 +152,32 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
     checks.append(_check_url("mcp.base_url", values.get("MCP_BASE_URL"), {"https"}, env_name))
 
     if env_name in PROD_ENVS and mode == "llm":
-        for name, env_key in (
-            ("provider.openai", "OPENAI_API_KEY"),
-            ("provider.anthropic", "ANTHROPIC_API_KEY"),
-        ):
+        # Provider requirements are deployment-selected. A Bedrock-only or
+        # Azure-only rollout must not fail because the legacy OpenAI/Anthropic
+        # defaults are absent; /ready separately requires at least one verified
+        # provider and one eligible model.
+        required_providers = {
+            item.strip().lower()
+            for item in str(values.get("AI_REQUIRED_PROVIDERS", "")).split(",")
+            if item.strip()
+        }
+        provider_keys = {
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "google": "GEMINI_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "moonshot": "MOONSHOT_API_KEY",
+            "mistral": "MISTRAL_API_KEY",
+            "cohere": "COHERE_API_KEY",
+            "agentrouter": "AGENTROUTER_API_KEY",
+        }
+        for name in sorted(required_providers):
+            env_key = provider_keys.get(name)
+            if not env_key:
+                continue
             value = values.get(env_key, "")
             checks.append(RuntimeCheck(
-                name,
+                f"provider.{name}",
                 bool(value) and not _is_placeholder(value),
                 f"{env_key} is required and must not be a placeholder",
             ))
@@ -175,6 +194,30 @@ def runtime_checks(env: Mapping[str, str] | None = None) -> list[RuntimeCheck]:
                 values.get("AGENTROUTER_BASE_URL") or "https://agentrouter.org/v1",
                 {"https"},
                 env_name,
+            ))
+
+        if bool_env(values.get("BEDROCK_ENABLED"), default=False):
+            # SigV4 uses the AWS credential chain (env keys or an IAM/task role),
+            # so only the region is a hard requirement here.
+            checks.append(RuntimeCheck(
+                "provider.bedrock_region",
+                bool(values.get("BEDROCK_REGION") or values.get("AWS_REGION")),
+                "BEDROCK_REGION or AWS_REGION is required when Bedrock is enabled",
+            ))
+        if bool_env(values.get("BEDROCK_BEARER_ENABLED"), default=False):
+            bedrock_bearer_key = values.get("BEDROCK_API_KEY", "")
+            checks.append(RuntimeCheck(
+                "provider.bedrock_bearer",
+                bool(bedrock_bearer_key) and not _is_placeholder(bedrock_bearer_key),
+                "BEDROCK_API_KEY is required when Bedrock bearer auth is enabled",
+            ))
+
+        openrouter_key = values.get("OPENROUTER_API_KEY", "")
+        if openrouter_key:
+            checks.append(RuntimeCheck(
+                "provider.openrouter",
+                not _is_placeholder(openrouter_key),
+                "OPENROUTER_API_KEY must not be a placeholder",
             ))
 
         if bool_env(values.get("REQUIRE_AI_EXECUTION_GRANT"), default=False):
@@ -255,8 +298,14 @@ def database_engine_options(database_url: str, env: Mapping[str, str] | None = N
     connect_timeout = read_positive_int(values, "DATABASE_CONNECT_TIMEOUT_SECONDS", 5, 60)
     options: dict[str, object] = {
         "pool_pre_ping": True,
-        "pool_size": 5,
-        "max_overflow": 5,
+        # Keep the whole platform under the shared RDS max_connections budget.
+        # The AI router runs several SQLAlchemy engines per process and the
+        # uvicorn + celery processes together previously held ~60 of the 81
+        # connections, which starved the backend with "remaining connection
+        # slots are reserved for roles with privileges of the rds_reserved
+        # role". Override per deployment if more headroom is ever needed.
+        "pool_size": read_positive_int(values, "DATABASE_POOL_SIZE", 2, 20),
+        "max_overflow": read_positive_int(values, "DATABASE_MAX_OVERFLOW", 2, 20),
         "pool_timeout": read_positive_int(values, "DATABASE_POOL_TIMEOUT_SECONDS", 5, 60),
     }
     options["connect_args"] = {"connect_timeout": connect_timeout}

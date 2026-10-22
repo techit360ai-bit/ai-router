@@ -10,8 +10,16 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from execution_controls import ProviderCircuitBreaker
+from execution_controls import ExecutionAuthorizationError, ProviderCircuitBreaker
 from model_registry import ModelDefinition, ModelRegistry, RegistryError, TaskPolicy
+
+def _exclude_unconfigured() -> bool:
+    """Whether to drop credential-less providers from the attempt chain.
+
+    Defaults on; set ``AI_ROUTER_EXCLUDE_UNCONFIGURED=false`` to restore the old
+    behaviour of appending unconfigured providers as last-resort attempts.
+    """
+    return os.getenv("AI_ROUTER_EXCLUDE_UNCONFIGURED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class ComplexityTier(Enum):
@@ -92,12 +100,22 @@ class ModelConfig:
     api_key_envs: List[str] = field(default_factory=list)
     adapter: str = ""
     base_url: str = ""
+    region: str = ""
+    region_env: str = ""
+    auth: str = ""
+    billing_class: str = "paid"
+    approval_status: str = "approved"
     quality_score: float = 70
     latency_score: float = 50
     capabilities: List[str] = field(default_factory=list)
     input_cost_per_million: Optional[float] = None
     output_cost_per_million: Optional[float] = None
     user_selectable: bool = False
+    lease_id: str = ""
+    traffic_percent: float = 0.0
+    daily_spend_cap_usd: Optional[float] = None
+    pricing_source: str = "registry"
+    pending_reconciliation: bool = False
 
 
 class ModelRouter:
@@ -148,12 +166,22 @@ class ModelRouter:
             api_key_envs=list(provider.api_key_envs),
             adapter=provider.adapter,
             base_url=base_url,
+            region=provider.region,
+            region_env=provider.region_env,
+            auth=provider.resolved_auth,
+            billing_class=model.billing_class,
+            approval_status=model.approval_status,
             quality_score=model.quality_score,
             latency_score=model.latency_score,
             capabilities=sorted(model.capabilities),
             input_cost_per_million=model.input_cost_per_million,
             output_cost_per_million=model.output_cost_per_million,
             user_selectable=model.user_selectable,
+            lease_id=model.lease_id,
+            traffic_percent=model.traffic_percent,
+            daily_spend_cap_usd=model.daily_spend_cap_usd,
+            pricing_source=model.pricing_source,
+            pending_reconciliation=model.pending_reconciliation,
         )
 
     def _validate_coverage(self) -> None:
@@ -180,9 +208,49 @@ class ModelRouter:
         )
         return [self.model_configs[model.id] for model in models]
 
+    def _canary_config(self, request: Any) -> Optional[ModelConfig]:
+        """Choose at most one bounded auto-canary model for this request.
+
+        The bucket is stable for a user/task/model tuple. That keeps a canary
+        cohort stable across retries while ensuring a new model cannot receive
+        traffic merely because it was discovered first.
+        """
+        grant = getattr(request.user_context, "execution_grant", None)
+        allowed = {str(item) for item in getattr(grant, "allowed_model_ids", ()) or ()}
+        identity = str(getattr(request.user_context, "user_id", ""))
+        selected: List[tuple[float, float, str, ModelConfig]] = []
+        for model in self.registry.auto_canary_models(request.task_type.value):
+            config = self.model_configs.get(model.id)
+            if config is None or (allowed and model.id not in allowed):
+                continue
+            bucket = int(
+                hashlib.sha256(
+                    f"{identity}:{request.task_type.value}:{model.id}".encode()
+                ).hexdigest()[:8],
+                16,
+            ) % 10_000 / 100
+            if bucket < max(0.0, min(100.0, float(model.traffic_percent or 0))):
+                selected.append((bucket, -model.priority, model.id, config))
+        if not selected:
+            return None
+        selected.sort()
+        return selected[0][3]
+
     def _is_configured(self, config: ModelConfig) -> bool:
         model = self.registry.models[config.id]
         return self.registry.is_provider_configured(model)
+
+    def _grant_permits(self, grant: Any, config: ModelConfig) -> bool:
+        """Grant-level billing-class and data-handling authorization.
+
+        This is what makes a free-tier grant unable to silently escalate: a
+        candidate the grant does not permit is removed from the chain entirely,
+        so the fallback loop can never cross from a free model into a paid one.
+        """
+        if not grant.permits_billing_class(config.billing_class):
+            return False
+        model = self.registry.models[config.id]
+        return grant.permits_data_handling(model.data_handling)
 
     @staticmethod
     def _economy_score(config: ModelConfig) -> float:
@@ -242,14 +310,32 @@ class ModelRouter:
     def select_chain(self, request: Any) -> List[ModelConfig]:
         policy = self.policy_for(request)
         assessment = self.classify_request(request)
+        canary_config = self._canary_config(request)
         candidates = self._rank(
             self._candidate_configs(request),
             policy,
             getattr(request, "execution_profile", "balanced"),
             assessment,
         )
+        grant = getattr(request.user_context, "execution_grant", None)
+        if grant is not None and candidates:
+            permitted = [item for item in candidates if self._grant_permits(grant, item)]
+            if not permitted:
+                raise ExecutionAuthorizationError(
+                    "no model is permitted by the execution grant billing/data policy for "
+                    f"{request.task_type.value}"
+                )
+            candidates = permitted
         disabled = set(self.runtime_controls.get("disabled_models") or [])
         candidates = [item for item in candidates if item.id not in disabled]
+        if canary_config is not None:
+            if (
+                (grant is None or self._grant_permits(grant, canary_config))
+                and canary_config.id not in disabled
+            ):
+                candidates = [canary_config] + [
+                    item for item in candidates if item.id != canary_config.id
+                ]
         canary = (self.runtime_controls.get("canaries") or {}).get(request.task_type.value) or {}
         canary_id = canary.get("model_id")
         canary_pct = max(0.0, min(100.0, float(canary.get("percentage") or 0)))
@@ -282,7 +368,14 @@ class ModelRouter:
             and self.circuit_breaker.is_available(f"{config.provider}:{config.model_name}")
         ]
         unconfigured = [config for config in candidates if config not in configured]
-        chain = configured + unconfigured
+        # Prefer providers that actually have credentials so the router never
+        # attempts a model that can only fail with a missing-key error. When no
+        # provider is configured (e.g. local dev) fall back to the full ranked
+        # chain so behaviour and error messages stay unchanged.
+        if configured and _exclude_unconfigured():
+            chain = configured
+        else:
+            chain = configured + unconfigured
         if not chain:
             raise RegistryError(f"no eligible model chain for {request.task_type.value}")
         return chain[: policy.max_attempts]

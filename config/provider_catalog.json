@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "version": "2026-10-18.1",
+  "updated_at": "2026-10-18T00:00:00Z",
+  "owner": "platform-routing",
+  "defaults": {
+    "auto_canary_traffic_percent": 1,
+    "auto_model_daily_spend_cap_usd": 5,
+    "auto_model_max_output_tokens": 4096,
+    "auto_model_promotion_min_calls": 20,
+    "auto_model_promotion_hours": 24,
+    "auto_model_max_error_rate": 0.05,
+    "auto_model_max_price_drift": 0.1,
+    "conservative_input_cost_per_million": 10,
+    "conservative_output_cost_per_million": 30
+  },
+  "providers": [
+    {
+      "id": "openai",
+      "adapter": "openai_responses",
+      "auth": "bearer",
+      "api_key_envs": ["OPENAI_API_KEY", "OPENAI_API_KEY_2", "OPENAI_API_KEY_3", "OPENAI_API_KEY_4"],
+      "required_env": ["OPENAI_API_KEY"],
+      "base_url": "https://api.openai.com/v1",
+      "discovery": "openai_models",
+      "curated_prices": {
+        "gpt-4.1": {"input": 2.0, "output": 8.0},
+        "gpt-4o": {"input": 2.5, "output": 10.0},
+        "gpt-4o-mini": {"input": 0.15, "output": 0.6}
+      }
+    },
+    {
+      "id": "anthropic",
+      "adapter": "anthropic_messages",
+      "auth": "anthropic",
+      "api_key_envs": ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_2", "ANTHROPIC_API_KEY_3", "ANTHROPIC_API_KEY_4"],
+      "required_env": ["ANTHROPIC_API_KEY"],
+      "base_url": "https://api.anthropic.com/v1",
+      "discovery": "anthropic_models",
+      "curated_prices": {
+        "claude-sonnet": {"input": 3.0, "output": 15.0},
+        "claude-haiku": {"input": 0.8, "output": 4.0}
+      }
+    },
+    {
+      "id": "openrouter",
+      "adapter": "openai_compatible",
+      "auth": "bearer",
+      "api_key_envs": ["OPENROUTER_API_KEY"],
+      "required_env": ["OPENROUTER_API_KEY"],
+      "base_url": "https://openrouter.ai/api/v1/chat/completions",
+      "discovery": "openai_models"
+    },
+    {
+      "id": "moonshot",
+      "adapter": "openai_compatible",
+      "auth": "bearer",
+      "api_key_envs": ["MOONSHOT_API_KEY"],
+      "required_env": ["MOONSHOT_API_KEY"],
+      "base_url": "https://api.moonshot.ai/v1/chat/completions",
+      "discovery": "openai_models"
+    },
+    {
+      "id": "mistral",
+      "adapter": "openai_compatible",
+      "auth": "bearer",
+      "api_key_envs": ["MISTRAL_API_KEY"],
+      "required_env": ["MISTRAL_API_KEY"],
+      "base_url": "https://api.mistral.ai/v1/chat/completions",
+      "discovery": "openai_models"
+    },
+    {
+      "id": "google",
+      "adapter": "gemini_generate",
+      "auth": "query",
+      "api_key_envs": ["GEMINI_API_KEY"],
+      "required_env": ["GEMINI_API_KEY"],
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "discovery": "gemini_models"
+    },
+    {
+      "id": "cohere",
+      "adapter": "cohere_embed",
+      "auth": "bearer",
+      "api_key_envs": ["COHERE_API_KEY"],
+      "required_env": ["COHERE_API_KEY"],
+      "base_url": "https://api.cohere.com/v1",
+      "discovery": "cohere_models"
+    },
+    {
+      "id": "agentrouter",
+      "adapter": "openai_responses",
+      "auth": "bearer",
+      "api_key_envs": ["AGENTROUTER_API_KEY"],
+      "required_env": ["AGENTROUTER_API_KEY"],
+      "base_url": "https://agentrouter.org/v1",
+      "base_url_env": "AGENTROUTER_BASE_URL",
+      "enabled_env": "AGENTROUTER_ENABLED",
+      "discovery": "openai_models"
+    },
+    {
+      "id": "bedrock",
+      "adapter": "bedrock_converse",
+      "auth": "sigv4",
+      "api_key_envs": [],
+      "credential_mode": "aws_chain",
+      "required_env": ["BEDROCK_REGION"],
+      "region": "us-east-1",
+      "region_env": "BEDROCK_REGION",
+      "enabled_env": "BEDROCK_ENABLED",
+      "discovery": "bedrock_models",
+      "curated_prices": {
+        "anthropic.claude-sonnet": {"input": 3.0, "output": 15.0},
+        "anthropic.claude-haiku": {"input": 0.8, "output": 4.0},
+        "openai.gpt-oss-120b": {"input": 1.5, "output": 6.0}
+      }
+    },
+    {
+      "id": "azure_openai",
+      "adapter": "openai_compatible",
+      "auth": "azure",
+      "api_key_envs": ["AZURE_OPENAI_API_KEY"],
+      "required_env": ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_BASE_URL", "AZURE_OPENAI_DEPLOYMENTS", "AZURE_OPENAI_API_VERSION"],
+      "base_url": "${AZURE_OPENAI_BASE_URL}",
+      "discovery": "azure_deployments",
+      "curated_prices": {
+        "gpt-4.1": {"input": 2.0, "output": 8.0},
+        "gpt-4o": {"input": 2.5, "output": 10.0},
+        "gpt-4o-mini": {"input": 0.15, "output": 0.6}
+      }
+    },
+    {
+      "id": "google_vertex",
+      "adapter": "openai_compatible",
+      "auth": "bearer",
+      "api_key_envs": ["GOOGLE_VERTEX_ACCESS_TOKEN"],
+      "required_env": ["GOOGLE_VERTEX_ACCESS_TOKEN", "GOOGLE_CLOUD_PROJECT", "GOOGLE_VERTEX_REGION"],
+      "base_url": "",
+      "discovery": "vertex_models",
+      "curated_prices": {
+        "gemini": {"input": 1.25, "output": 5.0}
+      }
+    },
+    {
+      "id": "custom_openai_compatible",
+      "adapter": "openai_compatible",
+      "auth": "bearer",
+      "api_key_envs": ["CUSTOM_LLM_API_KEY"],
+      "required_env": ["CUSTOM_LLM_API_KEY", "CUSTOM_LLM_BASE_URL"],
+      "base_url": "${CUSTOM_LLM_BASE_URL}",
+      "discovery": "openai_models",
+      "enabled_env": "CUSTOM_LLM_ENABLED"
+    }
+  ]
+}

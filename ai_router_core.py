@@ -821,6 +821,7 @@ class AIRequest:
     execution_profile:        str = "balanced"
     output_schema:            Optional[Dict[str, Any]] = None
     incubation:               Optional["IncubationContext"] = None
+    workflow_id:              Optional[str] = None
 
 
 @dataclass

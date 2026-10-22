@@ -112,3 +112,29 @@ def test_feedback_adjustment_is_bounded() -> None:
     for _ in range(50):
         router.record_feedback("gpt-5.6-sol", success=False, latency_ms=10_000, quality=0)
     assert -8.0 <= router.feedback.adjustment("gpt-5.6-sol") <= 8.0
+
+
+def test_chain_excludes_unconfigured_providers(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY_2", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY_3", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY_4", raising=False)
+    monkeypatch.setenv("COHERE_API_KEY", "test")
+    monkeypatch.delenv("AI_ROUTER_EXCLUDE_UNCONFIGURED", raising=False)
+    router = ModelRouter()
+    chain = router.select_chain(_req(TaskType.EMBEDDINGS))
+    assert [item.id for item in chain] == ["cohere-embed-english-v3"]
+
+
+def test_chain_can_opt_back_in_to_unconfigured_providers(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY_2", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY_3", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY_4", raising=False)
+    monkeypatch.setenv("COHERE_API_KEY", "test")
+    monkeypatch.setenv("AI_ROUTER_EXCLUDE_UNCONFIGURED", "false")
+    router = ModelRouter()
+    chain = router.select_chain(_req(TaskType.EMBEDDINGS))
+    assert [item.id for item in chain] == [
+        "cohere-embed-english-v3", "openai-text-embedding-3-large",
+    ]

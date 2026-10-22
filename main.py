@@ -94,7 +94,8 @@ from runtime_config import (
     ai_router_mode,
 )
 from async_jobs import async_jobs_enabled, job_status, submit_incubation_job
-from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound
+from stage_inference import infer_product_stage
+from trust_investor_read_model import InvestorTrustReadService, InvestorTrustStartupNotFound, consented_sources_for_scopes, scopes_include_baseline
 from sandbox_build_service import SandboxBuildError, SandboxBuildService
 from live_domain_repository import LiveDomainRepository
 from hardening_metrics import METRICS
@@ -106,6 +107,28 @@ logger = structlog.get_logger()
 
 # Global AI brain -- initialised once at startup, shared across all requests
 brain: Optional[TechITAIBrain] = None
+
+
+async def _auto_provider_discovery_loop() -> None:
+    """Refresh catalog-backed providers without blocking startup or requests."""
+    from provider_catalog import auto_provision_enabled, refresh_provider_catalog
+
+    startup_delay = max(
+        0.0,
+        float(os.getenv("AI_AUTO_PROVIDER_DISCOVERY_STARTUP_DELAY_SECONDS", "5") or 0),
+    )
+    interval = max(
+        60.0,
+        float(os.getenv("AI_AUTO_PROVIDER_DISCOVERY_INTERVAL_SECONDS", "3600") or 3600),
+    )
+    await asyncio.sleep(startup_delay)
+    while True:
+        if auto_provision_enabled():
+            try:
+                await refresh_provider_catalog()
+            except Exception as exc:  # noqa: BLE001 - discovery is non-blocking
+                logger.warning("auto_provider_discovery_failed", error=str(exc)[:300])
+        await asyncio.sleep(interval)
 
 
 # ============================================================================
@@ -120,6 +143,7 @@ async def lifespan(app: FastAPI):
     # Nothing else should call TechITAIBrain() -- it's a singleton.
     """
     global brain
+    discovery_task: Optional[asyncio.Task] = None
     if ENVIRONMENT in PROD_ENVS:
         try:
             assert_runtime_ready()
@@ -129,6 +153,8 @@ async def lifespan(app: FastAPI):
 
     brain = TechITAIBrain()
     await brain.command_layer.settlement.start()
+    if os.getenv("AI_AUTO_PROVIDER_DISCOVERY_INTERVAL_SECONDS", "3600") != "0":
+        discovery_task = asyncio.create_task(_auto_provider_discovery_loop())
     logger.info(
         "techit_ai_brain_ready",
         agents=len(getattr(brain.orchestrator, "agents", {}) or {}),
@@ -137,9 +163,17 @@ async def lifespan(app: FastAPI):
         db_tables=len(Base.registry.mappers),
         version="3.0.0",
     )
-    yield
-    await brain.command_layer.settlement.close()
-    logger.info("techit_shutdown")
+    try:
+        yield
+    finally:
+        if discovery_task is not None:
+            discovery_task.cancel()
+            try:
+                await discovery_task
+            except asyncio.CancelledError:
+                pass
+        await brain.command_layer.settlement.close()
+        logger.info("techit_shutdown")
 
 
 # ============================================================================
@@ -262,6 +296,17 @@ def _session_revocation_check_enabled() -> bool:
 
 def _session_revocation_check_strict() -> bool:
     return os.getenv("AI_ROUTER_SESSION_REVOCATION_STRICT", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _enrichment_model_id() -> str:
+    """Model used for internal enrichment jobs.
+
+    This used to be hardcoded to a single free OpenRouter model at three call
+    sites, which bypassed routing policy. It is configuration now, so operators
+    can move enrichment to an approved model without a code change; the default
+    stays the free model so behaviour is unchanged until it is set.
+    """
+    return os.getenv("AI_ROUTER_ENRICHMENT_MODEL", "openrouter-llama-free").strip()
 
 
 # Startup guardrails are enforced in lifespan via runtime_config.assert_runtime_ready.
@@ -695,6 +740,27 @@ async def version():
     }
 
 
+def _strict_provider_readiness_enabled() -> bool:
+    return str(os.getenv("AI_STRICT_PROVIDER_READINESS", "false")).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _provider_configuration_checks(providers: List[Dict[str, Any]], strict: bool) -> List[RuntimeCheck]:
+    """Report partial provider blocks without failing readiness by default."""
+    checks: List[RuntimeCheck] = []
+    for provider in providers:
+        if not provider.get("detected") or provider.get("configured"):
+            continue
+        missing = provider.get("missing_env") or provider.get("missing_credentials") or []
+        checks.append(RuntimeCheck(
+            f"provider.{provider.get('id')}.configuration",
+            not strict,
+            f"missing: {', '.join(str(item) for item in missing)}",
+        ))
+    return checks
+
+
 @app.get("/ready", tags=["Status"])
 async def ready():
     """Readiness check for runtime config and dependency reachability."""
@@ -707,8 +773,48 @@ async def ready():
             bool(registry.models) and set(registry.task_policies) == {task.value for task in TaskType},
             f"version={registry.version}; models={len(registry.models)}; tasks={len(registry.task_policies)}",
         ))
+        eligible_models = [model for model in registry.models.values() if model.enabled]
+        checks.append(RuntimeCheck(
+            "ai.models.eligible",
+            bool(eligible_models),
+            f"eligible={len(eligible_models)}",
+        ))
     except Exception as exc:  # noqa: BLE001
         checks.append(RuntimeCheck("ai.registry", False, str(exc)))
+
+    # Live provider credential validation. The static runtime check above only
+    # rejects placeholder-shaped values, so a wrong-but-present key passes while
+    # every AI call fails with 401. Probe each configured provider (cached) and
+    # fail readiness on a genuine auth error so this can never ship silently.
+    provider_reports: dict = {}
+    provider_status_body: dict = {}
+    try:
+        from provider_key_health import provider_key_health
+        provider_reports = provider_key_health()
+        for provider, report in provider_reports.items():
+            checks.append(RuntimeCheck(
+                f"provider.{provider}.credentials",
+                bool(report.get("ok")),
+                str(report.get("detail", "")),
+            ))
+        verified = [name for name, report in provider_reports.items() if report.get("ok")]
+        checks.append(RuntimeCheck(
+            "provider.available",
+            bool(verified),
+            f"verified={len(verified)}",
+        ))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(RuntimeCheck("provider.credentials", False, str(exc)))
+    try:
+        from provider_catalog import provider_status
+
+        provider_status_body = provider_status(credential_reports=provider_reports)
+        checks.extend(_provider_configuration_checks(
+            provider_status_body.get("providers", []),
+            _strict_provider_readiness_enabled(),
+        ))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(RuntimeCheck("provider.catalog", False, str(exc)))
 
     db_ok = True
     db_detail = "ok"
@@ -741,6 +847,12 @@ async def ready():
     body = {
         "status": "ready" if ok else "not_ready",
         "ai_router_mode": ai_router_mode(),
+        "provider_credentials": provider_reports,
+        "provider_catalog": {
+            "catalogVersion": provider_status_body.get("catalogVersion"),
+            "policy": provider_status_body.get("policy"),
+            "providers": provider_status_body.get("providers", []),
+        },
         "checks": [
             {"name": check.name, "ok": check.ok, "detail": check.detail}
             for check in checks
@@ -791,6 +903,93 @@ async def internal_admin_telemetry(
     db=Depends(get_db),
 ):
     return _hardening_metrics_snapshot(db)
+
+
+def _provider_credential_reports(force: bool = False) -> Dict[str, Any]:
+    try:
+        from provider_key_health import provider_key_health
+
+        return provider_key_health(force=force)
+    except Exception as exc:  # noqa: BLE001 - status must fail closed, not crash
+        return {"_error": {"ok": False, "detail": str(exc)[:200]}}
+
+
+@app.get("/internal/admin/provider-status", tags=["Internal"])
+async def internal_admin_provider_status(
+    refresh_credentials: bool = False,
+    _service_id: str = Depends(require_admin_telemetry_service),
+):
+    from provider_catalog import provider_status
+
+    reports = _provider_credential_reports(refresh_credentials)
+    reports.pop("_error", None)
+    return provider_status(credential_reports=reports)
+
+
+@app.post("/internal/admin/provider-refresh", tags=["Internal"])
+async def internal_admin_provider_refresh(
+    body: Optional[Dict[str, Any]] = Body(default=None),
+    _service_id: str = Depends(require_admin_telemetry_service),
+):
+    from provider_catalog import refresh_provider_catalog
+
+    payload = body or {}
+    provider_ids = payload.get("provider_ids") or payload.get("providerIds")
+    if provider_ids is not None and not isinstance(provider_ids, list):
+        raise HTTPException(status_code=400, detail="provider_ids must be a list")
+    result = await refresh_provider_catalog(provider_ids=provider_ids)
+    result["credentialReports"] = _provider_credential_reports(
+        bool(payload.get("refresh_credentials") or payload.get("refreshCredentials"))
+    )
+    result.pop("_error", None)
+    return result
+
+
+@app.patch("/internal/admin/provider-policy", tags=["Internal"])
+async def internal_admin_provider_policy(
+    body: Dict[str, Any] = Body(...),
+    _service_id: str = Depends(require_admin_telemetry_service),
+):
+    from provider_catalog import set_auto_provision
+
+    if "enabled" not in body:
+        raise HTTPException(status_code=400, detail="enabled is required")
+    reason = str(body.get("reason") or "").strip()
+    result = set_auto_provision(
+        bool(body.get("enabled")),
+        actor=str(body.get("actor") or "platform-backend")[:200],
+        reason=reason,
+        expected_version=body.get("expected_version", body.get("expectedVersion")),
+        settings=body.get("settings") if isinstance(body.get("settings"), dict) else None,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=int(result.get("status") or 400), detail=result)
+    return result
+
+
+@app.patch("/internal/admin/model-leases/{provider_id}/{model_id}", tags=["Internal"])
+async def internal_admin_model_lease(
+    provider_id: str,
+    model_id: str,
+    body: Dict[str, Any] = Body(...),
+    _service_id: str = Depends(require_admin_telemetry_service),
+):
+    from provider_catalog import update_model_lease
+
+    result = update_model_lease(
+        provider_id,
+        model_id,
+        str(body.get("action") or ""),
+        reason=str(body.get("reason") or ""),
+        input_cost_per_million=body.get("input_cost_per_million", body.get("inputCostPerMillion")),
+        output_cost_per_million=body.get("output_cost_per_million", body.get("outputCostPerMillion")),
+        actor=str(body.get("actor") or "platform-backend")[:200],
+        override=bool(body.get("override", False)),
+        expected_version=body.get("expected_version", body.get("expectedVersion")),
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=int(result.get("status") or 400), detail=result)
+    return result
 
 
 @app.get("/api/v1/admin/hardening-metrics", tags=["Admin"], include_in_schema=False)
@@ -963,9 +1162,20 @@ async def fast_track_run(
                 + f"| README: {codebase_context.get('readme_snippet', 'N/A')[:200]}]"
             )
 
-    # Mark the stage from the intake (so agents can calibrate expectations)
-    if venture_data.get("stage"):
-        enriched["current_stage"] = venture_data["stage"]
+    # Infer the product stage from evidence (repo activity, docs, traction) so
+    # the platform can tell MVP code apart from an already-launched product. The
+    # founder's explicit choice is kept as an override; the resolved stage is
+    # what the agents calibrate to, and the detection is returned to the UI.
+    detection = infer_product_stage(
+        venture_data,
+        enriched.get("codebase_context"),
+        has_revenue=bool(getattr(user, "has_revenue", False)),
+        beta_users_count=int(getattr(user, "beta_users_count", 0) or 0),
+    )
+    enriched["current_stage"] = detection["stage"]
+    enriched["detected_stage"] = detection["inferred"]
+    enriched["stage_source"] = detection["source"]
+    enriched["stage_detection"] = detection
 
     if _async_requested(request):
         try:
@@ -2206,7 +2416,7 @@ async def enrich_training_modules(
         max_tokens=3000,
         require_structured_output=True,
         ip_protected=True,
-        requested_model="openrouter-llama-free",
+        requested_model=_enrichment_model_id(),
         output_schema={"type": "object", "required": ["modules"]}
     ))
     try:
@@ -2281,7 +2491,7 @@ async def generate_training_modules(
             max_tokens=5000,
             require_structured_output=True,
             ip_protected=True,
-            requested_model="openrouter-llama-free",
+            requested_model=_enrichment_model_id(),
             output_schema={"type": "object", "required": ["modules"]}
         ))
     except Exception:
@@ -2330,7 +2540,7 @@ async def review_training_exercise(
         max_tokens=1800,
         require_structured_output=True,
         ip_protected=True,
-        requested_model="openrouter-llama-free",
+        requested_model=_enrichment_model_id(),
         output_schema={"type": "object", "required": ["score", "passed", "feedback"], "properties": {"score": {"type": "number"}, "passed": {"type": "boolean"}, "feedback": {"type": "string"}}},
     ))
     try:
@@ -2414,13 +2624,23 @@ async def investor_trust_search(
 @app.get("/api/v1/investor/trust/{startup_id}", tags=["Investor"])
 async def investor_trust_dashboard(
     startup_id: str,
+    scopes: str = "",
     user: UserContext = Depends(get_user_context),
     db=Depends(get_db),
 ):
-    """Investor-safe Trust dashboard read model. 0 execution budget units, Investor only."""
+    """Investor-safe Trust dashboard read model. 0 execution budget units, Investor only.
+
+    `scopes` is a comma-separated list of consent scopes the investor has been
+    granted. Every Trust Center metric is gated behind the baseline
+    `approved_evidence_metadata` scope (no approval -> no source metrics), and
+    the sensitive sources (revenue metrics, founder identity/screening) are only
+    returned when their own scope is present.
+    """
     _require_investor_role(user)
+    consented = consented_sources_for_scopes(scopes)
+    metrics_consented = scopes_include_baseline(scopes)
     try:
-        return InvestorTrustReadService().get_dashboard(user, startup_id, db)
+        return InvestorTrustReadService().get_dashboard(user, startup_id, db, consented, metrics_consented)
     except InvestorTrustStartupNotFound as exc:
         raise HTTPException(status_code=404, detail=exc.state) from exc
 
