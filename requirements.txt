@@ -17,7 +17,7 @@ flower==2.0.1
 # AI
 openai>=1.109.0,<2
 anthropic==0.29.0
-cohere==5.5.8
+cohere==7.3.0
 tiktoken==0.7.0
 # Vector
 pinecone-client==6.0.0
