@@ -15,7 +15,7 @@ hiredis==3.4.1
 celery==5.4.0
 flower==2.0.1
 # AI
-openai>=1.109.0,<2
+openai>=3.37.0,<4
 anthropic==0.29.0
 cohere==5.5.8
 tiktoken==0.7.0
