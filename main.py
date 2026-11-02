@@ -1821,6 +1821,25 @@ async def organization_dashboard(user: UserContext = Depends(get_user_context)):
     return await OrgSphereService(brain).get_dashboard(user)
 
 
+@app.post("/api/v1/organization/community/import", tags=["Organization"])
+async def organization_community_import(
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Institutional community import & account matching."""
+    return await OrgSphereService(brain).import_community(user, payload)
+
+
+@app.post("/api/v1/programs/{program_id}/apply", tags=["Organization"])
+async def program_application_apply(
+    program_id: str,
+    payload: Dict[str, Any],
+    user: UserContext = Depends(get_user_context),
+):
+    """Public program application & AI evaluation agent."""
+    return await OrgSphereService(brain).evaluate_program_application(user, program_id, payload)
+
+
 @app.post("/api/v1/gsis/compute", tags=["Dashboard"])
 async def compute_gsis(
     scores: Dict[str, Any],
