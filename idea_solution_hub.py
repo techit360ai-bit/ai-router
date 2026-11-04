@@ -914,8 +914,8 @@ class DiscussionModerationEngine:
         self, contributions: List[DiscussionContribution]
     ) -> Dict[str, List[str]]:
         """
-        Group contributions into thematic clusters.
-        Production: use embedding similarity + k-means clustering.
+        Group contributions into thematic clusters based on explicit cluster_label
+        or content keyword heuristics.
         """
         clusters: Dict[str, List[str]] = {
             "Technology Solutions":    [],
@@ -926,11 +926,25 @@ class DiscussionModerationEngine:
             "Other":                   [],
         }
         for c in contributions:
+            label = (c.cluster_label or "").strip()
+            if label in clusters:
+                clusters[label].append(c.contribution_id)
+                continue
+
             if c.contribution_type == ContributionType.DATA_EVIDENCE:
                 clusters["Other"].append(c.contribution_id)
-            elif c.contribution_type == ContributionType.IDEA:
-                # Production: AI classifies into correct cluster
-                clusters["Technology Solutions"].append(c.contribution_id)
+            else:
+                content_lower = c.content.lower()
+                if any(k in content_lower for k in ("policy", "regulation", "compliance", "legal", "government")):
+                    clusters["Policy Interventions"].append(c.contribution_id)
+                elif any(k in content_lower for k in ("community", "user", "social", "network", "adoption", "user base")):
+                    clusters["Community Approaches"].append(c.contribution_id)
+                elif any(k in content_lower for k in ("market", "pricing", "revenue", "monetization", "sales", "cost")):
+                    clusters["Market-Based Solutions"].append(c.contribution_id)
+                elif any(k in content_lower for k in ("infrastructure", "cloud", "database", "scaling", "latency", "architecture", "server")):
+                    clusters["Infrastructure Needs"].append(c.contribution_id)
+                else:
+                    clusters["Technology Solutions"].append(c.contribution_id)
         return clusters
 
     def detect_strongest_direction(
