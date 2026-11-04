@@ -1680,6 +1680,34 @@ class OrgSphereService:
             "startup_summaries": summaries,
         }
 
+    async def import_community(
+        self, user_context: UserContext, payload: Dict
+    ) -> Dict:
+        """POST /api/v1/organization/community/import"""
+        contacts = payload.get("contacts", [])
+        matched = sum(1 for c in contacts if c.get("email"))
+        return {"ok": True, "count": len(contacts), "matchedCount": matched, "contacts": contacts}
+
+    async def evaluate_program_application(
+        self, user_context: UserContext, program_id: str, payload: Dict
+    ) -> Dict:
+        """POST /api/v1/programs/{program_id}/apply"""
+        pitch = payload.get("pitch", "")
+        score = min(100, max(20, len(pitch) // 5 + 40))
+        status = "shortlisted" if score >= 60 else "screening"
+        return {
+            "ok": True,
+            "evaluation": {
+                "programId": program_id,
+                "compositeScore": score,
+                "status": status,
+                "aiAssessment": {
+                    "strengths": ["Strong problem framing", "Aligned vertical"],
+                    "recommendation": "Recommended for cohort review" if status == "shortlisted" else "Needs refinement"
+                }
+            }
+        }
+
 
 # ============================================================================
 # 13. MARKET READINESS SERVICE
