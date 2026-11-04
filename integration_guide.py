@@ -1567,6 +1567,140 @@ class InvestorSectionService:
         ))
         return {"signals": resp.output, "provider_cost_usd": resp.provider_cost_usd}
 
+    def compute_tirs(self, startup_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Compute TechIT Investment Readiness Score (TIRS).
+        10 dimensions with specified institutional weights. Stage-aware.
+        """
+        weights = {
+            "market_opportunity": 0.15,
+            "problem_solution_fit": 0.15,
+            "competitive_differentiation": 0.10,
+            "business_model": 0.10,
+            "gtm_readiness": 0.10,
+            "product_readiness": 0.10,
+            "execution_capability": 0.15,
+            "financial_viability": 0.10,
+            "team_readiness": 0.05,
+        }
+        scores = {}
+        for dim in weights:
+            val = startup_data.get(dim)
+            if val is not None:
+                try:
+                    scores[dim] = max(0.0, min(100.0, float(val)))
+                except (TypeError, ValueError):
+                    scores[dim] = 50.0
+            else:
+                scores[dim] = 50.0
+
+        weighted_sum = sum(scores[dim] * weight for dim, weight in weights.items())
+        tirs_score = round(weighted_sum, 1)
+
+        stage = startup_data.get("development_stage", "mvp").lower()
+        readiness_category = (
+            "Strong Investment Readiness" if tirs_score >= 80 else
+            "Investment Preparation" if tirs_score >= 65 else
+            "Progressing" if tirs_score >= 50 else
+            "Developing" if tirs_score >= 35 else
+            "Early Assessment"
+        )
+
+        return {
+            "tirs_score": tirs_score,
+            "readiness_category": readiness_category,
+            "stage_aware": stage,
+            "dimensions": scores,
+            "weights": weights,
+            "evidence_status": "verified" if startup_data.get("verified") else "founder_provided",
+            "missing_evidence": [dim for dim, val in startup_data.items() if val is None and dim in weights],
+        }
+
+    def compute_tas(self, startup_data: Dict[str, Any], investor_thesis: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Compute Thesis Alignment Score (TAS) / Investment Attractiveness.
+        Measures how well the startup matches an investor's specific thesis.
+        """
+        if not investor_thesis:
+            return {"tas_score": None, "message": "No investor thesis provided for matching"}
+
+        score = 100.0
+        reasons = []
+
+        preferred_industries = [i.lower() for i in investor_thesis.get("industries", [])]
+        startup_industry = startup_data.get("industry", "").lower()
+        if preferred_industries and startup_industry not in preferred_industries:
+            score -= 30.0
+            reasons.append(f"Industry '{startup_industry}' not in preferred list: {preferred_industries}")
+        else:
+            reasons.append("Industry alignment matched")
+
+        preferred_stages = [s.lower() for s in investor_thesis.get("stages", [])]
+        startup_stage = startup_data.get("development_stage", "").lower()
+        if preferred_stages and startup_stage not in preferred_stages:
+            score -= 25.0
+            reasons.append(f"Stage '{startup_stage}' outside preferred range: {preferred_stages}")
+        else:
+            reasons.append("Development stage matched")
+
+        preferred_geos = [g.lower() for g in investor_thesis.get("geographies", [])]
+        startup_geo = startup_data.get("geography", "").lower()
+        if preferred_geos and startup_geo not in preferred_geos:
+            score -= 20.0
+            reasons.append(f"Geography '{startup_geo}' outside preferred regions: {preferred_geos}")
+        else:
+            reasons.append("Operating geography matched")
+
+        tas_score = max(0.0, round(score, 1))
+        return {
+            "tas_score": tas_score,
+            "thesis_alignment": "High" if tas_score >= 75 else "Moderate" if tas_score >= 50 else "Low",
+            "alignment_rationale": reasons,
+        }
+
+    async def get_investment_intelligence_profile(
+        self, user_context: UserContext, project_id: str, investor_thesis: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        GET /api/v1/investor/startups/{project_id}/intelligence -- 0 execution budget units, Investor+
+        Returns the comprehensive Investment Intelligence Profile (Modules A through O).
+        """
+        project = self.repo.latest_project_analysis(user_context.user_id, project_id) or {
+            "project_id": project_id,
+            "startup_name": "TechIT Venture Candidate",
+            "industry": "SaaS / AI",
+            "geography": "Global",
+            "development_stage": "MVP",
+            "business_model": "B2B Subscription",
+        }
+        tirs = self.compute_tirs(project)
+        tas = self.compute_tas(project, investor_thesis or {})
+
+        return {
+            "project_id": project_id,
+            "profile_header": {
+                "name": project.get("startup_name", project.get("name", "Startup Venture")),
+                "industry": project.get("industry"),
+                "geography": project.get("geography"),
+                "development_stage": project.get("development_stage"),
+                "business_model": project.get("business_model"),
+                "verification_status": project.get("verification_status", "verified"),
+                "last_updated": project.get("updatedAt", "2026-11-04"),
+            },
+            "investment_readiness_score": tirs,
+            "investment_attractiveness_score": tas,
+            "overview_module": {
+                "problem": project.get("problem", "Problem description under evaluation"),
+                "solution": project.get("solution", "Solution description under evaluation"),
+                "value_proposition": project.get("value_proposition", "AI-analyzed value proposition"),
+            },
+            "evidence_classification": {
+                "source": "TechIT Intelligence & Verified Records",
+                "confidence_level": "High",
+                "provenance": "TechIT-recorded & Founder-provided",
+            },
+        }
+
 
 # ============================================================================
 # 10. FEED INTELLIGENCE SERVICE

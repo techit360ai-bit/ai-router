@@ -2678,6 +2678,16 @@ async def investor_evi(
     return await InvestorSectionService(brain).get_investor_evi(user, startup_data)
 
 
+@app.get("/api/v1/investor/startups/{project_id}/intelligence", tags=["Investor Intelligence"])
+async def get_investor_startup_intelligence(
+    project_id: str,
+    user: UserContext = Depends(get_user_context),
+):
+    """Retrieve comprehensive Investment Intelligence Profile (TIRS vs TAS, Overview, Evidence). 0 execution budget units, Investor+"""
+    _require_investor_role(user)
+    return await InvestorSectionService(brain).get_investment_intelligence_profile(user, project_id)
+
+
 @app.post("/api/v1/investor/intelligence/advisory", tags=["Investor"])
 async def investor_intelligence_advisory(
     body: Dict[str, Any],
