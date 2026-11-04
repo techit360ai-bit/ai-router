@@ -1789,13 +1789,22 @@ async def scaffold_live_url(
 async def get_scaffold(
     project_id: str,
     user: UserContext = Depends(get_user_context),
+    db=Depends(get_db),
 ):
     """Retrieve scaffold for a project. 0 execution budget units, Free+"""
-    # Production: SELECT * FROM app_scaffolds WHERE project_id = :project_id
+    repo = LiveDomainRepository(db)
+    scaffold = repo.get_sandbox_build_by_project(user.user_id, project_id)
+    if not scaffold:
+        return {
+            "project_id": project_id,
+            "scaffold": None,
+            "message": "Scaffold not found or not yet generated for this project",
+        }
     return {
         "project_id": project_id,
-        "message": "Scaffold retrieval -- query app_scaffolds table",
-        "endpoint": f"/api/v1/scaffold/{project_id}",
+        "scaffold": scaffold,
+        "status": scaffold.get("status"),
+        "download_url": f"/api/v1/incubation/builds/{scaffold.get('id')}/artifact",
     }
 
 
