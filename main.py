@@ -416,6 +416,57 @@ def _hydrate_from_db(ctx: UserContext, db, *, require_user: bool = False) -> Use
     )
 
 
+_IDENTITY_LOOKUP_SQL = (
+    "SELECT p.role AS profile_role, c.role AS context_role, "
+    "EXISTS (SELECT 1 FROM core_user_roles r WHERE r.user_id = u.id AND r.role = c.role "
+    "AND COALESCE(r.active, TRUE) AND r.status = 'active') AS context_assigned "
+    "FROM core_users u "
+    "LEFT JOIN core_profiles p ON p.id = u.id "
+    "LEFT JOIN core_active_contexts c ON c.user_id = u.id "
+    "WHERE u.id = :uid "
+    "ORDER BY c.last_active_at DESC NULLS LAST LIMIT 1"
+)
+
+
+def _hydrate_from_identity_store(ctx: UserContext, *, require_user: bool = False) -> UserContext:
+    """Hydrate identity/role from the backend's core_* identity tables.
+
+    The backend owns accounts and roles (core_users, core_profiles, core_user_roles,
+    core_active_contexts). The Router's own `users` table is an unrelated schema, so
+    production identity checks read the backend's tables instead.
+    """
+    from dataclasses import replace as dc_replace
+    from sqlalchemy import text as _text
+
+    session = None
+    try:
+        session = _identity_session_factory()()
+        row = session.execute(_text(_IDENTITY_LOOKUP_SQL), {"uid": str(ctx.user_id)}).first()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("user_identity_lookup_failed", user_id=ctx.user_id, error=str(exc))
+        if require_user:
+            raise IdentityHydrationError("Persisted identity lookup failed") from exc
+        return ctx
+    finally:
+        if session is not None:
+            session.close()
+
+    if row is None:
+        if require_user:
+            raise IdentityHydrationError("Authenticated user does not exist in the identity store")
+        return ctx
+
+    profile_role, context_role, context_assigned = row[0], row[1], bool(row[2])
+    return dc_replace(ctx, role=_role_from_claim(context_role if context_role and context_assigned else profile_role))
+
+
+def _hydrate_identity(ctx: UserContext, session, *, require_user: bool = False) -> UserContext:
+    source = (os.getenv("AI_ROUTER_IDENTITY_SOURCE") or ("core" if ENVIRONMENT in PROD_ENVS else "legacy")).strip().lower()
+    if source == "core":
+        return _hydrate_from_identity_store(ctx, require_user=require_user)
+    return _hydrate_from_db(ctx, session, require_user=require_user)
+
+
 class SessionFreshnessError(RuntimeError):
     """The access token is too old, or the session behind it is no longer valid."""
 
@@ -653,7 +704,7 @@ async def get_user_context(request: Request) -> UserContext:
         Session = _db_session_factory()
         session = Session()
         try:
-            ctx = _hydrate_from_db(ctx, session, require_user=ENVIRONMENT in PROD_ENVS)
+            ctx = _hydrate_identity(ctx, session, require_user=ENVIRONMENT in PROD_ENVS)
             # Resolves the identity store internally; the Router's own database
             # does not own the session table.
             _assert_token_fresh(payload)
