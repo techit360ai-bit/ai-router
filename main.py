@@ -253,7 +253,7 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256").strip().upper()
 # there). Without this the router rejects every authenticated call as 401.
 #   JWT_PUBLIC_KEY          -- PEM public key used to verify RS256 tokens.
 #   JWT_ALLOWED_ALGORITHMS  -- comma list; defaults to HS256 + RS256.
-JWT_PUBLIC_KEY = os.getenv("JWT_PUBLIC_KEY")
+JWT_PUBLIC_KEY = (os.getenv("JWT_PUBLIC_KEY") or "").replace("\\n", "\n").strip().strip(chr(34) + chr(39)).strip() or None
 _configured_algorithms = os.getenv("JWT_ALLOWED_ALGORITHMS", "").strip()
 JWT_ALLOWED_ALGORITHMS = frozenset(
     item.strip().upper()

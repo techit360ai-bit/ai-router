@@ -195,7 +195,7 @@ jobs:
                 ENVIRONMENT: "production",
                 ALLOW_DEMO_AUTH: "false",
                 ALLOWED_ORIGINS: "https://beta.techitnetwork.com",
-                JWT_ISSUER: "techit-backend",
+                JWT_ISSUER: "https://techitnetwork.com",
                 JWT_AUDIENCE: "techit-platform",
                 JWT_ALGORITHM: "RS256",
                 MCP_BASE_URL: "https://backend.techitnetwork.com/api/mcp",
