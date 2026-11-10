@@ -129,6 +129,9 @@ jobs:
               fi
             fi
 
+            IDENTITY_DATABASE_URL="$DATABASE_URL"
+            DATABASE_URL="$(printf '%s' "$DATABASE_URL" | sed 's#/techit_db?#/techit_ai_db?#')"
+            case "$DATABASE_URL" in *"/techit_ai_db?"*) ;; *) echo "router DATABASE_URL must target techit_ai_db"; exit 1 ;; esac
             if [ -z "$DATABASE_URL" ]; then
               echo "❌ DATABASE_URL secret is not set (AI Router must use RDS PostgreSQL)"; exit 1
             fi
@@ -178,7 +181,7 @@ jobs:
               echo "❌ AI_EXECUTION_GRANT_SECRET not found in ~/BACKEND/backend/.env"; exit 1
             fi
 
-            DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" CELERY_BROKER="$CELERY_BROKER" \
+            DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" CELERY_BROKER="$CELERY_BROKER" AI_ROUTER_IDENTITY_DATABASE_URL="$IDENTITY_DATABASE_URL" \
             JWT_PUBLIC_KEY="$JWT_PUBLIC_KEY" \
             OPENAI_API_KEY="$OPENAI_API_KEY" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             AI_ROUTER_SETTLEMENT_SECRET="$AI_ROUTER_SETTLEMENT_SECRET" \
@@ -217,6 +220,7 @@ jobs:
               for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "BEDROCK_ENABLED", "BEDROCK_REGION", "AI_BEDROCK_LIVE_PROBE", "AI_ROUTER_SETTLEMENT_SECRET", "ADMIN_AI_ROUTER_TELEMETRY_SECRET", "AI_EXECUTION_GRANT_SECRET"]) {
                 if (process.env[k]) upsert(k, process.env[k]);
               }
+              if (process.env.AI_ROUTER_IDENTITY_DATABASE_URL) upsert("AI_ROUTER_IDENTITY_DATABASE_URL", process.env.AI_ROUTER_IDENTITY_DATABASE_URL);
               const pk = process.env.JWT_PUBLIC_KEY || "";
               if (pk) {
                 // Single quoted line with \n escapes: docker compose decodes it
@@ -238,8 +242,8 @@ jobs:
             # that and stamp the existing schema as head; fresh databases still
             # take the normal upgrade path.
             if ! docker compose run --rm --no-deps migrate; then
-              echo "⚠️ alembic upgrade failed; stamping the pre-existing schema to head"
-              docker compose run --rm --no-deps migrate alembic stamp head
+              echo "alembic upgrade failed; refusing to stamp the schema to head (that would hide missing tables)"
+              exit 1
             fi
 
             # --- rebuild + (re)start the services ---------------------------
