@@ -460,10 +460,70 @@ def _hydrate_from_identity_store(ctx: UserContext, *, require_user: bool = False
     return dc_replace(ctx, role=_role_from_claim(context_role if context_role and context_assigned else profile_role))
 
 
+_ROUTER_USER_SYNCED: Dict[str, str] = {}
+_ROUTER_USER_IDENTITY_SQL = (
+    "SELECT u.email, p.first_name, p.last_name FROM core_users u "
+    "LEFT JOIN core_profiles p ON p.id = u.id WHERE u.id = :uid"
+)
+_ROUTER_USER_UPSERT_SQL = (
+    "INSERT INTO users (id, email, full_name, role, created_at) "
+    "VALUES (CAST(:id AS uuid), :email, :full_name, CAST(:role AS roleenum), now()) "
+    "ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, "
+    "full_name = COALESCE(EXCLUDED.full_name, users.full_name), role = EXCLUDED.role"
+)
+
+
+def _router_role_label(role: Any) -> str:
+    name = getattr(role, "name", "EXPLORER")
+    return {"BUILDER": "COLLABORATOR"}.get(name, name)
+
+
+def _ensure_router_user(router_session: Any, ctx: UserContext) -> None:
+    """Mirror the authenticated user into the Router's own users table.
+
+    Many Router tables carry a foreign key to users.id, while accounts live in the
+    backend's core_* tables. This keeps a minimal copy so writes satisfy those keys.
+    It never blocks a request: any failure is logged and ignored.
+    """
+    uid, label = str(ctx.user_id), _router_role_label(ctx.role)
+    if router_session is None or _ROUTER_USER_SYNCED.get(uid) == label:
+        return
+    from sqlalchemy import text as _text
+
+    identity = None
+    try:
+        identity = _identity_session_factory()()
+        row = identity.execute(_text(_ROUTER_USER_IDENTITY_SQL), {"uid": uid}).first()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("router_user_identity_read_failed", user_id=uid, error=str(exc))
+        return
+    finally:
+        if identity is not None:
+            identity.close()
+
+    if row is None or not row[0]:
+        return
+    full_name = " ".join(part for part in (row[1], row[2]) if part) or None
+    try:
+        router_session.execute(
+            _text(_ROUTER_USER_UPSERT_SQL),
+            {"id": uid, "email": row[0], "full_name": full_name, "role": label},
+        )
+        router_session.commit()
+        if len(_ROUTER_USER_SYNCED) > 5000:
+            _ROUTER_USER_SYNCED.clear()
+        _ROUTER_USER_SYNCED[uid] = label
+    except Exception as exc:  # noqa: BLE001
+        router_session.rollback()
+        logger.warning("router_user_sync_failed", user_id=uid, error=str(exc))
+
+
 def _hydrate_identity(ctx: UserContext, session, *, require_user: bool = False) -> UserContext:
     source = (os.getenv("AI_ROUTER_IDENTITY_SOURCE") or ("core" if ENVIRONMENT in PROD_ENVS else "legacy")).strip().lower()
     if source == "core":
-        return _hydrate_from_identity_store(ctx, require_user=require_user)
+        hydrated = _hydrate_from_identity_store(ctx, require_user=require_user)
+        _ensure_router_user(session, hydrated)
+        return hydrated
     return _hydrate_from_db(ctx, session, require_user=require_user)
 
 
