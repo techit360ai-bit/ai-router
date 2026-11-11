@@ -954,6 +954,16 @@ class LiveDomainRepository:
             row = db.query(SandboxBuildArtifact).filter(SandboxBuildArtifact.id == bid, SandboxBuildArtifact.owner_id == uid).first()
             return self._sandbox_build_dict(row) if row else None
 
+    def get_sandbox_build_by_project(self, user_id: str, project_id: str) -> Optional[Dict[str, Any]]:
+        if not self.database_backed:
+            row = next((r for r in reversed(_MEMORY["sandboxBuildArtifacts"]) if r.get("ownerId") == user_id and r.get("projectId") == project_id), None)
+            return deepcopy(row) if row else None
+        uid, pid = _uuid(user_id), _uuid(project_id)
+        if uid is None or pid is None: return None
+        with self._session() as db:
+            row = db.query(SandboxBuildArtifact).filter(SandboxBuildArtifact.project_id == pid, SandboxBuildArtifact.owner_id == uid).order_by(SandboxBuildArtifact.version.desc()).first()
+            return self._sandbox_build_dict(row) if row else None
+
     def update_sandbox_build(self, user_id: str, build_id: str, patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not self.database_backed:
             row = next((r for r in reversed(_MEMORY["sandboxBuildArtifacts"]) if r.get("ownerId") == user_id and r.get("id") == build_id), None)
