@@ -49,6 +49,8 @@ jobs:
           BEDROCK_ENABLED: ${{ secrets.BEDROCK_ENABLED || 'true' }}
           BEDROCK_REGION: ${{ secrets.BEDROCK_REGION || 'us-east-1' }}
           AI_BEDROCK_LIVE_PROBE: ${{ secrets.AI_BEDROCK_LIVE_PROBE || 'true' }}
+          BEDROCK_AWS_ACCESS_KEY_ID: ${{ secrets.BEDROCK_AWS_ACCESS_KEY_ID }}
+          BEDROCK_AWS_SECRET_ACCESS_KEY: ${{ secrets.BEDROCK_AWS_SECRET_ACCESS_KEY }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
@@ -57,7 +59,7 @@ jobs:
           # appleboy default and get killed mid-build ("Run Command Timeout"),
           # leaving the router down. Give it room to finish (swap-backed).
           command_timeout: 45m
-          envs: JWT_PUBLIC_KEY,DATABASE_URL,REDIS_URL,CELERY_BROKER,OPENAI_API_KEY,ANTHROPIC_API_KEY,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,AWS_REGION,BEDROCK_ENABLED,BEDROCK_REGION,AI_BEDROCK_LIVE_PROBE
+          envs: JWT_PUBLIC_KEY,DATABASE_URL,REDIS_URL,CELERY_BROKER,OPENAI_API_KEY,ANTHROPIC_API_KEY,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,AWS_REGION,BEDROCK_ENABLED,BEDROCK_REGION,AI_BEDROCK_LIVE_PROBE,BEDROCK_AWS_ACCESS_KEY_ID,BEDROCK_AWS_SECRET_ACCESS_KEY
           # Fail the job on the first failed command so a blocked pull can never
           # be reported as a successful deploy.
           script_stop: true
@@ -217,7 +219,7 @@ jobs:
                 AI_PROVIDER_KEY_CHECK: "live",
               };
               for (const [k, v] of Object.entries(constants)) upsert(k, v);
-              for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "BEDROCK_ENABLED", "BEDROCK_REGION", "AI_BEDROCK_LIVE_PROBE", "AI_ROUTER_SETTLEMENT_SECRET", "ADMIN_AI_ROUTER_TELEMETRY_SECRET", "AI_EXECUTION_GRANT_SECRET"]) {
+              for (const k of ["DATABASE_URL", "REDIS_URL", "CELERY_BROKER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "BEDROCK_AWS_ACCESS_KEY_ID", "BEDROCK_AWS_SECRET_ACCESS_KEY", "AWS_REGION", "BEDROCK_ENABLED", "BEDROCK_REGION", "AI_BEDROCK_LIVE_PROBE", "AI_ROUTER_SETTLEMENT_SECRET", "ADMIN_AI_ROUTER_TELEMETRY_SECRET", "AI_EXECUTION_GRANT_SECRET"]) {
                 if (process.env[k]) upsert(k, process.env[k]);
               }
               if (process.env.AI_ROUTER_IDENTITY_DATABASE_URL) upsert("AI_ROUTER_IDENTITY_DATABASE_URL", process.env.AI_ROUTER_IDENTITY_DATABASE_URL);

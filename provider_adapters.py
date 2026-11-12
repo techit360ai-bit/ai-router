@@ -346,7 +346,8 @@ async def _bedrock_client(region: str, timeout: float) -> Any:
         read_timeout=max(1.0, timeout),
         retries={"max_attempts": 2},
     )
-    return boto3.client("bedrock-runtime", region_name=region or None, config=config)
+    from bedrock_auth import bedrock_client_kwargs
+    return boto3.client("bedrock-runtime", region_name=region or None, config=config, **bedrock_client_kwargs())
 
 
 async def _maybe_await(value: Any) -> Any:

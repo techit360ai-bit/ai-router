@@ -366,7 +366,8 @@ def _boto_client(provider: Any) -> Any:
     import boto3
 
     region = (os.getenv(provider.region_env, "") if provider.region_env else "") or provider.region or "us-east-1"
-    return boto3.client("bedrock", region_name=region)
+    from bedrock_auth import bedrock_client_kwargs
+    return boto3.client("bedrock", region_name=region, **bedrock_client_kwargs())
 
 
 def write_discovered(document: Mapping[str, Any], path: Path = DEFAULT_DISCOVERED_PATH) -> Path:

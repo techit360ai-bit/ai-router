@@ -160,7 +160,8 @@ def _aws_credentials_available() -> Optional[bool]:
     except ImportError:
         return None
     try:
-        return boto3.Session().get_credentials() is not None
+        from bedrock_auth import bedrock_client_kwargs
+        return boto3.Session(**bedrock_client_kwargs()).get_credentials() is not None
     except Exception:  # noqa: BLE001 - unknown must not crash discovery
         return False
 
