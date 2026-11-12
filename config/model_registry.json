@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "version": "2026-08-28.1",
-  "updated_at": "2026-11-03T09:03:29Z",
+  "updated_at": "2026-11-12T08:19:48Z",
   "owner": "platform-routing",
   "providers": [
     {"id": "openai", "adapter": "openai_responses", "api_key_env": "OPENAI_API_KEY", "api_key_envs": ["OPENAI_API_KEY", "OPENAI_API_KEY_2", "OPENAI_API_KEY_3", "OPENAI_API_KEY_4"]},
@@ -19,6 +19,15 @@
     {"id": "google_vertex", "adapter": "openai_compatible", "api_key_env": "GOOGLE_VERTEX_ACCESS_TOKEN", "auth": "bearer", "base_url": "${GOOGLE_VERTEX_BASE_URL}", "enabled": false}
   ],
   "models": [
+    {
+      "id": "bedrock-claude-haiku", "provider": "bedrock", "upstream_model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "enabled": true, "user_selectable": true, "quality_tier": "efficient", "quality_score": 82, "latency_score": 94,
+      "context_window": 200000, "max_output_tokens": 64000, "input_cost_per_million": 1.0, "output_cost_per_million": 5.0,
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "vision", "tool_calling"],
+      "priority": 6, "tags": ["bedrock", "anthropic", "haiku", "fast"], "billing_class": "paid",
+      "supported_regions": ["us-east-1", "us-west-2", "eu-central-1"], "data_handling": "retention_bounded",
+      "structured_output": true, "tool_calling": true, "vision": true
+    },
     {
       "id": "gpt-5.6-sol", "provider": "openai", "upstream_model": "gpt-5.6-sol",
       "enabled": true, "user_selectable": true, "quality_tier": "frontier", "quality_score": 100,
@@ -209,12 +218,12 @@
       "priority": 61, "tags": ["openrouter", "paid"], "billing_class": "paid"
     },
     {
-      "id": "bedrock-claude-sonnet", "provider": "bedrock", "upstream_model": "us.anthropic.claude-sonnet-4-6-v1:0",
+      "id": "bedrock-claude-sonnet", "provider": "bedrock", "upstream_model": "us.anthropic.claude-sonnet-4-6",
       "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 90,
       "latency_score": 70, "context_window": 200000, "max_output_tokens": 64000,
       "input_cost_per_million": 3.0, "output_cost_per_million": 15.0,
       "capabilities": ["text", "reasoning", "coding", "structured_output", "vision", "tool_calling"],
-      "priority": 63, "tags": ["bedrock", "anthropic", "claude"], "billing_class": "paid",
+      "priority": 5, "tags": ["bedrock", "anthropic", "claude"], "billing_class": "paid",
       "supported_regions": ["us-east-1", "us-west-2", "eu-central-1"], "data_handling": "retention_bounded",
       "structured_output": true, "tool_calling": true, "vision": true
     },

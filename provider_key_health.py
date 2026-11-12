@@ -260,12 +260,14 @@ def _probe_bedrock_live(region: str) -> int:
     except ImportError:
         return -1
     try:
-        if boto3.Session().get_credentials() is None:
+        from bedrock_auth import bedrock_client_kwargs
+        if boto3.Session(**bedrock_client_kwargs()).get_credentials() is None:
             return 401
         client = boto3.client(
             "bedrock",
             region_name=region or None,
             config=Config(connect_timeout=TIMEOUT_SECONDS, read_timeout=TIMEOUT_SECONDS, retries={"max_attempts": 1}),
+            **bedrock_client_kwargs(),
         )
         client.list_foundation_models()
         return 200
