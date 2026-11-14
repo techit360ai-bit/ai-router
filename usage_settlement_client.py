@@ -216,13 +216,27 @@ class UsageSettlementOutbox:
         return delivered
 
     def _pending_sync(self, limit: int) -> list[Dict[str, Any]]:
-        from sqlalchemy import select
+        from sqlalchemy import not_, or_, select
 
         self._initialize()
         assert self._engine is not None and self._table is not None
-        statement = select(
-            self._table.c.request_id, self._table.c.payload
-        ).where(self._table.c.delivered_at.is_(None)).order_by(self._table.c.created_at).limit(max(1, limit))
+        # Fewest attempts first: a backlog of rows the backend permanently
+        # rejects (4xx) used to occupy every slot of the oldest-first window,
+        # so newer settlements were never delivered. Rejected rows stop being
+        # retried after a few attempts and stay undelivered (with last_error)
+        # for operator repair; transient failures keep retrying.
+        rejected_retry_limit = max(1, int(os.getenv("AI_SETTLEMENT_OUTBOX_REJECTED_RETRY_LIMIT", "5") or 5))
+        statement = (
+            select(self._table.c.request_id, self._table.c.payload)
+            .where(self._table.c.delivered_at.is_(None))
+            .where(or_(
+                self._table.c.attempts < rejected_retry_limit,
+                self._table.c.last_error.is_(None),
+                not_(self._table.c.last_error.like("settlement rejected (4%")),
+            ))
+            .order_by(self._table.c.attempts, self._table.c.created_at)
+            .limit(max(1, limit))
+        )
         with self._engine.connect() as connection:
             return [dict(row._mapping) for row in connection.execute(statement)]
 
