@@ -23,7 +23,7 @@
       "id": "bedrock-claude-haiku", "provider": "bedrock", "upstream_model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
       "enabled": true, "user_selectable": true, "quality_tier": "efficient", "quality_score": 82, "latency_score": 94,
       "context_window": 200000, "max_output_tokens": 64000, "input_cost_per_million": 1.0, "output_cost_per_million": 5.0,
-      "capabilities": ["text", "reasoning", "coding", "structured_output", "vision", "tool_calling"],
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
       "priority": 6, "tags": ["bedrock", "anthropic", "haiku", "fast"], "billing_class": "paid",
       "supported_regions": ["us-east-1", "us-west-2", "eu-central-1"], "data_handling": "retention_bounded",
       "structured_output": true, "tool_calling": true, "vision": true
@@ -222,7 +222,7 @@
       "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 90,
       "latency_score": 70, "context_window": 200000, "max_output_tokens": 64000,
       "input_cost_per_million": 3.0, "output_cost_per_million": 15.0,
-      "capabilities": ["text", "reasoning", "coding", "structured_output", "vision", "tool_calling"],
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context", "vision", "tool_calling"],
       "priority": 5, "tags": ["bedrock", "anthropic", "claude"], "billing_class": "paid",
       "supported_regions": ["us-east-1", "us-west-2", "eu-central-1"], "data_handling": "retention_bounded",
       "structured_output": true, "tool_calling": true, "vision": true
@@ -231,9 +231,18 @@
       "id": "bedrock-gpt-oss-120b", "provider": "bedrock", "upstream_model": "openai.gpt-oss-120b-1:0",
       "enabled": true, "user_selectable": true, "quality_tier": "high", "quality_score": 87,
       "latency_score": 74, "context_window": 131072, "max_output_tokens": 32768,
-      "capabilities": ["text", "reasoning", "coding", "structured_output"],
+      "capabilities": ["text", "reasoning", "coding", "structured_output", "long_context"],
       "priority": 66, "tags": ["bedrock", "openai", "oss"], "billing_class": "paid",
       "supported_regions": ["us-east-1", "us-west-2"], "data_handling": "retention_bounded"
+    },
+    {
+      "id": "bedrock-titan-embed-text-v2", "provider": "bedrock", "upstream_model": "amazon.titan-embed-text-v2:0",
+      "enabled": true, "user_selectable": false, "quality_tier": "embedding", "quality_score": 84,
+      "latency_score": 88, "context_window": 8192, "max_output_tokens": 1,
+      "input_cost_per_million": 0.02, "output_cost_per_million": 0.0,
+      "capabilities": ["embeddings"],
+      "priority": 8, "tags": ["bedrock", "amazon", "titan", "embedding"], "billing_class": "paid",
+      "supported_regions": ["us-east-1", "us-west-2", "eu-central-1"], "data_handling": "retention_bounded"
     }
   ]
 }

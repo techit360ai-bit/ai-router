@@ -48,7 +48,7 @@ _ADAPTER_FEATURES: Dict[str, frozenset[str]] = {
     "anthropic_messages": frozenset({"text"}),
     "gemini_generate": frozenset({"text"}),
     "cohere_embed": frozenset({"embeddings"}),
-    "bedrock_converse": frozenset({"text"}),
+    "bedrock_converse": frozenset({"text", "embeddings"}),
     "bedrock_bearer": frozenset({"text"}),
 }
 
@@ -656,6 +656,8 @@ async def _call_bedrock_converse(model_config: Any, prompt: str, request: Any,
     if created:
         client = await _bedrock_client(_region(model_config), _timeout_seconds(request))
     try:
+        if "embeddings" in _capabilities(model_config):
+            return await _bedrock_embedding(client, model_config, prompt, created, elapsed_ms)
         payload = _bedrock_converse_payload(_model_name(model_config), prompt, request)
         if created:
             # boto3 is synchronous; keep the event loop free while it blocks.
@@ -669,6 +671,52 @@ async def _call_bedrock_converse(model_config: Any, prompt: str, request: Any,
                 client.close()
             except Exception:  # noqa: BLE001 - closing a probe client must not mask the result
                 pass
+
+
+def _bedrock_embedding_dimensions() -> int:
+    """Titan Text Embeddings V2 accepts 256, 512 or 1024 output dimensions."""
+    try:
+        value = int(os.getenv("BEDROCK_EMBEDDING_DIMENSIONS", "1024"))
+    except ValueError:
+        value = 1024
+    return value if value in {256, 512, 1024} else 1024
+
+
+async def _bedrock_embedding(client: Any, model_config: Any, prompt: str, created: bool,
+                             elapsed_ms: Callable[[], int]) -> ProviderResponse:
+    """Amazon Titan Text Embeddings V2 through bedrock-runtime InvokeModel.
+
+    Converse has no embeddings operation, so embedding models use InvokeModel
+    with the Titan request body. The vector is returned in the same
+    {"embeddings": [[...]]} shape as the OpenAI and Cohere adapters.
+    """
+    body = json.dumps({"inputText": prompt, "dimensions": _bedrock_embedding_dimensions(), "normalize": True})
+    kwargs = {"modelId": _model_name(model_config), "body": body,
+              "contentType": "application/json", "accept": "application/json"}
+    if created:
+        response = await asyncio.to_thread(client.invoke_model, **kwargs)
+    else:
+        response = await _maybe_await(client.invoke_model(**kwargs))
+    raw_body = _value(response, "body", b"")
+    if hasattr(raw_body, "read"):
+        raw_body = raw_body.read()
+    if isinstance(raw_body, (bytes, bytearray)):
+        raw_body = raw_body.decode("utf-8")
+    try:
+        data = json.loads(raw_body) if isinstance(raw_body, str) else dict(raw_body or {})
+    except (TypeError, ValueError) as exc:
+        raise ProviderResponseError("bedrock embedding response was not JSON") from exc
+    vector = data.get("embedding") or []
+    if not vector:
+        raise ProviderResponseError("bedrock response did not include an embedding")
+    tokens = int(data.get("inputTextTokenCount") or 0)
+    return ProviderResponse(
+        text=json.dumps({"embeddings": [vector]}),
+        tokens=tokens,
+        confidence=1.0,
+        duration_ms=elapsed_ms(),
+        raw={"prompt_tokens": tokens, "completion_tokens": 0},
+    )
 
 
 async def _call_bedrock_bearer(model_config: Any, prompt: str, request: Any,

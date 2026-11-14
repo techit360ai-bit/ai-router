@@ -63,15 +63,42 @@ def test_chain_honours_live_credential_probe_verdicts(production_like_providers,
     assert chain and not {config.provider for config in chain} & {"openai", "anthropic"}
 
 
-def test_long_context_tasks_have_no_healthy_alternative(production_like_providers) -> None:
-    # Documented limitation, not a routing bug: these task policies require the
-    # long_context capability, which only OpenAI/Anthropic models carry, so they
-    # need valid OpenAI or Anthropic credentials.
+LONG_CONTEXT_TASKS = ("market_intelligence", "business_plan", "document_business_plan",
+                      "document_investor_report", "document_market_research")
+
+
+@pytest.mark.parametrize("task", LONG_CONTEXT_TASKS)
+def test_long_context_tasks_fall_back_to_bedrock(production_like_providers, task) -> None:
+    # These policies require long_context. Bedrock Claude (200K window) and
+    # gpt-oss (131K) now carry it; the context-window check still keeps a model
+    # off any task whose max_input_tokens it cannot hold.
     command_layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
     _quarantine(command_layer, "openai", "OPENAI_API_KEY")
     _quarantine(command_layer, "anthropic", "ANTHROPIC_API_KEY")
-    chain = command_layer.model_router.select_chain(AIRequest(task_type=TaskType("market_intelligence"), user_context=_ctx(), input_data={"prompt": "Analyse"}))
-    assert chain and {config.provider for config in chain} <= {"openai", "anthropic"}
+    chain = command_layer.model_router.select_chain(AIRequest(task_type=TaskType(task), user_context=_ctx(), input_data={"prompt": "Analyse"}))
+    assert chain and chain[0].provider == "bedrock"
+    assert not {config.provider for config in chain} & {"openai", "anthropic"}
+    policy = command_layer.model_router.registry.task_policy(task)
+    assert all(config.max_context_length >= policy.max_input_tokens for config in chain)
+
+
+def test_embeddings_fall_back_to_bedrock_titan(production_like_providers) -> None:
+    command_layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    _quarantine(command_layer, "openai", "OPENAI_API_KEY")
+    chain = command_layer.model_router.select_chain(AIRequest(task_type=TaskType("embeddings"), user_context=_ctx(), input_data={"text": "idea"}))
+    assert [config.id for config in chain][:1] == ["bedrock-titan-embed-text-v2"]
+
+
+def test_no_task_depends_on_openai_or_anthropic_keys(production_like_providers) -> None:
+    command_layer = AICommandLayer(ModelRouter(), PromptEngine(), SafetyEngine())
+    _quarantine(command_layer, "openai", "OPENAI_API_KEY")
+    _quarantine(command_layer, "anthropic", "ANTHROPIC_API_KEY")
+    blocked = []
+    for task in sorted(command_layer.model_router.registry.task_policies):
+        chain = command_layer.model_router.select_chain(AIRequest(task_type=TaskType(task), user_context=_ctx(), input_data={"prompt": "x"}))
+        if not chain or {config.provider for config in chain} & {"openai", "anthropic"}:
+            blocked.append(task)
+    assert blocked == []
 
 
 def test_full_chain_is_kept_when_nothing_usable_remains(monkeypatch) -> None:
