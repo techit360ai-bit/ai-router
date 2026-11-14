@@ -64,6 +64,19 @@ class ExecutionCommandLayer:
         self.grant_replay_guard = ExecutionGrantReplayGuard()
         self.telemetry = ExecutionTelemetryRecorder()
         self.settlement = UsageSettlementClient()
+        if hasattr(self.model_router, "set_availability_probe"):
+            self.model_router.set_availability_probe(self._provider_usable)
+
+    def _provider_usable(self, config: Any) -> bool:
+        provider = str(getattr(config, "provider", "") or "")
+        try:
+            from provider_key_health import cached_unusable_providers
+            if provider in cached_unusable_providers():
+                return False
+        except Exception:  # noqa: BLE001 - health cache is advisory
+            pass
+        key_envs = getattr(config, "api_key_envs", None) or ([config.api_key_env] if getattr(config, "api_key_env", "") else [])
+        return self.credential_pool.has_usable_credential(provider, key_envs)
 
     async def process_request(self, request: Any) -> Any:
         started = time.perf_counter()

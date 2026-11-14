@@ -553,6 +553,33 @@ class ProviderCredentialPool:
                 pass
             return selected
 
+    def has_usable_credential(self, provider: str, key_envs: Iterable[str]) -> bool:
+        """True unless every configured key is quarantined (auth failure) or cooling down.
+
+        Read-only: it never reserves a key. Providers without static keys (SigV4)
+        and unknown coordination state are treated as usable so this can only
+        remove a provider that is known to fail.
+        """
+        candidates = [str(item) for item in key_envs if item and os.environ.get(str(item))]
+        if not candidates:
+            return True
+        now = time.time()
+        if self._redis is not None:
+            try:
+                for item in candidates:
+                    state = self._redis.hgetall(self._redis_key(provider, item))
+                    if not state.get("quarantined") and float(state.get("cooldown_until", 0) or 0) <= now:
+                        return True
+                return False
+            except Exception:  # noqa: BLE001 - never exclude on coordination failure
+                return True
+        with self._lock:
+            for item in candidates:
+                state = self._state.get(f"{provider}:{item}") or {}
+                if not state.get("quarantined") and float(state.get("cooldown_until", 0) or 0) <= now:
+                    return True
+        return False
+
     def release(self, provider: str, key_env: Optional[str], error: Optional[Exception] = None) -> None:
         if not key_env:
             return

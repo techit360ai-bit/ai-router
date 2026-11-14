@@ -131,6 +131,25 @@ async def _auto_provider_discovery_loop() -> None:
         await asyncio.sleep(interval)
 
 
+async def _provider_key_health_loop() -> None:
+    """Keep the cached provider-credential verdicts fresh for routing.
+
+    The router drops providers whose keys were rejected by the live probe; the
+    probe used to run only when someone called /ready. Probes run in a worker
+    thread and never block requests.
+    """
+    from provider_key_health import provider_key_health
+
+    await asyncio.sleep(max(0.0, float(os.getenv("AI_PROVIDER_KEY_REFRESH_STARTUP_DELAY_SECONDS", "10") or 0)))
+    interval = max(60.0, float(os.getenv("AI_PROVIDER_KEY_REFRESH_INTERVAL_SECONDS", "300") or 300))
+    while True:
+        try:
+            await asyncio.to_thread(provider_key_health, True)
+        except Exception as exc:  # noqa: BLE001 - health refresh is advisory
+            logger.warning("provider_key_health_refresh_failed", error=str(exc)[:300])
+        await asyncio.sleep(interval)
+
+
 # ============================================================================
 # LIFESPAN -- STARTUP & SHUTDOWN
 # ============================================================================
@@ -144,6 +163,7 @@ async def lifespan(app: FastAPI):
     """
     global brain
     discovery_task: Optional[asyncio.Task] = None
+    key_health_task: Optional[asyncio.Task] = None
     if ENVIRONMENT in PROD_ENVS:
         try:
             assert_runtime_ready()
@@ -155,6 +175,8 @@ async def lifespan(app: FastAPI):
     await brain.command_layer.settlement.start()
     if os.getenv("AI_AUTO_PROVIDER_DISCOVERY_INTERVAL_SECONDS", "3600") != "0":
         discovery_task = asyncio.create_task(_auto_provider_discovery_loop())
+    if os.getenv("AI_PROVIDER_KEY_REFRESH_INTERVAL_SECONDS", "300") != "0":
+        key_health_task = asyncio.create_task(_provider_key_health_loop())
     logger.info(
         "techit_ai_brain_ready",
         agents=len(getattr(brain.orchestrator, "agents", {}) or {}),
@@ -166,12 +188,13 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        if discovery_task is not None:
-            discovery_task.cancel()
-            try:
-                await discovery_task
-            except asyncio.CancelledError:
-                pass
+        for background_task in (discovery_task, key_health_task):
+            if background_task is not None:
+                background_task.cancel()
+                try:
+                    await background_task
+                except asyncio.CancelledError:
+                    pass
         await brain.command_layer.settlement.close()
         logger.info("techit_shutdown")
 
