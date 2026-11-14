@@ -74,6 +74,20 @@ class ExecutionCommandLayer:
         policy = self.model_router.policy_for(request)
         grant = getattr(request.user_context, "execution_grant", None)
         request_id = grant.request_id if grant is not None else str(uuid4())
+        # One backend grant authorizes one HTTP request, which may run several
+        # LLM executions (a multi-agent pipeline or an agent that also embeds).
+        # The grant is consumed against replay on its first execution only; each
+        # further execution settles under a derived id ("<request_id>:<n>") that
+        # the backend records against the same reservation without re-charging.
+        # A replayed token is a new grant object and is still rejected.
+        execution_number = 1
+        if grant is not None:
+            execution_number = int(grant.usage.get("executions", 0)) + 1
+            grant.usage["executions"] = execution_number
+            if execution_number > max(1, int(os.getenv("AI_MAX_EXECUTIONS_PER_GRANT", "32") or 32)):
+                raise ExecutionAuthorizationError("Execution grant allowance for this request is exhausted")
+            if execution_number > 1:
+                request_id = f"{grant.request_id}:{execution_number}"
 
         trusted_worker = os.getenv("AI_TRUSTED_WORKER_EXECUTION", "false").lower() in {"1", "true", "yes"}
         if os.getenv("REQUIRE_AI_EXECUTION_GRANT", "false").lower() in {"1", "true", "yes"} and grant is None and not trusted_worker:
@@ -141,8 +155,11 @@ class ExecutionCommandLayer:
                 raise ExecutionAuthorizationError(
                     f"Input exceeds task token budget ({estimated_input_tokens} > {max_input_tokens})"
                 )
-            if grant is not None:
+            # Later executions are covered only once the replay check actually
+            # succeeded; a replayed grant fails here on every execution.
+            if grant is not None and not grant.usage.get("consumed"):
                 self.grant_replay_guard.consume(grant)
+                grant.usage["consumed"] = 1
 
             cache_key = self.cache.key(
                 user_id=request.user_context.user_id,

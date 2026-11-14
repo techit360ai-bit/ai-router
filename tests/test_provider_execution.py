@@ -100,8 +100,14 @@ async def test_execution_grant_task_mismatch_and_replay(monkeypatch) -> None:
 
     monkeypatch.setattr(layer, "_call_llm", fake_call)
     await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=grant), use_cache=False))
+    # A replayed token is verified again into a NEW grant object (one per HTTP
+    # request); that replay must be rejected.
+    replay = ExecutionGrant(
+        subject="u_test", workspace_id="w", request_id="r1", task_type="chat",
+        grant_id="g1", claims={"exp": 9999999999},
+    )
     with pytest.raises(ExecutionAuthorizationError):
-        await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=grant), use_cache=False))
+        await layer.process_request(_request(TaskType.CHAT, _ctx(execution_grant=replay), use_cache=False))
 
 
 @pytest.mark.asyncio
