@@ -3798,7 +3798,13 @@ async def list_models(
     """Return enabled user-selectable models, optionally filtered by task."""
     try:
         router = brain.model_router if brain else ModelRouter(ModelRegistry())
-        return {"version": router.registry.version, "models": router.list_models(task_type)}
+        models = router.list_models(task_type)
+        grant = getattr(user, "execution_grant", None)
+        if getattr(grant, "routing_tier", "") == "standard" and router.standard_tier_providers():
+            # Only offer what a standard-tier (not subscribed / not paying) user can run.
+            tier = router.standard_tier_providers()
+            models = [model for model in models if str(model["provider"]).lower() in tier]
+        return {"version": router.registry.version, "models": models}
     except RegistryError as exc:
         raise HTTPException(status_code=503, detail=_safe_detail(exc, 503)) from exc
 
