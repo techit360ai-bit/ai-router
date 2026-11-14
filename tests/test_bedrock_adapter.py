@@ -135,7 +135,8 @@ async def test_bedrock_bearer_401_maps_to_auth_error() -> None:
 def test_adapter_feature_declarations_are_honest() -> None:
     assert "text" in adapter_features("bedrock_converse")
     assert "embeddings" in adapter_features("cohere_embed")
-    assert "embeddings" not in adapter_features("bedrock_converse")
+    # Titan Text Embeddings V2 runs through InvokeModel (see the embedding test).
+    assert "embeddings" in adapter_features("bedrock_converse")
     # No adapter exposes a verified streaming path yet.
     assert supports_streaming("openai_responses") is False
     assert supports_streaming("bedrock_converse") is False
@@ -159,3 +160,43 @@ def test_bedrock_is_unconfigured_until_its_enable_flag_is_set() -> None:
     assert router.registry.is_provider_configured(
         model, {"BEDROCK_ENABLED": "true", "AWS_REGION": "us-east-1"}
     ) is True
+
+
+class InvokeModelClient:
+    """Stand-in for bedrock-runtime InvokeModel (boto3 returns a streaming body)."""
+
+    def __init__(self, payload):
+        import io
+        import json as _json
+        self._payload = _json.dumps(payload).encode()
+        self.calls = []
+        self._io = io
+
+    def invoke_model(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"body": self._io.BytesIO(self._payload), "contentType": "application/json"}
+
+
+@pytest.mark.asyncio
+async def test_titan_embeddings_use_invoke_model_and_return_the_shared_shape() -> None:
+    import json as _json
+    client = InvokeModelClient({"embedding": [0.1, 0.2, 0.3], "inputTextTokenCount": 7})
+    response = await call_provider_model(
+        _model("bedrock-titan-embed-text-v2"), "idea text", _request(), clients={"bedrock": client},
+    )
+    assert _json.loads(response.text) == {"embeddings": [[0.1, 0.2, 0.3]]}
+    assert response.tokens == 7
+    assert response.raw == {"prompt_tokens": 7, "completion_tokens": 0}
+    call = client.calls[0]
+    assert call["modelId"] == "amazon.titan-embed-text-v2:0"
+    assert _json.loads(call["body"]) == {"inputText": "idea text", "dimensions": 1024, "normalize": True}
+
+
+@pytest.mark.asyncio
+async def test_titan_embedding_without_a_vector_is_an_error() -> None:
+    with pytest.raises(ProviderResponseError):
+        await call_provider_model(
+            _model("bedrock-titan-embed-text-v2"), "idea text", _request(),
+            clients={"bedrock": InvokeModelClient({"inputTextTokenCount": 3})},
+        )
+

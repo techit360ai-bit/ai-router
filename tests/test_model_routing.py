@@ -135,6 +135,8 @@ def test_chain_can_opt_back_in_to_unconfigured_providers(monkeypatch) -> None:
     monkeypatch.setenv("AI_ROUTER_EXCLUDE_UNCONFIGURED", "false")
     router = ModelRouter()
     chain = router.select_chain(_req(TaskType.EMBEDDINGS))
+    # The configured provider stays first; unconfigured providers follow in the
+    # policy's preferred order (Bedrock Titan, then OpenAI), cut to max_attempts.
     assert [item.id for item in chain] == [
-        "cohere-embed-english-v3", "openai-text-embedding-3-large",
+        "cohere-embed-english-v3", "bedrock-titan-embed-text-v2",
     ]
