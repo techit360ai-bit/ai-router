@@ -255,6 +255,24 @@ class ModelRouter:
         model = self.registry.models[config.id]
         return self.registry.is_provider_configured(model)
 
+    @staticmethod
+    def standard_tier_providers() -> set[str]:
+        """Providers that serve requests from users who are not subscribed or paying.
+
+        AI_STANDARD_TIER_PROVIDERS (comma-separated, default "bedrock"); empty
+        disables tier routing so every user gets the normal ranked chain.
+        """
+        raw = os.getenv("AI_STANDARD_TIER_PROVIDERS", "bedrock")
+        return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+    def _standard_tier(self, grant: Any) -> bool:
+        return getattr(grant, "routing_tier", "") == "standard" and bool(self.standard_tier_providers())
+
+    def _tier_permits(self, grant: Any, config: ModelConfig) -> bool:
+        if grant is None or not self._standard_tier(grant):
+            return True
+        return str(config.provider).lower() in self.standard_tier_providers()
+
     def _grant_permits(self, grant: Any, config: ModelConfig) -> bool:
         """Grant-level billing-class and data-handling authorization.
 
@@ -341,11 +359,28 @@ class ModelRouter:
                     f"{request.task_type.value}"
                 )
             candidates = permitted
+        if grant is not None and candidates and self._standard_tier(grant):
+            # Users who are not subscribed or paying run on the standard-tier
+            # providers (Bedrock by default). An explicitly requested model
+            # outside that tier is refused rather than silently substituted.
+            in_tier = [item for item in candidates if self._tier_permits(grant, item)]
+            requested = (
+                getattr(request, "requested_model", None)
+                or request.input_data.get("model_id")
+                or request.input_data.get("requested_model")
+            )
+            if requested and not in_tier:
+                raise ExecutionAuthorizationError(
+                    f"model {requested} is available on paid plans; standard-tier requests run on: "
+                    + ", ".join(sorted(self.standard_tier_providers()))
+                )
+            # A task no standard-tier model can serve keeps its normal chain.
+            candidates = in_tier or candidates
         disabled = set(self.runtime_controls.get("disabled_models") or [])
         candidates = [item for item in candidates if item.id not in disabled]
         if canary_config is not None:
             if (
-                (grant is None or self._grant_permits(grant, canary_config))
+                (grant is None or (self._grant_permits(grant, canary_config) and self._tier_permits(grant, canary_config)))
                 and canary_config.id not in disabled
             ):
                 candidates = [canary_config] + [

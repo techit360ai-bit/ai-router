@@ -35,6 +35,15 @@ class ExecutionAuthorizationError(PermissionError):
     pass
 
 
+ROUTING_TIERS = frozenset({"standard", "premium"})
+
+
+def routing_tier_claim(value: Any) -> str:
+    """Normalize the backend's routing_tier claim; unknown values mean unrestricted."""
+    tier = str(value or "").strip().lower()
+    return tier if tier in ROUTING_TIERS else ""
+
+
 @dataclass(frozen=True)
 class ExecutionGrant:
     subject: str
@@ -48,6 +57,8 @@ class ExecutionGrant:
     max_provider_cost_usd: Optional[float] = None
     allowed_billing_classes: tuple[str, ...] = ()
     required_data_handling: str = ""
+    # "standard" (not subscribed / not paying) or "premium"; empty = unrestricted.
+    routing_tier: str = ""
     workflow_id: Optional[str] = None
     max_workflow_cost_usd: Optional[float] = None
     grant_id: Optional[str] = None
@@ -127,6 +138,7 @@ class ExecutionGrantVerifier:
             required_data_handling=str(
                 claims.get("required_data_handling") or claims.get("data_handling") or ""
             ),
+            routing_tier=routing_tier_claim(claims.get("routing_tier")),
             workflow_id=claims.get("workflow_id") or claims.get("workflowId"),
             max_workflow_cost_usd=_optional_float(
                 claims.get("max_workflow_cost_usd") or claims.get("maxWorkflowCostUsd")
