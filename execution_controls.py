@@ -53,6 +53,9 @@ class ExecutionGrant:
     grant_id: Optional[str] = None
     reservation_id: Optional[str] = None
     claims: Dict[str, Any] = field(default_factory=dict)
+    # Per-verification usage state. One verified grant object belongs to one
+    # HTTP request, which may run several LLM executions (agent fan-out).
+    usage: Dict[str, int] = field(default_factory=dict, compare=False, repr=False)
 
     def permits_billing_class(self, billing_class: str) -> bool:
         """An empty allow-list means the grant does not restrict billing class."""
