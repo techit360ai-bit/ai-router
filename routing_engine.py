@@ -8,7 +8,7 @@ import hashlib
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from execution_controls import ExecutionAuthorizationError, ProviderCircuitBreaker
 from model_registry import ModelDefinition, ModelRegistry, RegistryError, TaskPolicy
@@ -131,6 +131,10 @@ class ModelRouter:
         self.complexity_classifier = TaskComplexityClassifier()
         self.feedback = RoutingFeedbackStore()
         self.runtime_controls = self._load_runtime_controls()
+        # Optional predicate installed by the execution layer: False when a
+        # provider's credentials are known to be rejected (quarantined keys or a
+        # failed live credential probe).
+        self._availability_probe: Optional[Callable[[ModelConfig], bool]] = None
         self.model_configs: Dict[str, ModelConfig] = {
             model.id: self._to_config(model) for model in self.registry.models.values()
         }
@@ -145,6 +149,17 @@ class ModelRouter:
                 return value if isinstance(value, dict) else {}
         except (OSError, ValueError):
             return {}
+
+    def set_availability_probe(self, probe: Optional[Callable[["ModelConfig"], bool]]) -> None:
+        self._availability_probe = probe
+
+    def _is_usable(self, config: "ModelConfig") -> bool:
+        if self._availability_probe is None:
+            return True
+        try:
+            return bool(self._availability_probe(config))
+        except Exception:  # noqa: BLE001 - a probe failure must never hide providers
+            return True
 
     def classify_request(self, request: Any) -> ComplexityAssessment:
         return self.complexity_classifier.classify(request, self.policy_for(request))
@@ -362,10 +377,16 @@ class ModelRouter:
                 if self._within_provider_budget(config, input_tokens, output_tokens, budget)
             ]
 
+        # Providers with rejected credentials are dropped BEFORE the chain is cut
+        # to max_attempts; otherwise a task whose top-ranked models all belong to
+        # a provider with an invalid key fails although healthy providers rank
+        # just below. With nothing usable left the full chain is kept so the
+        # caller still receives the accurate provider error.
         configured = [
             config for config in candidates
             if self._is_configured(config)
             and self.circuit_breaker.is_available(f"{config.provider}:{config.model_name}")
+            and self._is_usable(config)
         ]
         unconfigured = [config for config in candidates if config not in configured]
         # Prefer providers that actually have credentials so the router never

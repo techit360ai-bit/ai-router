@@ -371,3 +371,27 @@ def provider_key_health(force: bool = False) -> Dict[str, Dict[str, Any]]:
         _cache["checked_at"] = now
         _cache["providers"] = providers
     return providers
+
+
+def cached_unusable_providers(max_age_seconds: float | None = None) -> set[str]:
+    """Providers whose most recent live probe rejected every configured key.
+
+    Reads the cached verdict only (never probes), so it is safe on the routing
+    hot path. A stale cache yields no verdicts rather than old ones. Transient
+    probe failures count as "unknown" and never mark a provider unusable.
+    """
+    with _lock:
+        checked_at = float(_cache.get("checked_at") or 0.0)
+        providers = dict(_cache.get("providers") or {})
+    if not providers:
+        return set()
+    max_age = CACHE_TTL_SECONDS * 3 if max_age_seconds is None else max_age_seconds
+    if time.time() - checked_at > max_age:
+        return set()
+    return {
+        name for name, report in providers.items()
+        if int(report.get("configured") or 0) > 0
+        and int(report.get("valid") or 0) == 0
+        and int(report.get("unknown") or 0) == 0
+        and int(report.get("invalid") or 0) > 0
+    }
