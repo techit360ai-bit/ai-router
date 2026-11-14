@@ -14,7 +14,8 @@ import random
 import time
 from dataclasses import replace
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 from uuid import uuid4
 
 from execution_controls import (
@@ -50,7 +51,9 @@ class ExecutionCommandLayer:
         self.prompt_engine = prompt_engine
         self.safety_engine = safety_engine
         self.provider_clients = provider_clients or {}
-        self.execution_log: List[Dict[str, Any]] = []
+        # Bounded: this layer is a process-wide singleton, and an unbounded list
+        # grew with every provider attempt for the life of the process.
+        self.execution_log: Deque[Dict[str, Any]] = deque(maxlen=max(100, int(os.getenv("AI_EXECUTION_LOG_MAX_ENTRIES", "5000") or 5000)))
         self.environment = os.getenv("ENVIRONMENT", "development").strip().lower()
         self.allow_placeholder = os.getenv("ALLOW_AI_PLACEHOLDER_RESPONSES", "false").lower() in {
             "1", "true", "yes"

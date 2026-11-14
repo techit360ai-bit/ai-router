@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED_PARTS = {".git", "__pycache__", "tests", "docs", "migrations", "scripts"}
+EXCLUDED_PARTS = {".git", "__pycache__", "tests", "docs", "migrations", "scripts", ".venv", "venv"}  # local virtualenvs are not runtime code
 RUNTIME_SUFFIXES = {".py", ".pyi", ".toml", ".ini", ".yml", ".yaml", ".env", ".example"}
 # Match real dependency usage, not incidental mentions (for example the
 # error-sanitization module list in main.py names retired drivers on purpose).

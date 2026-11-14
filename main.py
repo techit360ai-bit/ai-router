@@ -901,7 +901,8 @@ async def ready():
     provider_status_body: dict = {}
     try:
         from provider_key_health import provider_key_health
-        provider_reports = provider_key_health()
+        # Live probes are blocking network calls; keep them off the event loop.
+        provider_reports = await asyncio.to_thread(provider_key_health)
         for provider, report in provider_reports.items():
             checks.append(RuntimeCheck(
                 f"provider.{provider}.credentials",
@@ -927,33 +928,37 @@ async def ready():
     except Exception as exc:  # noqa: BLE001
         checks.append(RuntimeCheck("provider.catalog", False, str(exc)))
 
-    db_ok = True
-    db_detail = "ok"
-    try:
-        Session = _db_session_factory()
-        session = Session()
-        try:
-            session.execute(text("SELECT 1"))
-        finally:
-            session.close()
-    except Exception as exc:  # noqa: BLE001
-        db_ok = False
-        db_detail = str(exc)
-
-    checks.append(RuntimeCheck("database.ping", db_ok, db_detail))
-    if db_ok and ENVIRONMENT in PROD_ENVS:
-        migration_detail = "alembic_version unavailable"
+    def _database_checks() -> list:
+        # Synchronous SQLAlchemy calls run in a worker thread so a slow database
+        # cannot stall every in-flight request on the event loop.
+        results = []
+        db_ok = True
+        db_detail = "ok"
         try:
             Session = _db_session_factory()
             session = Session()
             try:
-                version = session.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+                session.execute(text("SELECT 1"))
             finally:
                 session.close()
-            checks.append(migration_head_check(version))
         except Exception as exc:  # noqa: BLE001
-            migration_detail = str(exc)
-            checks.append(RuntimeCheck("database.migration_head", False, migration_detail))
+            db_ok = False
+            db_detail = str(exc)
+        results.append(RuntimeCheck("database.ping", db_ok, db_detail))
+        if db_ok and ENVIRONMENT in PROD_ENVS:
+            try:
+                Session = _db_session_factory()
+                session = Session()
+                try:
+                    version = session.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+                finally:
+                    session.close()
+                results.append(migration_head_check(version))
+            except Exception as exc:  # noqa: BLE001
+                results.append(RuntimeCheck("database.migration_head", False, str(exc)))
+        return results
+
+    checks.extend(await asyncio.to_thread(_database_checks))
     ok = all(check.ok for check in checks)
     body = {
         "status": "ready" if ok else "not_ready",
