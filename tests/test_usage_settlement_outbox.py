@@ -66,3 +66,55 @@ async def test_outbox_survives_client_restart_and_replays(monkeypatch) -> None:
             "SELECT delivered_at FROM usage_settlement_outbox WHERE request_id = 'request-1'"
         )).scalar_one()
     assert delivered_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not is_postgres_url(POSTGRES_TEST_URL), reason="AI_ROUTER_POSTGRES_TEST_URL is required for PostgreSQL integration tests")
+async def test_rejected_backlog_does_not_starve_new_settlements(monkeypatch) -> None:
+    """Rows the backend permanently rejects (4xx) used to fill the oldest-first
+    flush window forever, so no newer settlement was ever delivered."""
+    from datetime import datetime, timedelta, timezone
+
+    database_url = POSTGRES_TEST_URL
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("BACKEND_USAGE_SETTLEMENT_URL", "https://backend.example/internal/usage-settlement")
+    monkeypatch.setenv("AI_ROUTER_SETTLEMENT_SECRET", "test-secret")
+    monkeypatch.setenv("AI_SETTLEMENT_OUTBOX_REJECTED_RETRY_LIMIT", "3")
+    old = datetime.now(timezone.utc) - timedelta(hours=1)
+    with create_engine(database_url).begin() as connection:
+        connection.execute(text("DELETE FROM usage_settlement_outbox WHERE request_id LIKE 'hol-%'"))
+        for index in range(3):
+            connection.execute(text(
+                "INSERT INTO usage_settlement_outbox (id, request_id, payload, attempts, last_error, created_at, updated_at) "
+                "VALUES (:id, :id, :payload, 7, :error, :created, :created)"
+            ), {"id": f"hol-rejected-{index}", "payload": json.dumps({"request_id": f"hol-rejected-{index}"}), "error": "settlement rejected (409): {'error': 'reservation_execution_mismatch'}", "created": old})
+        connection.execute(text(
+            "INSERT INTO usage_settlement_outbox (id, request_id, payload, attempts, last_error, created_at, updated_at) "
+            "VALUES ('hol-transient', 'hol-transient', :payload, 9, 'ConnectTimeout', :created, :created)"
+        ), {"payload": json.dumps({"request_id": "hol-transient"}), "created": old})
+
+    try:
+        client = UsageSettlementClient()
+        delivered = []
+
+        async def accept(_path, body):
+            delivered.append(body["request_id"])
+            return {"ok": True}
+
+        monkeypatch.setattr(client, "_post", accept)
+        await client.settle(
+            request_id="hol-fresh", user_id="user-1", workspace_id=None, task_type="chat", provider="bedrock",
+            model="claude", status="completed", prompt_tokens=1, completion_tokens=1, total_tokens=2,
+            provider_cost_usd=0.0, latency_ms=5, attempt_count=1, cache_hit=False, grant_id=None,
+            reservation_id=None, metadata={},
+        )
+        await client.outbox.flush(limit=10)
+        # The fresh settlement and the transiently failing row are delivered; rows
+        # that were permanently rejected past the retry limit wait for an operator.
+        assert "hol-fresh" in delivered
+        assert "hol-transient" in delivered
+        assert not [request_id for request_id in delivered if request_id.startswith("hol-rejected")]
+    finally:
+        # Leave nothing behind: leftover rows would be flushed by other tests.
+        with create_engine(database_url).begin() as connection:
+            connection.execute(text("DELETE FROM usage_settlement_outbox WHERE request_id LIKE 'hol-%'"))
